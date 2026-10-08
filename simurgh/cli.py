@@ -30,9 +30,9 @@ import time
 from pathlib import Path
 
 from . import __product__, __version__
-from .config import (ENGINES, ConfigError, ExitConfig, ExitEndpoint, ListenSpec,
-                     Mapping, RelayConfig, TunnelSpec, load_exit, load_relay,
-                     new_token,
+from .config import (ENGINES, GO_MAX_STREAM_WINDOW, GO_STREAM_WINDOW,
+                     ConfigError, ExitConfig, ExitEndpoint, ListenSpec, Mapping,
+                     RelayConfig, TunnelSpec, load_exit, load_relay, new_token,
                      save_exit, save_relay)
 from .util import (Home, free_port, get_logger, human_bytes, human_duration,
                    human_rate, is_ip, local_ips, parse_port_list, setup_logging)
@@ -166,6 +166,19 @@ def _init_engine(args) -> str:
     return want if want in ENGINES else "python"
 
 
+def _apply_engine_windows(cfg) -> None:
+    """Give a fresh config the transfer defaults of the engine it will run.
+
+    The two engines want different starting windows: the Go engine cannot grow
+    from 256 KiB on a fast path, while the Python engine grows from it happily
+    and keeps less memory for quiet streams.  A value the user set is never
+    touched -- this only runs while ``init`` builds a new config.
+    """
+    if cfg.engine == "go":
+        cfg.stream_window = GO_STREAM_WINDOW
+        cfg.max_stream_window = GO_MAX_STREAM_WINDOW
+
+
 def cmd_init(args) -> int:
     home = Home(args.home).ensure()
     role = args.role
@@ -201,6 +214,7 @@ def _init_exit(home: Home, args) -> int:
         connections=max(0, int(getattr(args, "connections", 0) or 0)) or 1,
         engine=_init_engine(args),
     )
+    _apply_engine_windows(cfg)
     cfg.listen = listen or [ListenSpec(carrier="tls", port=443, path="/ws")]
     try:
         from .certs import ensure_certificate
@@ -259,6 +273,7 @@ def _init_relay(home: Home, args) -> int:
         )
         cfg.connections = max(0, int(getattr(args, "connections", 0) or 0)) or 1
     cfg.engine = _init_engine(args)
+    _apply_engine_windows(cfg)
     mappings = []
     for spec in args.mapping or []:
         try:

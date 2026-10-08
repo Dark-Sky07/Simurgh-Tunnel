@@ -251,3 +251,105 @@ func TestStreamOpenError(t *testing.T) {
 		t.Fatalf("%d streams left open, want 0", n)
 	}
 }
+
+// TestGlobalWindowScalesWithStreams pins the fix for many-user relays: the
+// connection wide credit ceiling follows the sum of the live streams' *current*
+// windows. If it were frozen at the initial per-stream window, a connection
+// with dozens of users would refuse every credit grant and crawl.
+func TestGlobalWindowScalesWithStreams(t *testing.T) {
+	a, _ := newMemPair("mem", 8)
+	m := New(a, true, Options{StreamWindow: 256 << 10, MaxStreamWindow: 8 << 20})
+
+	if got := m.effectiveGlobalLocked(); got != globalWindowFloor {
+		t.Fatalf("no streams: ceiling = %d, want the floor %d", got, globalWindowFloor)
+	}
+	if m.globalSend != globalWindowFloor {
+		t.Fatalf("opening credit = %d, want %d so the first stream can start",
+			m.globalSend, globalWindowFloor)
+	}
+
+	// add live streams the way Open/accept do, then grow their windows the way
+	// the autotuner does
+	add := func(n int, window int64) {
+		m.mu.Lock()
+		for i := 0; i < n; i++ {
+			s := newStream(m, m.nextSID, 0, nil)
+			m.nextSID += 2
+			s.window = window
+			m.streams[s.ID] = s
+			m.windowSum += s.window
+		}
+		m.mu.Unlock()
+	}
+	grow := func(sid uint32, window int64) {
+		m.mu.Lock()
+		s := m.streams[sid]
+		m.windowSum += window - s.window
+		s.window = window
+		m.mu.Unlock()
+	}
+
+	// 16 streams x 256 KiB = 4 MiB, still under the floor
+	add(16, 256<<10)
+	if got := m.effectiveGlobalLocked(); got != globalWindowFloor {
+		t.Fatalf("16 small streams: ceiling = %d, want the floor %d", got, globalWindowFloor)
+	}
+
+	// the windows grow: the ceiling has to grow with them, or the grants stop
+	grow(1, 8<<20)
+	grow(3, 8<<20)
+	if got, want := m.effectiveGlobalLocked(), int64((8<<20)+(8<<20)+14*(256<<10)); got != want {
+		t.Fatalf("grown streams: ceiling = %d, want %d", got, want)
+	}
+
+	// and it never runs away: the cap holds however many streams there are
+	add(200, 8<<20)
+	if got := m.effectiveGlobalLocked(); got != globalWindowCap {
+		t.Fatalf("200 big streams: ceiling = %d, want the cap %d", got, globalWindowCap)
+	}
+
+	// a credit frame must not push the sender past the ceiling
+	m.mu.Lock()
+	m.globalSend = 1
+	m.mu.Unlock()
+	m.grantCreditForTest(1 << 30)
+	m.mu.Lock()
+	send := m.globalSend
+	m.mu.Unlock()
+	if send > globalWindowCap {
+		t.Fatalf("credit grew to %d, past the cap %d", send, globalWindowCap)
+	}
+
+	// closing a stream gives its window back
+	m.mu.Lock()
+	before := m.windowSum
+	m.mu.Unlock()
+	m.drop(1)
+	m.mu.Lock()
+	after := m.windowSum
+	m.mu.Unlock()
+	if after >= before {
+		t.Fatalf("dropping a stream kept its window: %d -> %d", before, after)
+	}
+
+	// an explicit setting still wins, so old configs keep their meaning
+	fixed, _ := newMemPair("mem2", 8)
+	m2 := New(fixed, true, Options{StreamWindow: 8 << 20, GlobalWindow: 4 << 20})
+	if got := m2.effectiveGlobalLocked(); got != 4<<20 {
+		t.Fatalf("explicit GlobalWindow ignored: ceiling = %d, want %d", got, 4<<20)
+	}
+	if m2.windowSum != 0 {
+		t.Fatalf("windowSum = %d, want 0 before any stream", m2.windowSum)
+	}
+}
+
+// grantCreditForTest feeds a credit frame straight into the mux, the same path
+// a peer's WIN frame takes.
+func (m *Mux) grantCreditForTest(global int64) {
+	m.mu.Lock()
+	m.globalSend += global
+	if limit := m.effectiveGlobalLocked(); m.globalSend > limit {
+		m.globalSend = limit
+	}
+	m.mu.Unlock()
+}

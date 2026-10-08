@@ -24,7 +24,7 @@ import (
 )
 
 type options struct {
-	delayMS     float64 // added latency per megabyte per direction
+	delayMS     float64 // one-way propagation delay added to every chunk
 	megabytes   int
 	carrier     string
 	window      int
@@ -258,7 +258,9 @@ func oneStream(port int, n int64) float64 {
 }
 
 // ---------------------------------------------------------------------------
-// delay proxy: every byte is forwarded after a delay, optionally rate limited
+// delay proxy: every chunk is forwarded after the propagation delay, optionally
+// rate limited. Reading and writing are decoupled through a queue, so the proxy
+// only adds the delay of a long path; it never becomes the bottleneck itself.
 
 type delayProxy struct {
 	listen int

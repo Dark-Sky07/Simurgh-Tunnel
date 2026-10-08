@@ -34,6 +34,40 @@ import (
 
 const readBuf = 256 << 10
 
+// looksLikeHTTP tells a plain web request from a tunnel handshake without
+// consuming it: the first three bytes of an HTTP method.
+func looksLikeHTTP(peek []byte) bool {
+	if len(peek) < 3 {
+		return false
+	}
+	switch strings.ToUpper(string(peek[:3])) {
+	case "GET", "HEA", "POS", "PUT", "OPT", "DEL", "PAT":
+		return true
+	}
+	return false
+}
+
+// replayHead rebuilds the start of the stream: the bytes we already consumed
+// (for example a 25 byte authentication header that turned out to belong to a
+// browser) followed by whatever the reader has buffered.
+func replayHead(hdr []byte, br *bufio.Reader) []byte {
+	out := append([]byte(nil), hdr...)
+	return append(out, bufferedBytes(br)...)
+}
+
+// bufferedBytes returns what the reader already holds without consuming it.
+func bufferedBytes(br *bufio.Reader) []byte {
+	n := br.Buffered()
+	if n <= 0 {
+		return nil
+	}
+	peek, err := br.Peek(n)
+	if err != nil {
+		return nil
+	}
+	return append([]byte(nil), peek...)
+}
+
 // ---------------------------------------------------------------------------
 // the framed channel
 
@@ -217,20 +251,21 @@ func Fingerprint(cert tls.Certificate) (string, error) {
 // Server serves one carrier: it authenticates and hands over a channel, or
 // shows the decoy to whoever fails.
 type Server struct {
-	Carrier  string
-	Token    string
-	Fallback string // "decoy" or "close"
-	Cert     tls.Certificate
-	replay   *proto.ReplayCache
+	Carrier   string
+	Token     string
+	Fallback  string // "decoy", "close" or "site:host:port"
+	DecoyFile string // optional page to serve instead of the nginx default
+	Cert      tls.Certificate
+	replay    *proto.ReplayCache
 }
 
 // NewServer builds a server carrier.
-func NewServer(name, token string, cert tls.Certificate, fallback string) *Server {
+func NewServer(name, token string, cert tls.Certificate, fallback, decoyFile string) *Server {
 	if fallback == "" {
 		fallback = "decoy"
 	}
 	return &Server{Carrier: strings.ToLower(name), Token: token, Fallback: fallback,
-		Cert: cert, replay: proto.NewReplayCache()}
+		DecoyFile: decoyFile, Cert: cert, replay: proto.NewReplayCache()}
 }
 
 // Serve handles one accepted connection. onChannel is called only when the
@@ -256,14 +291,20 @@ func (s *Server) Serve(conn net.Conn, onChannel func(mux.Channel)) {
 
 func (s *Server) servePlain(conn net.Conn, onChannel func(mux.Channel)) {
 	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	br := bufio.NewReaderSize(conn, 4096)
+	if peek, _ := br.Peek(3); looksLikeHTTP(peek) {
+		serveDecoy(conn, nil, decoyOptions{fallback: s.Fallback, decoyFile: s.DecoyFile}, bufferedBytes(br))
+		return
+	}
 	hdr := make([]byte, 25)
-	if _, err := io.ReadFull(conn, hdr); err != nil {
+	if _, err := io.ReadFull(br, hdr); err != nil {
 		conn.Close()
 		return
 	}
 	ts, ok := proto.CheckClientHeader(hdr, s.Token)
 	if !ok || !s.replay.Add(hdr[9:25]) {
-		conn.Close()
+		// Not our token: behave like the web server this port pretends to be.
+		serveDecoy(conn, nil, decoyOptions{fallback: s.Fallback, decoyFile: s.DecoyFile}, replayHead(hdr, br))
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
@@ -271,7 +312,9 @@ func (s *Server) servePlain(conn net.Conn, onChannel func(mux.Channel)) {
 		conn.Close()
 		return
 	}
-	onChannel(NewByteChannel(conn, "plain"))
+	ch := NewByteChannel(conn, "plain")
+	ch.rd = br
+	onChannel(ch)
 }
 
 func (s *Server) serveTLS(conn net.Conn, onChannel func(mux.Channel)) {
@@ -298,12 +341,8 @@ func (s *Server) serveTLS(conn net.Conn, onChannel func(mux.Channel)) {
 	if !ok || !s.replay.Add(hdr[9:25]) {
 		// a real website would answer here; so do we
 		_ = tlsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		if s.Fallback == "close" {
-			conn.Close()
-			return
-		}
-		ServeDecoy(tlsConn, br)
-		conn.Close()
+		serveDecoy(conn, tlsConn, decoyOptions{fallback: s.Fallback, decoyFile: s.DecoyFile},
+			replayHead(hdr, br))
 		return
 	}
 	_ = tlsConn.SetReadDeadline(time.Time{})
@@ -333,11 +372,8 @@ func (s *Server) serveWSS(conn net.Conn, onChannel func(mux.Channel)) {
 	_ = tlsConn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	key, ok := wsAccept(br, tlsConn)
 	if !ok {
-		if s.Fallback != "close" {
-			_ = tlsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-			ServeDecoy(tlsConn, br)
-		}
-		conn.Close()
+		_ = tlsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		serveDecoy(conn, tlsConn, decoyOptions{fallback: s.Fallback, decoyFile: s.DecoyFile}, bufferedBytes(br))
 		return
 	}
 	_ = key
@@ -359,8 +395,6 @@ func (s *Server) serveWSS(conn net.Conn, onChannel func(mux.Channel)) {
 		return
 	}
 	_ = tlsConn.SetReadDeadline(time.Time{})
-	ch := NewByteChannel(tlsConn, "wss")
-	ch.rd = nil // the websocket layer owns the reader now
 	onChannel(newWSAdapter(ws))
 }
 
@@ -501,76 +535,6 @@ func dialTCP(host string, port int, timeout time.Duration) (net.Conn, error) {
 		tc.SetNoDelay(true)
 	}
 	return conn, nil
-}
-
-// ---------------------------------------------------------------------------
-// decoy website
-
-const decoyPage = `<!DOCTYPE html>
-<html>
-<head>
-<title>Welcome to nginx!</title>
-<style>
-html { color-scheme: light dark; }
-body { width: 35em; margin: 0 auto; font-family: Tahoma, Verdana, Arial, sans-serif; }
-</style>
-</head>
-<body>
-<h1>Welcome to nginx!</h1>
-<p>If you see this page, the nginx web server is successfully installed and
-working. Further configuration is required.</p>
-
-<p>For online documentation and support please refer to
-<a href="http://nginx.org/">nginx.org</a>.<br/>
-Commercial support is available at
-<a href="http://nginx.com/">nginx.com</a>.</p>
-
-<p><em>Thank you for using nginx.</em></p>
-</body>
-</html>
-`
-
-const notFoundPage = `<html>
-<head><title>404 Not Found</title></head>
-<body>
-<center><h1>404 Not Found</h1></center>
-<hr><center>nginx</center>
-</body>
-</html>
-`
-
-// ServeDecoy answers an HTTP request over the given stream with a boring
-// nginx page, so a prober sees a web server and nothing else.
-func ServeDecoy(conn io.Writer, br *bufio.Reader) {
-	line, err := br.ReadString('\n')
-	if err != nil {
-		return
-	}
-	// drain the rest of the head
-	for {
-		l, err := br.ReadString('\n')
-		if err != nil {
-			return
-		}
-		if l == "\r\n" || l == "\n" {
-			break
-		}
-	}
-	path := "/"
-	fields := strings.Fields(line)
-	if len(fields) >= 2 {
-		path = fields[1]
-	}
-	body := decoyPage
-	status := "200 OK"
-	if path != "/" && path != "/index.html" && !strings.HasPrefix(path, "/?") {
-		body, status = notFoundPage, "404 Not Found"
-	}
-	now := time.Now().UTC().Format(time.RFC1123)
-	resp := fmt.Sprintf("HTTP/1.1 %s\r\nServer: nginx/1.24.0\r\nDate: %s\r\n"+
-		"Content-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-		status, now, len(body), body)
-	_, _ = conn.Write([]byte(resp))
 }
 
 // ---------------------------------------------------------------------------

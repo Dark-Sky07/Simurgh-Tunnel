@@ -260,6 +260,33 @@ else
   say "using the python engine (--engine python)."
 fi
 
+# ------------------------------------------------------------ kernel tuning
+# A relay with a thousand users needs more sockets than a stock kernel opens,
+# and BBR keeps a long, lossy path full instead of backing off on every loss.
+if [ "$(id -u)" = "0" ] && [ -d /etc/sysctl.d ] && command -v sysctl >/dev/null 2>&1; then
+  SYSCTL_FILE=/etc/sysctl.d/99-simurgh.conf
+  say "tuning kernel limits for many simultaneous users…"
+  {
+    echo "# Simurgh Tunnel: sockets and buffers for many simultaneous users"
+    echo "fs.file-max = 1048576"
+    echo "net.core.somaxconn = 65535"
+    echo "net.ipv4.tcp_max_syn_backlog = 65535"
+    echo "net.ipv4.ip_local_port_range = 10240 65535"
+    echo "net.ipv4.tcp_tw_reuse = 1"
+    echo "net.core.rmem_max = 16777216"
+    echo "net.core.wmem_max = 16777216"
+    echo "net.ipv4.tcp_rmem = 4096 87380 16777216"
+    echo "net.ipv4.tcp_wmem = 4096 65536 16777216"
+  } > "$SYSCTL_FILE"
+  if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+    printf '%s\n' "net.core.default_qdisc = fq" \
+                  "net.ipv4.tcp_congestion_control = bbr" >> "$SYSCTL_FILE"
+    ok "bbr congestion control enabled (keeps long paths fast)"
+  fi
+  sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 && ok "kernel limits applied ($SYSCTL_FILE)" \
+    || warn "some kernel values could not be applied"
+fi
+
 # --------------------------------------------------------------- configure
 ARGS=(--force)
 [ -n "$ROLE" ]        && ARGS+=(--role "$ROLE")

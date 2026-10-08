@@ -174,3 +174,48 @@ async def test_global_credit_is_not_spent_by_the_receive_path():
     assert mux.take_global_credit(500) == 500   # independent of the send budget
     mux.global_credit = 0
     assert mux.take_global_credit(10) == 10
+
+
+async def test_shared_credit_grows_with_the_live_windows():
+    """A relay with many users must not be capped at one stream's budget.
+
+    The connection wide credit is shared, so its ceiling follows the sum of the
+    live streams' *current* windows (16 MiB floor, 64 MiB cap).  A ceiling
+    frozen at the initial window would refuse every grant once the streams have
+    grown, which crawls a busy connection.
+    """
+    from simurgh.protocol import (DEFAULT_GLOBAL_WINDOW, DEFAULT_STREAM_WINDOW,
+                                  GLOBAL_WINDOW_CAP)
+
+    mux = Mux(MemoryChannel(), is_relay=True)
+    assert mux.global_window_limit == 0          # 0 means "work it out"
+    assert mux._global_window() == DEFAULT_GLOBAL_WINDOW
+    assert mux.global_credit == DEFAULT_GLOBAL_WINDOW
+    assert mux.window_sum == 0
+
+    # a few live streams at the default window: still under the floor
+    for i in range(8):
+        mux.streams[i * 2 + 1] = object()
+    mux.window_sum = 8 * DEFAULT_STREAM_WINDOW
+    assert mux.window_sum < DEFAULT_GLOBAL_WINDOW
+    assert mux._global_window() == DEFAULT_GLOBAL_WINDOW
+
+    # many of them: the ceiling follows their windows instead of refusing
+    mux.window_sum = 128 * DEFAULT_STREAM_WINDOW
+    assert mux.window_sum > DEFAULT_GLOBAL_WINDOW
+    assert mux._global_window() == 128 * DEFAULT_STREAM_WINDOW
+
+    # the windows grew: the ceiling grows with them, then the cap holds
+    mux.window_sum = 40 * (8 * 1024 * 1024)
+    assert mux._global_window() == GLOBAL_WINDOW_CAP
+    assert mux.window_sum > GLOBAL_WINDOW_CAP
+
+    # credit is still limited by what we actually consumed
+    mux.recv_unacked = mux._global_window() - 1
+    assert mux.take_global_credit(1 << 20) == 1
+
+    # an explicit setting still wins, so old configs keep their meaning
+    fixed = Mux(MemoryChannel(), is_relay=True, global_window=4 * 1024 * 1024)
+    fixed.window_sum = 64 * 1024 * 1024
+    assert fixed._global_window() == 4 * 1024 * 1024
+    assert fixed.global_credit == 4 * 1024 * 1024

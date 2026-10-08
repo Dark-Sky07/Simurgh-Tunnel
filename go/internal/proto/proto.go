@@ -56,7 +56,7 @@ const (
 
 // Defaults shared by both roles.
 const (
-	DefaultStreamWindow = 256 << 10
+	DefaultStreamWindow = 1 << 20 // 1 MiB: 256 KiB starves a busy connection
 	// DefaultMaxStreamWindow is the ceiling the window autotuner may reach for
 	// one stream. Memory parked here follows demand (only a stream that really
 	// drains fast grows), so the ceiling is the worst case per busy user: 4 MiB

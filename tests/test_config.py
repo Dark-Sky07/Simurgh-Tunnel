@@ -141,17 +141,23 @@ def test_silly_performance_values_are_clamped_not_fatal(home):
     assert back.max_stream_window >= back.stream_window
 
 
-def test_engine_key_round_trips_and_defaults_to_python(home):
+def test_engine_key_round_trips_and_defaults_to_go(home):
     """The data plane is a config choice; unknown names are rejected."""
-    from simurgh.config import ConfigError, ExitEndpoint
+    from simurgh.config import DEFAULT_ENGINE, ConfigError, ExitEndpoint
     cfg = RelayConfig(token="tok", name="relay", engine="go",
                       exit=ExitEndpoint(carrier="tls", address="198.51.100.7", port=443))
     save_relay(cfg, home.relay_cfg)
     assert load_relay(home.relay_cfg).engine == "go"
-    assert RelayConfig(token="tok").engine == "python"
+    # the compiled engine is the default for new installs
+    assert DEFAULT_ENGINE == "go"
+    assert RelayConfig(token="tok").engine == "go"
+
+    cfg.engine = "python"
+    save_relay(cfg, home.relay_cfg)
+    assert load_relay(home.relay_cfg).engine == "python"
 
     home.relay_cfg.write_text(
-        home.relay_cfg.read_text().replace('engine = "go"', 'engine = "brainfuck"'))
+        home.relay_cfg.read_text().replace('engine = "python"', 'engine = "brainfuck"'))
     try:
         load_relay(home.relay_cfg)
     except ConfigError as exc:

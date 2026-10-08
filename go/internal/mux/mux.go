@@ -23,6 +23,15 @@ const (
 	windowEvalMin = 50 * time.Millisecond
 	defaultRTT    = 120 * time.Millisecond
 	pingTimeout   = 30 * time.Second
+
+	// The connection wide credit is a safety net, not the per-user window: it
+	// has to be wide enough that a thousand streams are not throttled by it on
+	// a long path, and tight enough that a runaway peer cannot park gigabytes.
+	globalWindowFloor = 16 << 20 // always allowed
+	// The ceiling per tunnel connection: enough that a thousand streams are
+	// never throttled by it on a long path, small enough that a peer which
+	// stops reading cannot park more than this much buffered data here.
+	globalWindowCap = 64 << 20
 )
 
 // Channel is one tunnel connection: framed, authenticated, ordered.
@@ -93,6 +102,8 @@ type Stream struct {
 	baseWindow  int64
 	maxWindow   int64
 	peerCredit  int64
+	//: when this stream's writer last found itself without credit (-verbose)
+	blockStart  time.Time
 	backlog     int64
 	backlogPeak int64
 	rateBytes   int64
@@ -109,13 +120,14 @@ type Mux struct {
 	IsRelay bool
 	Stats   Stats
 
-	mu           sync.Mutex
-	cond         *sync.Cond // senders wait for credit here
-	streams      map[uint32]*Stream
-	nextSID      uint32
-	globalSend   int64 // connection-wide credit we may spend
-	globalRecv   int64 // bytes received but not yet credited back
-	globalWindow int64
+	mu          sync.Mutex
+	cond        *sync.Cond // senders wait for credit here
+	streams     map[uint32]*Stream
+	nextSID     uint32
+	globalSend  int64 // connection-wide credit we may spend
+	globalRecv  int64 // bytes received but not yet credited back
+	globalLimit int64 // fixed ceiling, 0 = scale with the live streams
+	windowSum   int64 // sum of the live streams' current windows
 
 	streamWindow    int64
 	maxStreamWindow int64
@@ -136,10 +148,13 @@ type Mux struct {
 type Options struct {
 	StreamWindow    int64
 	MaxStreamWindow int64
-	GlobalWindow    int64
-	Chunk           int
-	OnOpen          func(*Stream)
-	OnCtrl          func(map[string]any)
+	// GlobalWindow is the connection wide credit ceiling. Zero (the default)
+	// means "scale with the number of live streams", which is what a relay
+	// with many users wants.
+	GlobalWindow int64
+	Chunk        int
+	OnOpen       func(*Stream)
+	OnCtrl       func(map[string]any)
 }
 
 // New creates a mux over an authenticated channel.
@@ -150,18 +165,24 @@ func New(ch Channel, isRelay bool, opt Options) *Mux {
 	if opt.MaxStreamWindow < opt.StreamWindow {
 		opt.MaxStreamWindow = opt.StreamWindow
 	}
-	if opt.GlobalWindow <= 0 {
+	// 0 means "work the ceiling out from the live stream count" (see
+	// effectiveGlobalLocked); the opening credit is always the floor.
+	if opt.GlobalWindow < 0 {
 		opt.GlobalWindow = proto.DefaultGlobalWindow
 	}
 	if opt.Chunk <= 0 {
 		opt.Chunk = proto.DefaultChunk
 	}
+	openingCredit := opt.GlobalWindow
+	if openingCredit <= 0 {
+		openingCredit = globalWindowFloor
+	}
 	m := &Mux{
 		ch:              ch,
 		IsRelay:         isRelay,
 		streams:         make(map[uint32]*Stream),
-		globalSend:      opt.GlobalWindow,
-		globalWindow:    opt.GlobalWindow,
+		globalSend:      openingCredit,
+		globalLimit:     opt.GlobalWindow,
 		streamWindow:    opt.StreamWindow,
 		maxStreamWindow: opt.MaxStreamWindow,
 		chunk:           opt.Chunk,
@@ -312,6 +333,7 @@ func (m *Mux) Open(target []byte, mode byte) (*Stream, error) {
 	m.nextSID += 2
 	s := newStream(m, sid, mode, target)
 	m.streams[sid] = s
+	m.windowSum += s.window
 	m.Stats.StreamsTotal.Add(1)
 	m.Stats.StreamsOpen.Store(int64(len(m.streams)))
 	m.mu.Unlock()
@@ -346,6 +368,7 @@ func (m *Mux) accept(sid uint32, mode byte, target []byte) *Stream {
 	m.mu.Lock()
 	s := newStream(m, sid, mode, target)
 	m.streams[sid] = s
+	m.windowSum += s.window
 	m.Stats.StreamsTotal.Add(1)
 	m.Stats.StreamsOpen.Store(int64(len(m.streams)))
 	m.mu.Unlock()
@@ -364,6 +387,10 @@ func (m *Mux) drop(sid uint32) {
 	s, ok := m.streams[sid]
 	if ok {
 		delete(m.streams, sid)
+		m.windowSum -= s.window
+		if m.windowSum < 0 {
+			m.windowSum = 0
+		}
 		m.Stats.StreamsOpen.Store(int64(len(m.streams)))
 	}
 	m.mu.Unlock()
@@ -423,9 +450,9 @@ func (s *Stream) Write(data []byte) error {
 		if s.closed.Load() {
 			return errors.New("stream closed")
 		}
-		hdr := make([]byte, proto.HeaderLen)
-		proto.PutHeader(hdr, proto.TData, s.ID)
-		if err := s.Mux.writeData(hdr, data[:n]); err != nil {
+		var hdr [proto.HeaderLen]byte
+		proto.PutHeader(hdr[:], proto.TData, s.ID)
+		if err := s.Mux.writeData(hdr[:], data[:n]); err != nil {
 			return err
 		}
 		data = data[n:]
@@ -461,10 +488,22 @@ func (s *Stream) waitCredit() {
 	m.mu.Lock()
 	if !m.closed.Load() && s.sendCredit > 0 && m.globalSend > 0 {
 		m.mu.Unlock()
+		s.blockStart = time.Time{}
 		return
 	}
-	// a short wait keeps the hot path simple and still wakes on WIN frames
+	streamCredit, globalCredit := s.sendCredit, m.globalSend
 	m.mu.Unlock()
+	// A sender that stays blocked for a second is the interesting case: which
+	// budget ran dry, and is the peer still crediting us? (-verbose)
+	now := time.Now()
+	if s.blockStart.IsZero() {
+		s.blockStart = now
+	} else if now.Sub(s.blockStart) >= time.Second {
+		slog.Debug("sender blocked", "sid", s.ID, "stream_credit", streamCredit,
+			"global_credit", globalCredit, "window", s.window, "peer_credit", s.peerCredit)
+		s.blockStart = now
+	}
+	// a short wait keeps the hot path simple and still wakes on WIN frames
 	select {
 	case <-time.After(2 * time.Millisecond):
 	case <-m.done:
@@ -616,10 +655,32 @@ func (s *Stream) flushCredit(force bool) {
 	_ = m.writeFrame(proto.Frame(proto.TWin, s.ID, proto.WinPayload(uint32(min64(grant, math.MaxUint32)), uint32(min64(global, math.MaxUint32)))))
 }
 
+// effectiveGlobalLocked is the connection wide credit ceiling: the sum of the
+// live streams' own windows, clamped to [floor, cap].
+//
+// This has to follow the streams' *current* windows, not their initial one. A
+// relay with sixty users on one connection starts with 60 x 256 KiB = 15 MiB in
+// flight; if the ceiling stayed at that number while the streams grow their
+// windows, every grant would be refused and the whole connection would crawl at
+// a fraction of the link -- the exact failure mode this fixes.
+func (m *Mux) effectiveGlobalLocked() int64 {
+	if m.globalLimit > 0 {
+		return m.globalLimit
+	}
+	window := m.windowSum
+	if window < globalWindowFloor {
+		window = globalWindowFloor
+	}
+	if window > globalWindowCap {
+		window = globalWindowCap
+	}
+	return window
+}
+
 // takeGlobalCreditLocked answers how much connection-wide credit we may hand
-// back: we never let the peer have more than globalWindow bytes in flight.
+// back: we never let the peer have more bytes in flight than the ceiling.
 func (m *Mux) takeGlobalCreditLocked(n int64) int64 {
-	room := m.globalWindow - m.globalRecv
+	room := m.effectiveGlobalLocked() - m.globalRecv
 	if room < 0 {
 		room = 0
 	}
@@ -672,16 +733,24 @@ func (s *Stream) autotuneLocked() int64 {
 		}
 		bonus := next - s.window
 		s.window = next
+		m.windowSum += bonus
 		slog.Debug("window grew", "sid", s.ID, "window", s.window, "rate", fmt.Sprintf("%.1f MB/s", rate/1e6))
 		return bonus
 	}
-	behind := rate < 0.3*capacity && float64(peak) >= float64(s.window)*0.9
-	if (rate < 0.15*capacity || behind) && s.window > s.baseWindow {
+	// Shrinking is for streams that went quiet: it gives their share of the
+	// shared credit budget back, so a thousand idle users never park a
+	// gigabyte of buffers (the connection wide ceiling bounds the busy ones).
+	// A stream that is busy but slow is limited by its own client, not by the
+	// window, and halving the window there is what collapsed a whole
+	// connection to a crawl once dozens of users shared it.
+	if s.window > s.baseWindow && peak == 0 && s.backlog == 0 && rate < 0.05*capacity {
+		was := s.window
 		s.window /= 2
 		if s.window < s.baseWindow {
 			s.window = s.baseWindow
 		}
-		slog.Debug("window shrank", "sid", s.ID, "window", s.window, "rate", fmt.Sprintf("%.1f MB/s", rate/1e6), "behind", behind)
+		m.windowSum -= was - s.window
+		slog.Debug("window shrank", "sid", s.ID, "window", s.window, "rate", fmt.Sprintf("%.1f MB/s", rate/1e6))
 	}
 	return 0
 }
@@ -756,6 +825,9 @@ func (m *Mux) dispatch(typ byte, sid uint32, payload []byte) {
 			s.sendCredit = s.maxWindow * 2 // a misbehaving peer cannot grow us
 		}
 		m.globalSend += global
+		if limit := m.effectiveGlobalLocked(); m.globalSend > limit {
+			m.globalSend = limit
+		}
 		m.mu.Unlock()
 		m.wakeSenders()
 

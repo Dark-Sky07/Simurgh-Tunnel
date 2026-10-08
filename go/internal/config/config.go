@@ -109,7 +109,7 @@ type Relay struct {
 
 // Defaults, matching the Python engine.
 const (
-	DefaultStreamWindow    = 256 << 10
+	DefaultStreamWindow    = 1 << 20 // 1 MiB starting window per stream
 	DefaultMaxStreamWindow = 8 << 20
 	DefaultChunk           = 64 << 10
 	DefaultKeepalive       = 25

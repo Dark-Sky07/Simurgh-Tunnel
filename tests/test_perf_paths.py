@@ -15,7 +15,7 @@ import pytest
 
 from simurgh.carriers import ByteFrameChannel, HEADER_LEN_FIELD
 from simurgh.mux import Mux, Stream
-from simurgh.protocol import (HEADER, T_DATA, T_PONG, T_WIN, frame_sid,
+from simurgh.protocol import (DEFAULT_GLOBAL_WINDOW,HEADER, T_DATA, T_PONG, T_WIN, frame_sid,
                               frame_type, make_frame)
 from test_mux import MemoryChannel
 
@@ -166,12 +166,34 @@ async def test_the_window_never_grows_past_the_ceiling():
     assert stream.window == 512 * KIB
 
 
-async def test_a_stream_that_falls_behind_shrinks_its_window():
+async def test_a_busy_stream_keeps_its_window_even_when_it_looks_behind():
+    """Regression: halving the window of every busy-but-slow stream collapsed a
+    whole tunnel connection once dozens of users shared it.
+
+    A stream whose own client is slow is not a reason to shrink: the shared
+    credit budget bounds the memory, and a small window throttles everyone on
+    the connection (one user gets ``window / RTT``, not the link).
+    """
     _channel, _mux, stream = _tuned_stream()
     stream.window = 2 * KIB * KIB
-    _feed(stream, 3_000_000, 0.2, backlog=stream.window)
+    _feed(stream, 1_000_000, 0.2, backlog=stream.window)
     assert stream._autotune() == 0
-    assert stream.window == 1 * KIB * KIB  # half, never below the base
+    assert stream.window == 2 * KIB * KIB   # untouched: the client is the limit
+
+
+async def test_the_shared_ceiling_follows_the_current_windows():
+    channel, _peer = MemoryChannel.pair()
+    mux = Mux(channel, is_relay=True, stream_window=256 * KIB)
+    assert mux._global_window() == DEFAULT_GLOBAL_WINDOW          # the floor
+    stream = Stream(mux, 1)
+    mux.streams[1] = stream
+    mux.window_sum += stream.window
+    stream._set_window(32 * KIB * KIB)                            # it grew
+    assert mux._global_window() == 32 * KIB * KIB                 # above the floor
+    assert mux.window_sum == 32 * KIB * KIB
+    mux.drop_stream(1)                                            # and back
+    assert mux.window_sum == 0
+    assert mux._global_window() == DEFAULT_GLOBAL_WINDOW
 
 
 async def test_an_idle_window_falls_back_towards_the_base():

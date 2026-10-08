@@ -21,8 +21,17 @@ CARRIERS = ("tls", "wss", "raw", "plain")
 
 #: which data plane runs the relay/exit role. Both speak the same wire
 #: protocol, so switching is a config change (see docs/CONFIGURATION.md).
+#: The compiled engine is the default: it uses every core and costs about an
+#: eighth of the CPU per gigabyte, which is what busy relays need. When its
+#: binary is missing the CLI says so and runs the Python engine instead.
+#: Transfer defaults for the compiled engine.  Its window growth is rate based
+#: (see Mux._autotune), so a small starting window never grows on a fast path;
+#: the Python engine grows happily from 256 KiB and keeps its memory smaller.
+GO_STREAM_WINDOW = 1024 * 1024
+GO_MAX_STREAM_WINDOW = 8 * 1024 * 1024
+
 ENGINES = ("python", "go")
-DEFAULT_ENGINE = "python"
+DEFAULT_ENGINE = "go"
 PROXY_PROTOCOLS = ("off", "v1", "v2")
 LOG_LEVELS = ("debug", "info", "warning", "error")
 
@@ -164,7 +173,7 @@ class ExitConfig:
     #: flow control: base receive window per stream, and the ceiling the
     #: adaptive window may grow to while a stream keeps draining fast
     stream_window: int = 256 * 1024
-    max_stream_window: int = 16 * 1024 * 1024
+    max_stream_window: int = 8 * 1024 * 1024
     chunk: int = 65536
     #: reverse mode: how many tunnel connections this exit opens to the relay
     connections: int = 1
@@ -230,11 +239,13 @@ def load_exit(path: str | Path) -> ExitConfig:
     cfg.speedtest_port = int(data.get("speedtest_port", 8808))
     cfg.proxy_protocol = str(data.get("proxy_protocol", "off"))
     cfg.log_level = str(data.get("log_level", "info"))
-    cfg.stream_window = max(16 * 1024, int(data.get("stream_window", 256 * 1024)))
-    cfg.max_stream_window = max(cfg.stream_window,
-                                int(data.get("max_stream_window", 16 * 1024 * 1024)))
     cfg.chunk = max(4096, min(1024 * 1024, int(data.get("chunk", 65536))))
     cfg.engine = _engine_from(data)
+    cfg.stream_window = max(16 * 1024,
+                            int(data.get("stream_window", _default_start_window(cfg.engine))))
+    cfg.max_stream_window = max(cfg.stream_window,
+                                int(data.get("max_stream_window",
+                                             _default_max_window(cfg.engine))))
     cfg.connections = max(1, min(16, int(data.get("connections", 1))))
     listen = data.get("listen") or []
     for item in listen:
@@ -327,7 +338,7 @@ class RelayConfig:
     accept_push: bool = True
     keepalive: int = 25
     stream_window: int = 256 * 1024
-    max_stream_window: int = 16 * 1024 * 1024
+    max_stream_window: int = 8 * 1024 * 1024
     chunk: int = 65536
     #: how many tunnel connections to keep open to the exit (1 = one tunnel).
     #: Several connections beat a single TCP flow on a long, lossy path and
@@ -410,6 +421,15 @@ class RelayConfig:
         return d
 
 
+def _default_start_window(engine: str) -> int:
+    """Engine-appropriate starting window for configs that do not name one."""
+    return GO_STREAM_WINDOW if engine == "go" else 256 * 1024
+
+
+def _default_max_window(engine: str) -> int:
+    return GO_MAX_STREAM_WINDOW if engine == "go" else 8 * 1024 * 1024
+
+
 def _engine_from(data: dict) -> str:
     """The data plane named in the config, defaulting to the Python engine."""
     engine = str(data.get("engine", DEFAULT_ENGINE)).strip().lower()
@@ -446,12 +466,14 @@ def load_relay(path: str | Path) -> RelayConfig:
     cfg.name = str(data.get("name") or "")
     cfg.accept_push = bool(data.get("accept_push", True))
     cfg.keepalive = int(data.get("keepalive", 25))
-    cfg.stream_window = max(16 * 1024, int(data.get("stream_window", 256 * 1024)))
-    cfg.max_stream_window = max(cfg.stream_window,
-                                int(data.get("max_stream_window", 16 * 1024 * 1024)))
     cfg.chunk = max(4096, min(1024 * 1024, int(data.get("chunk", 65536))))
     cfg.connections = max(1, min(16, int(data.get("connections", 1))))
     cfg.engine = _engine_from(data)
+    cfg.stream_window = max(16 * 1024,
+                            int(data.get("stream_window", _default_start_window(cfg.engine))))
+    cfg.max_stream_window = max(cfg.stream_window,
+                                int(data.get("max_stream_window",
+                                             _default_max_window(cfg.engine))))
     cfg.speedtest_port = int(data.get("speedtest_port", 0))
     cfg.log_level = str(data.get("log_level", "info"))
     cfg.panel_port = int(data.get("panel_port", 8787))
