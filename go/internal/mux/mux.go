@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	openTimeout     = 20 * time.Second
-	windowEvalMin   = 50 * time.Millisecond
-	defaultRTT      = 120 * time.Millisecond
-	pingTimeout = 30 * time.Second
+	openTimeout   = 20 * time.Second
+	windowEvalMin = 50 * time.Millisecond
+	defaultRTT    = 120 * time.Millisecond
+	pingTimeout   = 30 * time.Second
 )
 
 // Channel is one tunnel connection: framed, authenticated, ordered.
@@ -374,17 +374,17 @@ func (m *Mux) drop(sid uint32) {
 
 func newStream(m *Mux, sid uint32, mode byte, target []byte) *Stream {
 	s := &Stream{
-		Mux:         m,
-		ID:          sid,
-		Mode:        mode,
-		Target:      append([]byte(nil), target...),
-		window:      m.streamWindow,
-		baseWindow:  m.streamWindow,
-		maxWindow:   m.maxStreamWindow,
-		sendCredit:  m.streamWindow,
-		peerCredit:  m.streamWindow,
-		rateStart:   time.Now(),
-		openDone:    make(chan struct{}),
+		Mux:        m,
+		ID:         sid,
+		Mode:       mode,
+		Target:     append([]byte(nil), target...),
+		window:     m.streamWindow,
+		baseWindow: m.streamWindow,
+		maxWindow:  m.maxStreamWindow,
+		sendCredit: m.streamWindow,
+		peerCredit: m.streamWindow,
+		rateStart:  time.Now(),
+		openDone:   make(chan struct{}),
 	}
 	s.qcond = sync.NewCond(&s.qmu)
 	return s

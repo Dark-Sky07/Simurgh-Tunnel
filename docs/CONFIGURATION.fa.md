@@ -270,5 +270,8 @@ journalctl -u simurgh-relay -f          # یا: simurgh logs -f
 | `SIMURGH_REF` / `--ref` | رِفی که نصاب دانلود می‌کند (برنچ یا تگ) |
 | `SIMURGH_REPO` | آدرس مخزن جایگزین |
 | `SIMURGH_SRC`، `SIMURGH_VENV` | محل سورس و محیط مجازی |
+| `SIMURGH_GO_BIN` | مسیر کامل باینری کامپایل‌شدهٔ `simurgh-go` اگر جای غیرمعمول باشد (سرویس خودش `simurgh-go` را روی `PATH` پیدا می‌کند) |
+| `SIMURGH_ENGINE` / `--engine` | میان‌بر نصاب برای `--engine go\|python\|auto` |
+| `GO_BIN`، `SIMURGH_GO_VERSION` | تول‌چین مورد استفادهٔ `tools/build-go.sh` (مسیر دلخواه / نسخهٔ دانلودی) |
 
 </div>

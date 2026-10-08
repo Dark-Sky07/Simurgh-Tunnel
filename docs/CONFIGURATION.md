@@ -269,3 +269,6 @@ journalctl -u simurgh-relay -f          # or: simurgh logs -f
 | `SIMURGH_REF` / `--ref` | git ref the installer downloads (branch or tag) |
 | `SIMURGH_REPO` | alternative repository URL |
 | `SIMURGH_SRC`, `SIMURGH_VENV` | source and virtualenv locations |
+| `SIMURGH_GO_BIN` | full path of the compiled `simurgh-go` binary when it lives somewhere unusual (the service finds `simurgh-go` on `PATH` by itself) |
+| `SIMURGH_ENGINE` / `--engine` | installer shortcut for `--engine go\|python\|auto` |
+| `GO_BIN`, `SIMURGH_GO_VERSION` | toolchain used by `tools/build-go.sh` (path override / version to download) |

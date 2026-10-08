@@ -19,7 +19,7 @@ import (
 // Exit is the foreign side: it accepts tunnel connections (direct mode) or
 // dials the relay (reverse mode) and connects streams to the real services.
 type Exit struct {
-	cfg *config.Exit
+	cfg  *config.Exit
 	home string
 
 	mu        sync.Mutex

@@ -21,13 +21,13 @@ type stateWriter struct {
 	role     string
 	interval time.Duration
 
-	mu       sync.Mutex
-	lastAt   time.Time
-	lastIn   int64
-	lastOut  int64
-	inRate   float64
-	outRate  float64
-	series   []map[string]any
+	mu      sync.Mutex
+	lastAt  time.Time
+	lastIn  int64
+	lastOut int64
+	inRate  float64
+	outRate float64
+	series  []map[string]any
 }
 
 func newStateWriter(home, role string, interval time.Duration) *stateWriter {

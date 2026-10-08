@@ -139,3 +139,22 @@ def test_silly_performance_values_are_clamped_not_fatal(home):
     assert back.chunk >= 4 * 1024
     assert back.stream_window >= 16 * 1024          # window has a sane floor
     assert back.max_stream_window >= back.stream_window
+
+
+def test_engine_key_round_trips_and_defaults_to_python(home):
+    """The data plane is a config choice; unknown names are rejected."""
+    from simurgh.config import ConfigError, ExitEndpoint
+    cfg = RelayConfig(token="tok", name="relay", engine="go",
+                      exit=ExitEndpoint(carrier="tls", address="198.51.100.7", port=443))
+    save_relay(cfg, home.relay_cfg)
+    assert load_relay(home.relay_cfg).engine == "go"
+    assert RelayConfig(token="tok").engine == "python"
+
+    home.relay_cfg.write_text(
+        home.relay_cfg.read_text().replace('engine = "go"', 'engine = "brainfuck"'))
+    try:
+        load_relay(home.relay_cfg)
+    except ConfigError as exc:
+        assert "engine" in str(exc)
+    else:                                            # pragma: no cover
+        raise AssertionError("a bogus engine must be refused")
