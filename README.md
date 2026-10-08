@@ -140,6 +140,7 @@ CDN, no external fonts.
 
 * [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — every key of `exit.toml` / `relay.toml`, carriers, mappings, pool, systemd units
 * [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — symptoms, causes, fixes
+* [tools/latency_bench.py](tools/latency_bench.py) — reproduce every throughput number above on your own machine (`python tools/latency_bench.py 60 40 tls --connections 4`)
 * [README.fa.md](README.fa.md) — the Persian version of this page (توضیح فارسی)
 
 ## Development

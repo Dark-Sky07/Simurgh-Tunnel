@@ -140,6 +140,7 @@ simurgh uninstall --purge        # حذف کامل
 ## مستندات
 
 * [docs/CONFIGURATION.fa.md](docs/CONFIGURATION.fa.md) — همهٔ کلیدهای `exit.toml` و `relay.toml`، حامل‌ها، mapping، pool، سرویس‌های systemd
+* [tools/latency_bench.py](tools/latency_bench.py) — بازتولید همهٔ عددهای سرعت بالا روی ماشین خودتان (`python tools/latency_bench.py 60 40 tls --connections 4`)
 * [docs/TROUBLESHOOTING.fa.md](docs/TROUBLESHOOTING.fa.md) — نشانه‌ها، علت‌ها و راه‌حل‌ها
 * [README.md](README.md) — نسخهٔ انگلیسی همین صفحه
 
