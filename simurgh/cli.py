@@ -345,7 +345,9 @@ def cmd_service(args) -> int:
     from . import systemd
 
     action = _SYSTEMCTL_ACTION.get(args.service_action, args.service_action)
-    names = _service_names(args.role)
+    home = Home(args.home)
+    role = _detect_role(home, args.role)
+    names = _service_names(role)
     if action == "status":
         rows = []
         for name in names:
@@ -354,8 +356,6 @@ def cmd_service(args) -> int:
             sub = state.get("SubState", "")
             enabled = state.get("UnitFileState", "")
             rows.append((name, active, sub, enabled))
-        home = Home(args.home)
-        role = args.role
         cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
         print(f"{__product__} v{__version__}   ({role})")
         print(f"  home:   {home.path}")
@@ -691,8 +691,9 @@ def cmd_status(args) -> int:
 
 def cmd_logs(args) -> int:
     home = Home(args.home)
+    role = args.role if args.role == "panel" else _detect_role(home, args.role)
     name = {"exit": home.exit_log, "relay": home.relay_log,
-            "panel": home.panel_log}.get(args.role, home.relay_log)
+            "panel": home.panel_log}.get(role, home.relay_log)
     if not name.exists():
         _err(f"no log file: {name}")
         return 1
@@ -725,6 +726,10 @@ def cmd_logs(args) -> int:
 
 def cmd_speedtest(args) -> int:
     home = _home_or_fail(args)
+    if _detect_role(home, None) == "exit" and not home.relay_cfg.exists():
+        _err("the speed test runs on the Iranian (relay) side; on the exit it only "
+             "needs speedtest_port to stay open (localhost).")
+        return 2
     cfg = _load_relay_or_fail(home)
     from .relay import RelayNode
     from .speedtest import run_speedtest
@@ -851,6 +856,36 @@ def cmd_join(args) -> int:
     return 0
 
 
+def _detect_role(home: Home, role: str | None) -> str:
+    """Resolve the role from ``--role``, or from whichever config exists.
+
+    Installations normally have exactly one config file, so commands like
+    ``status``, ``logs``, ``doctor`` and ``web`` do not need ``--role``.
+    """
+    if role in ("exit", "relay"):
+        return role
+    exit_cfg, relay_cfg = home.exit_cfg.exists(), home.relay_cfg.exists()
+    if exit_cfg and not relay_cfg:
+        return "exit"
+    if relay_cfg and not exit_cfg:
+        return "relay"
+    return "relay"
+
+
+def _service_running(home: Home, role: str) -> bool:
+    """True when this installation's service is alive.
+
+    ``state.json`` is rewritten every three seconds while a node runs, so a
+    recent timestamp is a reliable "yes, this home is up" signal.
+    """
+    try:
+        data = json.loads(home.state.read_text())
+        updated = float(data.get("updated") or 0)
+    except (OSError, ValueError):
+        return False
+    return bool(data.get(role)) and (time.time() - updated) < 15
+
+
 def cmd_doctor(args) -> int:
     """Diagnose the usual reasons a tunnel does not come up."""
     home = Home(args.home)
@@ -860,34 +895,57 @@ def cmd_doctor(args) -> int:
         _err(f"installation folder not found: {home.path}")
         return 2
 
-    role = args.role
+    role = _detect_role(home, args.role)
     cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
     if not cfg_path.exists():
         _err(f"config file not found: {cfg_path}")
         return 2
-    _ok(f"config: {cfg_path}")
+    _ok(f"config: {cfg_path}  (role: {role})")
+    running = _service_running(home, role)
+    if running:
+        _ok(f"the {role} service is running")
 
     if role == "exit":
         cfg = _load_exit_or_fail(home)
         if not cfg.token:
             _err("the token is empty.")
             problems += 1
-        for spec in cfg.listen:
-            if not spec.enabled:
-                continue
+        reverse = [s for s in cfg.listen if s.enabled and s.reverse]
+        listening = [s for s in cfg.listen if s.enabled and not s.reverse]
+        if reverse:
+            _info("reverse mode: the relay listens, this server dials it")
+        for spec in reverse:
+            try:
+                with socket.create_connection((spec.dial, spec.port), timeout=5):
+                    _ok(f"relay reachable: {spec.carrier}://{spec.dial}:{spec.port}")
+            except OSError as exc:
+                _err(f"cannot reach the relay {spec.dial}:{spec.port}: {exc}")
+                problems += 1
+            if not (spec.fingerprint or spec.insecure_skip_verify):
+                _warn("no fingerprint pinned for the relay certificate "
+                      "(set fingerprint in [[listen]] once you have it)")
+        for spec in listening:
             if free_port(spec.port, spec.host):
                 _ok(f"port {spec.carrier}://{spec.host}:{spec.port} is free")
+            elif running:
+                _ok(f"port {spec.host}:{spec.port} is in use by our service")
             else:
                 _warn(f"port {spec.host}:{spec.port} is already in use")
-        for path, label in ((cfg.cert_file, "certificate"), (cfg.key_file, "key")):
-            if path and Path(path).exists():
-                _ok(f"{label}: {path}")
-            elif path:
-                _warn(f"{label} not found: {path}")
+        if not (reverse or listening):
+            _err("no enabled tunnel endpoint in exit.toml")
+            problems += 1
+        if listening:
+            for path, label in ((cfg.cert_file, "certificate"), (cfg.key_file, "key")):
+                if path and Path(path).exists():
+                    _ok(f"{label}: {path}")
+                elif path:
+                    _warn(f"{label} not found: {path}")
         from . import systemd
 
         if systemd.available():
             _ok("systemd is available")
+        elif running:
+            _ok("running without systemd")
         else:
             _warn("no systemd; start it manually: simurgh exit")
         return 0 if problems == 0 else 1
@@ -898,24 +956,56 @@ def cmd_doctor(args) -> int:
         problems += 1
     else:
         _ok(f"token: {cfg.token[:6]}…{cfg.token[-4:]}")
-    addresses = [(ep.address, ep.port, ep.describe()) for ep in cfg.endpoints()]
-    if not addresses:
-        _err("no foreign server is configured.")
-        problems += 1
-    for host, port, desc in addresses:
-        try:
-            with socket.create_connection((host, port), timeout=5):
-                _ok(f"TCP reachable: {desc}")
-        except OSError as exc:
-            _err(f"cannot reach {desc}: {exc}")
+    if cfg.reverse:
+        spec = cfg.tunnel
+        _info("reverse mode: this server listens and the foreign exit dials it")
+        if not spec.enabled:
+            _err("the [tunnel] listener is disabled.")
             problems += 1
+        elif free_port(spec.port, spec.host):
+            _warn(f"nothing is listening on {spec.host}:{spec.port} yet "
+                  "(is the service running?)")
+        else:
+            _ok(f"port {spec.host}:{spec.port} is in use"
+                + (" by our service" if running else " (another program?)"))
+        if spec.carrier in ("tls", "wss"):
+            cert = spec.cert_file or str(Path(home.path) / "cert" / "cert.pem")
+            if Path(cert).exists():
+                try:
+                    from .certs import fingerprint_of
+
+                    _ok(f"certificate fingerprint: {fingerprint_of(cert)}")
+                    _info("the exit must pin this fingerprint (it arrives in the "
+                          "setup link)")
+                except Exception as exc:               # pragma: no cover
+                    _warn(f"could not read the certificate: {exc}")
+            else:
+                _warn(f"certificate not found yet: {cert} "
+                      "(it is created when the service starts)")
+    else:
+        addresses = [(ep.address, ep.port, ep.describe()) for ep in cfg.endpoints()]
+        if not addresses:
+            _err("no foreign server is configured.")
+            problems += 1
+        for host, port, desc in addresses:
+            try:
+                with socket.create_connection((host, port), timeout=5):
+                    _ok(f"TCP reachable: {desc}")
+            except OSError as exc:
+                _err(f"cannot reach {desc}: {exc}")
+                problems += 1
     for m in cfg.mappings:
         if free_port(m.listen, m.listen_host):
             _ok(f"port {m.listen} is free → {m.target_host}:{m.target_port}")
+        elif running:
+            _ok(f"port {m.listen} is in use by our service → "
+                f"{m.target_host}:{m.target_port}")
         else:
             _warn(f"port {m.listen} is in use (maybe our own service or another one)")
     if free_port(cfg.panel_port):
         _ok(f"panel port {cfg.panel_port} is free")
+    elif running:
+        _ok(f"panel port {cfg.panel_port} is in use by our service")
     else:
         _warn(f"panel port {cfg.panel_port} is in use")
     return 0 if problems == 0 else 1
@@ -923,8 +1013,10 @@ def cmd_doctor(args) -> int:
 
 def cmd_web(args) -> int:
     home = _home_or_fail(args)
-    cfg = _load_relay_or_fail(home) if args.role == "relay" else _load_exit_or_fail(home)
-    port = args.port or (cfg.panel_port if args.role == "relay" else RELAY_DEFAULT_PANEL)
+    role = _detect_role(home, args.role)
+    args.role = role
+    cfg = _load_relay_or_fail(home) if role == "relay" else _load_exit_or_fail(home)
+    port = args.port or (cfg.panel_port if role == "relay" else RELAY_DEFAULT_PANEL)
     host = args.host
     user, password = _panel_credentials(home)
     from .panel import Panel
@@ -1053,7 +1145,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("up", help="start the service")
-    p.add_argument("--role", choices=("exit", "relay"), default="relay")
+    p.add_argument("--role", choices=("exit", "relay"), default=None, help="exit | relay (auto-detected by default)")
     p.add_argument("--fg", action="store_true", help="run in the terminal (no systemd)")
     p.set_defaults(func=lambda a: cmd_run(argparse.Namespace(
         role=a.role, home=a.home, verbose=False, no_panel=False,
@@ -1068,7 +1160,7 @@ def build_parser() -> argparse.ArgumentParser:
                              ("disable", "do not start at boot"),
                              ("status", "service status")):
         p = sub.add_parser(action, help=helptext)
-        p.add_argument("--role", choices=("exit", "relay"), default="relay")
+        p.add_argument("--role", choices=("exit", "relay"), default=None, help="exit | relay (auto-detected by default)")
         p.add_argument("--json", action="store_true")
         p.set_defaults(func=cmd_service, service_action=action)
 
@@ -1084,7 +1176,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_mapping)
 
     p = sub.add_parser("logs", help="show the log")
-    p.add_argument("--role", choices=("exit", "relay", "panel"), default="relay")
+    p.add_argument("--role", choices=("exit", "relay", "panel"), default=None, help="exit | relay (auto-detected by default)")
     p.add_argument("-n", "--lines", type=int, default=80)
     p.add_argument("-f", "--follow", action="store_true")
     p.set_defaults(func=cmd_logs)
@@ -1108,11 +1200,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_join)
 
     p = sub.add_parser("doctor", help="health check and diagnostics")
-    p.add_argument("--role", choices=("exit", "relay"), default="relay")
+    p.add_argument("--role", choices=("exit", "relay"), default=None, help="exit | relay (auto-detected by default)")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("web", help="run only the web panel")
-    p.add_argument("--role", choices=("exit", "relay"), default="relay")
+    p.add_argument("--role", choices=("exit", "relay"), default=None, help="exit | relay (auto-detected by default)")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=0)
     p.set_defaults(func=cmd_web)

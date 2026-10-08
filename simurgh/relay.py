@@ -101,10 +101,26 @@ class RelayNode:
             self.last_error = "the tunnel listener is disabled"
             log.error("%s", self.last_error)
             return
+        cert_file, key_file = spec.cert_file, spec.key_file
+        if spec.carrier in ("tls", "wss") and not (cert_file and key_file):
+            if not spec.cert_auto:
+                self.last_error = ("carrier tls/wss needs a certificate: set "
+                                   "[tunnel] cert_file/key_file")
+                log.error("%s", self.last_error)
+                return
+            if self.home is None:
+                self.last_error = "no home directory to create a certificate in"
+                log.error("%s", self.last_error)
+                return
+            from .certs import ensure_certificate
+
+            cert_file, key_file = ensure_certificate(self.home,
+                                                     self.cfg.name or "simurgh.local")
+            spec.cert_file, spec.key_file = cert_file, key_file
         loop = asyncio.get_running_loop()
         carrier = ServerCarrier(
             spec.carrier, self.cfg.token,
-            cert_file=spec.cert_file, key_file=spec.key_file,
+            cert_file=cert_file, key_file=key_file,
             path=spec.path, fallback=spec.fallback,
             decoy_file=spec.decoy_file, padding=spec.padding,
         )

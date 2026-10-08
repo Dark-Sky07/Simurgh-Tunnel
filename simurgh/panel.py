@@ -937,7 +937,8 @@ async function load(){
     $('tunnel_sub').textContent = (d.panel.role==='relay')
        ? (n.current_exit || t('waiting_exit'))
        : (nTunnels ? t('relays_connected', {n:nTunnels}) : t('waiting_relay'));
-    $('exit').textContent = (d.panel.role==='relay') ? (n.current_exit || '—')
+    $('exit').textContent = (d.panel.role==='relay')
+       ? (n.current_exit || (n.tunnel_listen && n.tunnel_listen[0]) || '—')
        : ((n.exit_info && (n.exit_info.name||'-')) || '—');
     $('rtt').textContent = n.rtt_ms ? (n.rtt_ms.toFixed(1)+' ms') : '—';
     $('uptime').textContent = fmtDuration(n.uptime);
