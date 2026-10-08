@@ -1087,13 +1087,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_speedtest)
 
-    p = sub.add_parser("link", help="build the setup link for a new relay (on the exit)")
+    p = sub.add_parser("link", help="build the setup link for the other server")
     p.add_argument("--host", default="")
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--show", action="store_true", help="print just the raw link")
     p.set_defaults(func=cmd_link)
 
-    p = sub.add_parser("join", help="build the relay config from an exit link")
+    p = sub.add_parser("join", help="build the config from a setup link")
     p.add_argument("link")
     p.add_argument("--host", default="", help="override the exit address")
     p.add_argument("--timeout", type=float, default=15.0)
