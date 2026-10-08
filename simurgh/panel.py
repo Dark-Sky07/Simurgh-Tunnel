@@ -625,6 +625,7 @@ PANEL_I18N = {
         "lbl_uptime": "uptime",
         "lbl_reconnects": "reconnects",
         "lbl_tunnels": "tunnel connections",
+        "lbl_engine": "data engine",
         "lbl_last_error": "last error",
         "card_speed": "Live speed",
         "download": "download",
@@ -691,6 +692,7 @@ PANEL_I18N = {
         "lbl_uptime": "مدت اتصال",
         "lbl_reconnects": "تعداد اتصال‌ها",
         "lbl_tunnels": "اتصال‌های تونل",
+        "lbl_engine": "موتور داده",
         "lbl_last_error": "آخرین خطا",
         "card_speed": "سرعت لحظه‌ای",
         "download": "دانلود",
@@ -830,6 +832,7 @@ footer{color:var(--dim);text-align:center;padding:24px;font-size:12px}
     <div class="kv"><span data-i18n="lbl_uptime">uptime</span><span id="uptime">—</span></div>
     <div class="kv"><span data-i18n="lbl_reconnects">reconnects</span><span id="reconnects">—</span></div>
     <div class="kv"><span data-i18n="lbl_tunnels">tunnel connections</span><span id="tunnels">—</span></div>
+    <div class="kv"><span data-i18n="lbl_engine">data engine</span><span id="engine">—</span></div>
     <div class="kv"><span data-i18n="lbl_last_error">last error</span><span id="last_error">—</span></div>
   </div>
 
@@ -955,11 +958,13 @@ async function load(){
     $('reconnects').textContent = (n.reconnects!=null?n.reconnects:'—');
     $('tunnels').textContent = (n.connections!=null?n.connections:(n.tunnel_count!=null?n.tunnel_count:'—'));
     $('last_error').textContent = n.last_error || (n.error||'') || t('no_error');
-    const down = rates.in_bps||0, up = rates.out_bps||0;
+    const down = rates.in_rate||rates.in_bps||0, up = rates.out_rate||rates.out_bps||0;
     $('down').textContent = fmtRate(down); $('up').textContent = fmtRate(up);
-    $('tot_in').textContent = fmtBytes(tot.in_bytes||0); $('tot_out').textContent = fmtBytes(tot.out_bytes||0);
-    $('active').textContent = (tot.active!=null?tot.active:(n.active_conns||0));
+    $('tot_in').textContent = fmtBytes(tot.in!=null?tot.in:(rates.in_total||tot.in_bytes||0));
+    $('tot_out').textContent = fmtBytes(tot.out!=null?tot.out:(rates.out_total||tot.out_bytes||0));
+    $('active').textContent = (tot.conns!=null?tot.conns:(tot.active!=null?tot.active:(n.streams||0)));
     $('panel_port').textContent = d.panel.port; $('panel_req').textContent = d.panel.requests;
+    if($('engine')){ $('engine').textContent = (n.engine||'python').toUpperCase(); }
     series.push(down); if(series.length>90) series.shift();
     draw();
     renderMappings(n.mappings||[]);

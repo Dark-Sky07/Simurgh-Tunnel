@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CARRIERS = ("tls", "wss", "raw", "plain")
+
+#: which data plane runs the relay/exit role. Both speak the same wire
+#: protocol, so switching is a config change (see docs/CONFIGURATION.md).
+ENGINES = ("python", "go")
+DEFAULT_ENGINE = "python"
 PROXY_PROTOCOLS = ("off", "v1", "v2")
 LOG_LEVELS = ("debug", "info", "warning", "error")
 
@@ -163,11 +168,14 @@ class ExitConfig:
     chunk: int = 65536
     #: reverse mode: how many tunnel connections this exit opens to the relay
     connections: int = 1
+    #: data plane: "python" (works everywhere) or "go" (much faster)
+    engine: str = DEFAULT_ENGINE
 
     def to_dict(self) -> dict:
         d = {
             "token": self.token,
             "name": self.name,
+            "engine": self.engine,
             "cert_auto": self.cert_auto,
             "log_level": self.log_level,
             "push_enabled": self.push_enabled,
@@ -226,6 +234,7 @@ def load_exit(path: str | Path) -> ExitConfig:
     cfg.max_stream_window = max(cfg.stream_window,
                                 int(data.get("max_stream_window", 16 * 1024 * 1024)))
     cfg.chunk = max(4096, min(1024 * 1024, int(data.get("chunk", 65536))))
+    cfg.engine = _engine_from(data)
     cfg.connections = max(1, min(16, int(data.get("connections", 1))))
     listen = data.get("listen") or []
     for item in listen:
@@ -331,6 +340,8 @@ class RelayConfig:
     #: (the foreign server connects to us -- reverse mode).
     dial: str = "relay"
     tunnel: TunnelSpec = field(default_factory=TunnelSpec)
+    #: data plane: "python" (works everywhere) or "go" (much faster)
+    engine: str = DEFAULT_ENGINE
 
     @property
     def reverse(self) -> bool:
@@ -345,6 +356,7 @@ class RelayConfig:
         d = {
             "token": self.token,
             "name": self.name,
+            "engine": self.engine,
             "accept_push": self.accept_push,
             "keepalive": self.keepalive,
             "stream_window": self.stream_window,
@@ -398,6 +410,14 @@ class RelayConfig:
         return d
 
 
+def _engine_from(data: dict) -> str:
+    """The data plane named in the config, defaulting to the Python engine."""
+    engine = str(data.get("engine", DEFAULT_ENGINE)).strip().lower()
+    if engine not in ENGINES:
+        raise ConfigError(f"unknown engine {engine!r} (use 'python' or 'go')")
+    return engine
+
+
 def _endpoint_from(data: dict) -> ExitEndpoint:
     carrier = str(data.get("carrier", "tls")).lower()
     if carrier not in CARRIERS:
@@ -431,6 +451,7 @@ def load_relay(path: str | Path) -> RelayConfig:
                                 int(data.get("max_stream_window", 16 * 1024 * 1024)))
     cfg.chunk = max(4096, min(1024 * 1024, int(data.get("chunk", 65536))))
     cfg.connections = max(1, min(16, int(data.get("connections", 1))))
+    cfg.engine = _engine_from(data)
     cfg.speedtest_port = int(data.get("speedtest_port", 0))
     cfg.log_level = str(data.get("log_level", "info"))
     cfg.panel_port = int(data.get("panel_port", 8787))
