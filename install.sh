@@ -82,6 +82,8 @@ main options:
   --tunnel-port PORT         reverse mode: the tunnel port on THIS server
   --mapping L1:T1,L2:T2      relay port forwardings, e.g. 443:443
   --panel-port PORT          web panel port on the relay
+  --connections N            tunnel connections to keep open (2-16, default 1):
+                             better speed and resilience on long paths
   --yes                      accept everything without asking
   --no-systemd               do not create a systemd service (run manually)
   --ref REF                  git ref to download when the source is missing
@@ -106,6 +108,7 @@ while [ $# -gt 0 ]; do
     --listen|-l)   LISTEN="${2:-}"; shift 2 ;;
     --mapping|-m)  MAPPING="${2:-}"; shift 2 ;;
     --panel-port)  PANEL_PORT="${2:-}"; shift 2 ;;
+    --connections) CONNECTIONS="${2:-}"; shift 2 ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
     --no-systemd)  NO_SYSTEMD=1; shift ;;
     --ref)         REF="${2:-main}"; shift 2 ;;
@@ -242,6 +245,7 @@ ARGS=(--force)
 [ -n "$INSECURE" ]    && ARGS+=("$INSECURE")
 [ -n "$LISTEN" ]      && ARGS+=(--listen "$LISTEN")
 [ -n "$PANEL_PORT" ]  && ARGS+=(--panel-port "$PANEL_PORT")
+[ -n "$CONNECTIONS" ] && ARGS+=(--connections "$CONNECTIONS")
 if [ -n "$MAPPING" ]; then
   IFS=',' read -ra _maps <<< "$MAPPING"
   for m in "${_maps[@]}"; do ARGS+=(--mapping "$m"); done

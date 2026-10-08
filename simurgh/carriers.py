@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
 import hmac
 import os
 import struct
@@ -34,6 +35,7 @@ log = get_logger("simurgh.carrier")
 
 VERSION = 1
 AUTH_WINDOW = 180.0          # tolerated clock skew, seconds
+_stamp_counter = itertools.count()
 HEADER_LEN_FIELD = struct.Struct(">I")
 MAX_FRAME = 16 * 1024 * 1024
 
@@ -46,8 +48,23 @@ def auth_key(token: str) -> bytes:
     return hashlib.sha256(b"simurgh/v2/token|" + token.encode("utf-8")).digest()
 
 
+#: how many distinct seconds of "future" one client may spread its stamps over
+STAMP_SPREAD = 120
+
+
+def client_timestamp() -> int:
+    """A timestamp that is unique per connection.
+
+    Two tunnels opened in the same second would otherwise carry byte-identical
+    headers, and the server's replay cache would (correctly) drop the second
+    one.  The server tolerates ``AUTH_WINDOW`` of clock skew, so every attempt
+    gets its own second inside that window instead.
+    """
+    return int(time.time()) + next(_stamp_counter) % STAMP_SPREAD
+
+
 def client_header(token: str, ts: int | None = None) -> bytes:
-    ts = int(time.time()) if ts is None else ts
+    ts = client_timestamp() if ts is None else ts
     key = auth_key(token)
     mac = hmac.new(key, b"simurgh/v2/c" + struct.pack(">Q", ts), hashlib.sha256).digest()[:16]
     return struct.pack(">BQ", VERSION, ts) + mac          # 25 bytes
@@ -325,8 +342,21 @@ class BaseChannel:
     async def read_frame(self) -> bytes:
         raise NotImplementedError
 
+    async def read_frames(self, max_n: int = 64) -> list[bytes]:
+        """Every frame that is already buffered (at least the next one).
+
+        Reading a whole batch costs one coroutine step instead of one per
+        frame, which is most of what a busy tunnel pays the event loop.
+        """
+        frame = await self.read_frame()
+        return [frame] if frame else []
+
     def write_frame(self, frame: bytes) -> None:
         raise NotImplementedError
+
+    def write_data(self, hdr: bytes, payload: bytes) -> None:
+        """One DATA frame; channels override this to skip a payload copy."""
+        self.write_frame(hdr + payload)
 
     async def drain(self) -> None:
         pass
@@ -380,8 +410,44 @@ class ByteFrameChannel(BaseChannel):
         del self._buf[:4 + n]
         return frame
 
+    async def read_frames(self, max_n: int = 64) -> list[bytes]:
+        """Pull every complete frame out of the buffer in one go."""
+        buf = self._buf
+        frames: list[bytes] = []
+        pos = 0
+        while len(frames) < max_n:
+            if len(buf) - pos < 4:
+                if frames:
+                    break               # keep latency: dispatch what we have
+                await self._need(4)
+                continue
+            (n,) = HEADER_LEN_FIELD.unpack_from(buf, pos)
+            if n > MAX_FRAME:
+                raise ConnectionError(f"frame too large: {n}")
+            end = pos + 4 + n
+            if len(buf) < end:
+                if frames:
+                    break
+                await self._need(end)
+                continue
+            frames.append(bytes(buf[pos + 4:end]))
+            pos = end
+        if pos:
+            del buf[:pos]
+        return frames
+
     def write_frame(self, frame: bytes) -> None:
         self.stream.write(HEADER_LEN_FIELD.pack(len(frame)) + frame)
+
+    def write_data(self, hdr: bytes, payload: bytes) -> None:
+        """Length + header in one small write, payload in another.
+
+        The transport buffers both into the same packet, so the payload is
+        built once on the way out instead of being concatenated twice.
+        """
+        self.stream.write(HEADER_LEN_FIELD.pack(len(hdr) + len(payload)) + hdr)
+        if payload:
+            self.stream.write(payload)
 
     async def drain(self) -> None:
         await self.stream.drain()
@@ -639,7 +705,7 @@ async def client_connect(carrier: str, host: str, port: int, token: str, *,
 
     if carrier == "plain":
         conn = await tcp_connect(host, port, connect_timeout)
-        ts = int(time.time())
+        ts = client_timestamp()
         conn.write(client_header(token, ts))
         await conn.drain()
         resp = await asyncio.wait_for(conn.read_exactly(25), connect_timeout)
@@ -660,7 +726,7 @@ async def client_connect(carrier: str, host: str, port: int, token: str, *,
         await tls.handshake(connect_timeout)
         if cert_fingerprint:
             verify_pin(tls, cert_fingerprint)
-        ts = int(time.time())
+        ts = client_timestamp()
         if carrier == "tls":
             # The auth header travels as raw bytes right after the TLS
             # handshake (Trojan style); frames follow it.

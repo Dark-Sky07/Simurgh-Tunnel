@@ -189,6 +189,7 @@ def _init_exit(home: Home, args) -> int:
     cfg = ExitConfig(
         token=token, name=name, cert_auto=True, push_ports=ports,
         speedtest_port=EXIT_DEFAULT_SPEEDTEST,
+        connections=max(0, int(getattr(args, "connections", 0) or 0)) or 1,
     )
     cfg.listen = listen or [ListenSpec(carrier="tls", port=443, path="/ws")]
     try:
@@ -229,6 +230,7 @@ def _init_relay(home: Home, args) -> int:
         )
         cfg = RelayConfig(token=token, name=name, panel_port=panel_port,
                           dial="exit", tunnel=tunnel_cfg)
+        cfg.connections = max(0, int(getattr(args, "connections", 0) or 0)) or 1
     else:
         exit_host = args.exit_host or _ask("foreign server address (IP or domain)")
         if not exit_host:
@@ -245,6 +247,7 @@ def _init_relay(home: Home, args) -> int:
                               insecure_skip_verify=args.insecure,
                               fingerprint=args.fingerprint),
         )
+        cfg.connections = max(0, int(getattr(args, "connections", 0) or 0)) or 1
     mappings = []
     for spec in args.mapping or []:
         try:
@@ -1105,6 +1108,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dial", choices=("relay", "exit"), default="relay",
                    help="who dials the tunnel: relay (default) or exit (reverse)")
     p.add_argument("--tunnel-host", default="", help="reverse: the address we listen on")
+    p.add_argument("--connections", type=int, default=0,
+                   help="tunnel connections to keep open (2-16 help on long, lossy paths)")
     p.add_argument("--mapping", action="append", help="initial mapping: 443:443")
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--user", default="")
@@ -1129,6 +1134,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dial", choices=("relay", "exit"), default="relay",
                    help="who dials the tunnel: relay (default) or exit (reverse)")
     p.add_argument("--tunnel-host", default="", help="reverse: the address we listen on")
+    p.add_argument("--connections", type=int, default=0,
+                   help="tunnel connections to keep open (2-16 help on long, lossy paths)")
     p.add_argument("--mapping", action="append")
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--force", action="store_true")

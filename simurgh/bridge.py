@@ -145,8 +145,12 @@ class Bridge(asyncio.Protocol):
                 except Exception:
                     pass
                 return
-            chunk = bytes(self.buf[:n])
-            del self.buf[:n]
+            if n >= len(self.buf):
+                chunk = bytes(self.buf)     # whole buffer: no memmove needed
+                self.buf.clear()
+            else:
+                chunk = bytes(memoryview(self.buf)[:n])
+                del self.buf[:n]
             s.write_now(chunk)
         try:
             if self.transport is not None:

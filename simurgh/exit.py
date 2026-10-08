@@ -69,13 +69,18 @@ class ExitNode:
             if not spec.enabled:
                 continue
             if spec.reverse:
-                # reverse mode: the relay listens, we dial it and keep it up
+                # reverse mode: the relay listens, we dial it and keep it up.
+                # ``connections`` dials several tunnels so one flow between the
+                # two servers is not the ceiling for every user at once.
+                total = max(1, min(16, self.cfg.connections))
                 self.reach_out.append(spec.endpoint())
-                task = asyncio.ensure_future(self._dial_supervisor(spec))
-                self._dial_tasks.add(task)
-                task.add_done_callback(self._dial_tasks.discard)
-                log.info("dialling the relay at %s:%s (%s)", spec.dial, spec.port,
-                         spec.carrier)
+                for slot in range(total):
+                    task = asyncio.ensure_future(self._dial_supervisor(spec, slot))
+                    self._dial_tasks.add(task)
+                    task.add_done_callback(self._dial_tasks.discard)
+                log.info("dialling the relay at %s:%s (%s)%s", spec.dial, spec.port,
+                         spec.carrier,
+                         f" x{total}" if total > 1 else "")
                 continue
             carrier = ServerCarrier(
                 spec.carrier, self.cfg.token,
@@ -121,9 +126,11 @@ class ExitNode:
         self.connected_at = None
         await asyncio.sleep(0)
 
-    async def _dial_supervisor(self, spec) -> None:
+    async def _dial_supervisor(self, spec, slot: int = 0) -> None:
         """Keep one outbound tunnel to the relay alive (reverse mode)."""
         backoff = 0.5
+        if slot:
+            await asyncio.sleep(0.15 * slot)
         while True:
             try:
                 channel = await client_connect(
@@ -171,7 +178,9 @@ class ExitNode:
             is_relay=False,
             on_open=self._on_open,
             on_ctrl=self._on_ctrl,
-            chunk=65536,
+            stream_window=self.cfg.stream_window,
+            max_stream_window=self.cfg.max_stream_window,
+            chunk=self.cfg.chunk,
         )
         self.tunnels.add(mux)
         self.tunnel_peers[id(mux)] = peer
@@ -311,7 +320,9 @@ class ExitNode:
                 for m in self.tunnels
             ],
             "tunnel_count": len(self.tunnels),
+            "connections": len(self.tunnels),
             "reach_out": list(self.reach_out),
+            "targets": list(self.reach_out),
             "connected_at": self.connected_at,
             "last_error": self.last_error,
             "speedtest_port": self.speed_port,

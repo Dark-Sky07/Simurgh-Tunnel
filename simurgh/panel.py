@@ -368,6 +368,13 @@ class Panel:
             if "proxy_protocol" in body and body["proxy_protocol"] in ("off", "v1", "v2"):
                 cfg.proxy_protocol = body["proxy_protocol"]
                 changed.append("proxy_protocol")
+        if "connections" in body:
+            # one tunnel per core-flow is the default; a pool spreads the load
+            try:
+                cfg.connections = clamp(int(body["connections"]), 1, 16)
+                changed.append("connections")
+            except (TypeError, ValueError):
+                return json_response({"ok": False, "error": "connections must be a number"}, 400)
         if not changed:
             return json_response({"ok": False, "error": "no editable field given"}, 400)
         try:
@@ -617,6 +624,7 @@ PANEL_I18N = {
         "lbl_rtt": "round-trip time",
         "lbl_uptime": "uptime",
         "lbl_reconnects": "reconnects",
+        "lbl_tunnels": "tunnel connections",
         "lbl_last_error": "last error",
         "card_speed": "Live speed",
         "download": "download",
@@ -682,6 +690,7 @@ PANEL_I18N = {
         "lbl_rtt": "پینگ",
         "lbl_uptime": "مدت اتصال",
         "lbl_reconnects": "تعداد اتصال‌ها",
+        "lbl_tunnels": "اتصال‌های تونل",
         "lbl_last_error": "آخرین خطا",
         "card_speed": "سرعت لحظه‌ای",
         "download": "دانلود",
@@ -820,6 +829,7 @@ footer{color:var(--dim);text-align:center;padding:24px;font-size:12px}
     <div class="kv"><span data-i18n="lbl_rtt">round-trip time</span><span id="rtt">—</span></div>
     <div class="kv"><span data-i18n="lbl_uptime">uptime</span><span id="uptime">—</span></div>
     <div class="kv"><span data-i18n="lbl_reconnects">reconnects</span><span id="reconnects">—</span></div>
+    <div class="kv"><span data-i18n="lbl_tunnels">tunnel connections</span><span id="tunnels">—</span></div>
     <div class="kv"><span data-i18n="lbl_last_error">last error</span><span id="last_error">—</span></div>
   </div>
 
@@ -943,6 +953,7 @@ async function load(){
     $('rtt').textContent = n.rtt_ms ? (n.rtt_ms.toFixed(1)+' ms') : '—';
     $('uptime').textContent = fmtDuration(n.uptime);
     $('reconnects').textContent = (n.reconnects!=null?n.reconnects:'—');
+    $('tunnels').textContent = (n.connections!=null?n.connections:(n.tunnel_count!=null?n.tunnel_count:'—'));
     $('last_error').textContent = n.last_error || (n.error||'') || t('no_error');
     const down = rates.in_bps||0, up = rates.out_bps||0;
     $('down').textContent = fmtRate(down); $('up').textContent = fmtRate(up);

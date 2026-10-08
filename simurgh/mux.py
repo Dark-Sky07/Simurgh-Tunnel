@@ -25,7 +25,9 @@ import time
 
 from .protocol import (
     DEFAULT_CHUNK,
+    HEADER,
     DEFAULT_GLOBAL_WINDOW,
+    DEFAULT_MAX_STREAM_WINDOW,
     DEFAULT_STREAM_WINDOW,
     T_CLOSE,
     T_CTRL,
@@ -46,6 +48,10 @@ from .protocol import (
 
 OPEN_TIMEOUT = 20.0
 PING_INTERVAL = 25.0
+#: used to size the window until the first RTT measurement comes in
+DEFAULT_RTT = 0.12
+#: never re-evaluate a window more often than this
+WINDOW_EVAL_MIN = 0.05
 
 _log = __import__("logging").getLogger("simurgh.mux")
 
@@ -63,12 +69,16 @@ class Stream:
         "mux", "sid", "mode", "target", "send_credit", "recv_unacked",
         "closed", "eof", "_on_data", "on_eof", "on_credit", "open_ok",
         "open_error", "open_event", "created", "last_active", "pending",
-        "credit_flush",
+        "credit_flush", "window", "base_window", "max_window", "peer_credit",
+        "backlog", "backlog_peak", "last_flush", "rate_bytes", "rate_start",
+        "data_hdr",
     )
 
     def __init__(self, mux: "Mux", sid: int, mode: int = 0, target: bytes = b""):
         self.mux = mux
         self.sid = sid
+        #: type+sid of every DATA frame this stream sends (built once)
+        self.data_hdr = HEADER.pack(T_DATA, sid)
         self.mode = mode
         self.target = target
         self.send_credit = mux.stream_window
@@ -88,6 +98,22 @@ class Stream:
         self.credit_flush = self.CREDIT_FLUSH
         self.created = time.monotonic()
         self.last_active = self.created
+        # --- adaptive receive window -------------------------------------
+        # ``window`` is what we currently let the peer keep in flight; it
+        # starts at the configured base and doubles (up to ``max_window``)
+        # while this stream keeps draining quickly.  A window that is too
+        # small caps one user at window/RTT, which is exactly what hurts on a
+        # long path (256 KiB / 120 ms ~= 17 Mbit/s no matter how fast the
+        # servers are).  Growing is only allowed while we are *not* behind.
+        self.base_window = mux.stream_window
+        self.max_window = mux.max_stream_window
+        self.window = self.base_window
+        self.peer_credit = self.base_window      # our estimate of the peer's budget
+        self.backlog = 0                         # received but not yet consumed
+        self.backlog_peak = 0
+        self.last_flush = self.created
+        self.rate_bytes = 0
+        self.rate_start = self.created
 
     # ``on_data`` is a property so that attaching a handler automatically
     # replays whatever was buffered while nobody was listening.
@@ -129,8 +155,61 @@ class Stream:
         if m is None or m.closed:
             return
         self.recv_unacked = 0
-        g = m.take_global_credit(n)
-        m.send_soon(make_frame(T_WIN, self.sid, WIN.pack(min(n, 0xFFFFFFFF), g)))
+        self.backlog = max(0, self.backlog - n)
+        self.rate_bytes += n
+        bonus = self._autotune()
+        grant = n + bonus
+        self.peer_credit += grant
+        g = m.take_global_credit(grant)
+        m.send_soon(make_frame(T_WIN, self.sid, WIN.pack(min(grant, 0xFFFFFFFF), g)))
+
+    def _autotune(self) -> int:
+        """Decide how much *extra* credit to hand back (window autotuning).
+
+        The rule is the classic bandwidth-delay product one: a window of ``W``
+        can carry at most ``W / RTT``; if the stream is really running that
+        fast, the window is the bottleneck and doubling it doubles what one
+        user can pull.  If the stream runs slower than the window allows, it is
+        limited by something else (the sender itself, a rate limit, a slow
+        client) and a bigger window would only park memory here.
+
+        Two safety valves: never grow while we are behind (the backlog shows
+        that our own socket is the slow side) and fall back towards the base
+        window when a stream goes quiet, so nothing is held for idle users.
+        """
+        now = time.monotonic()
+        dt = now - self.rate_start
+        peak, self.backlog_peak = self.backlog_peak, self.backlog
+        if self.mux is None:
+            return 0
+        rtt = self.mux.rtt or DEFAULT_RTT
+        if dt < max(WINDOW_EVAL_MIN, rtt) or self.max_window <= self.base_window:
+            return 0
+        rate = self.rate_bytes / dt
+        self.rate_bytes = 0
+        self.rate_start = now
+        self.last_flush = now
+        capacity = self.window / max(rtt, 0.001)
+        bonus = 0
+        if peak > self.window // 2:
+            # our consumer fell behind: the window is bigger than it can take
+            if self.window > self.base_window:
+                self.window = max(self.base_window, self.window // 2)
+                _log.debug("stream %s: window -> %d (consumer behind)",
+                           self.sid, self.window)
+            return 0
+        if rate >= 0.7 * capacity and self.window < self.max_window:
+            # window limited and keeping up: probe a bigger one
+            new_window = min(self.max_window, self.window * 2)
+            bonus = new_window - self.window
+            self.window = new_window
+            _log.debug("stream %s: window -> %d (rate %.1f MB/s over %.0f ms)",
+                       self.sid, new_window, rate / 1e6, dt * 1e3)
+        elif rate < 0.15 * capacity and self.window > self.base_window:
+            # idle or limited elsewhere: give the credit budget back
+            self.window = max(self.base_window, self.window // 2)
+            _log.debug("stream %s: window -> %d (idle)", self.sid, self.window)
+        return bonus
 
     # --------------------------------------------------------------- send
     def can_send(self, n: int) -> int:
@@ -142,7 +221,7 @@ class Stream:
         n = len(data)
         self.send_credit -= n
         self.mux.global_credit -= n
-        self.mux.send(make_frame(T_DATA, self.sid, data))
+        self.mux.send_data(self.data_hdr, data)
 
     def close(self, rst: bool = False) -> None:
         """Half close (default) or hard close the stream."""
@@ -177,6 +256,7 @@ class Mux:
         on_ctrl=None,
         stream_window: int = DEFAULT_STREAM_WINDOW,
         global_window: int = DEFAULT_GLOBAL_WINDOW,
+        max_stream_window: int = DEFAULT_MAX_STREAM_WINDOW,
         chunk: int = DEFAULT_CHUNK,
     ):
         self.channel = channel
@@ -184,6 +264,7 @@ class Mux:
         self.on_open = on_open          # async callable(stream) -> None
         self.on_ctrl = on_ctrl          # async callable(dict) -> None
         self.stream_window = stream_window
+        self.max_stream_window = max(stream_window, max_stream_window)
         self.chunk = chunk
         #: how much *we* may still send before the peer has to credit us again
         self.global_credit = global_window
@@ -197,6 +278,8 @@ class Mux:
             "bytes_in": 0, "bytes_out": 0, "frames_in": 0, "frames_out": 0,
             "streams_total": 0, "streams_open": 0, "last_error": "",
         }
+        #: round trip time measured from our own keepalives (None until known)
+        self.rtt: float | None = None
         self._next_sid = 1 if is_relay else 2
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending_writes: list[bytes] = []
@@ -209,16 +292,29 @@ class Mux:
             self._loop = asyncio.get_running_loop()
         return self._loop
 
+    def _send_failed(self, exc: Exception) -> None:
+        # dead channel: the read loop will tear down
+        self.closed = True
+        self.stats["last_error"] = "%s: %s" % (type(exc).__name__, exc)
+        _log.debug("mux send failed (%s)", exc, exc_info=True)
+
     def send(self, frame: bytes) -> None:
         """Write one frame, using the channel (called from the read loop)."""
         self.stats["frames_out"] += 1
         self.stats["bytes_out"] += len(frame)
         try:
             self.channel.write_frame(frame)
-        except Exception as exc:  # dead channel: the read loop will tear down
-            self.closed = True
-            self.stats["last_error"] = "%s: %s" % (type(exc).__name__, exc)
-            _log.debug("mux send failed (%s)", exc, exc_info=True)
+        except Exception as exc:
+            self._send_failed(exc)
+
+    def send_data(self, hdr: bytes, payload: bytes) -> None:
+        """Write one DATA frame without gluing the payload to its header."""
+        self.stats["frames_out"] += 1
+        self.stats["bytes_out"] += len(hdr) + len(payload)
+        try:
+            self.channel.write_data(hdr, payload)
+        except Exception as exc:
+            self._send_failed(exc)
 
     def send_soon(self, frame: bytes) -> None:
         """Coalesce small control frames into the next event-loop tick.
@@ -340,21 +436,25 @@ class Mux:
         ch = self.channel
         try:
             while True:
-                frame = await ch.read_frame()
-                if not frame:
+                frames = await ch.read_frames()
+                if not frames:
                     break
-                self.stats["frames_in"] += 1
-                self._dispatch(frame)
+                for frame in frames:
+                    self.stats["frames_in"] += 1
+                    self._dispatch(frame)
                 if ch.paused():
                     await ch.wait_writable()
-        except (asyncio.IncompleteReadError, ConnectionError, OSError):
-            pass
+        except (asyncio.IncompleteReadError, ConnectionError, OSError) as exc:
+            # normal end of a tunnel (EOF, reset, refused): not worth a warning
+            _log.debug("read loop ended: %r", exc)
         except asyncio.CancelledError:
             # never swallow cancellation: a shutdown that ignores it turns
             # into a reconnect storm (the caller's supervisor keeps looping).
             raise
         except Exception as exc:  # pragma: no cover - defensive
             self.stats["last_error"] = f"{type(exc).__name__}: {exc}"
+            _log.debug("read loop failed on %s: %r", getattr(ch, "name", "?"), exc,
+                       exc_info=True)
         finally:
             self.close()
             try:
@@ -370,9 +470,14 @@ class Mux:
         if ftype == T_DATA:
             s = self.streams.get(sid)
             if s is not None:
-                self.stats["bytes_in"] += len(frame) - 5
-                self.recv_unacked += len(frame) - 5
+                size = len(frame) - 5
+                self.stats["bytes_in"] += size
+                self.recv_unacked += size
                 s.touch()
+                s.peer_credit -= size
+                s.backlog += size
+                if s.backlog > s.backlog_peak:
+                    s.backlog_peak = s.backlog
                 payload = frame[5:]
                 if s._on_data is None:
                     s.pending += payload
@@ -438,6 +543,15 @@ class Mux:
             return
 
         if ftype == T_PONG:
+            payload = frame[5:]
+            if len(payload) >= 8:
+                try:
+                    (sent,) = struct.unpack(">d", payload[:8])
+                except struct.error:      # pragma: no cover - defensive
+                    return
+                took = time.time() - sent
+                if 0 < took < 30:
+                    self.rtt = took
             return
 
         if ftype == T_CTRL:
@@ -467,9 +581,13 @@ class Mux:
     async def keepalive(self, interval: float = PING_INTERVAL) -> None:
         if interval <= 0:
             return
+        import random
+
         try:
             while not self.closed:
-                await asyncio.sleep(interval)
+                # jitter: a perfectly periodic ping every N seconds is itself
+                # a fingerprint, so walk the interval by +/-15%
+                await asyncio.sleep(interval * (0.85 + random.random() * 0.30))
                 self.send_soon(make_frame(T_PING, 0, struct.pack(">d", time.time())))
         except asyncio.CancelledError:
             pass
