@@ -36,7 +36,7 @@ from .util import Home, clamp, get_logger
 
 log = get_logger("simurgh.panel")
 
-PAGE_SIZE = 200
+SESSION_COOKIE = "simurgh_session"
 
 
 # ---------------------------------------------------------------- http bits
@@ -223,7 +223,12 @@ class Panel:
                 401, extra={"WWW-Authenticate": 'Basic realm="simurgh"'})
         path = req.path
         if req.method == "GET" and path in ("/", "/index.html"):
-            return http_response(self.dashboard().encode("utf-8"))
+            extra = None
+            # one-click login: /?k=<panel password> turns into a session cookie
+            if self.password and self._query_password_ok(req):
+                extra = {"Set-Cookie":
+                         f"{SESSION_COOKIE}={self._session_value()}; Path=/; HttpOnly; SameSite=Lax"}
+            return http_response(self.dashboard().encode("utf-8"), extra=extra)
         if req.method == "GET" and path == "/api/status":
             return json_response(self.status())
         if req.method == "GET" and path == "/api/config":
@@ -252,9 +257,26 @@ class Panel:
                     and hmac.compare_digest(str(password), self.password))
         return self._authorised(req) if req is not None else False
 
+    def _session_value(self) -> str:
+        import hashlib
+
+        return hashlib.sha256(("simurgh-panel|" + self.password).encode()).hexdigest()[:32]
+
+    def _query_password_ok(self, req: Request) -> bool:
+        given = req.query.get("k", "")
+        return bool(given) and hmac.compare_digest(given, self.password)
+
     def _authorised(self, req: Request) -> bool:
         if not self.password:
             return True
+        if req.method == "GET" and self._query_password_ok(req):
+            return True          # one-click link: /?k=<panel password>
+        cookie = req.headers.get("cookie", "")
+        for part in cookie.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE and hmac.compare_digest(value.strip(),
+                                                              self._session_value()):
+                return True
         header = req.headers.get("authorization", "")
         if not header.lower().startswith("basic "):
             return False
