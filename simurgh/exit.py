@@ -310,6 +310,8 @@ class ExitNode:
                  "streams": len(m.streams)}
                 for m in self.tunnels
             ],
+            "tunnel_count": len(self.tunnels),
+            "reach_out": list(self.reach_out),
             "connected_at": self.connected_at,
             "last_error": self.last_error,
             "speedtest_port": self.speed_port,

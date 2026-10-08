@@ -366,7 +366,10 @@ def cmd_service(args) -> int:
         if home.state.exists():
             try:
                 state = json.loads(home.state.read_text())[role]
-                print(f"  tunnel:  {'connected' if state.get('connected') or state.get('tunnels') else 'down'}")
+                tunnels = state.get("tunnels")
+                if isinstance(tunnels, (list, tuple, set)):
+                    tunnels = len(tunnels)
+                print(f"  tunnel:  {'connected' if state.get('connected') or tunnels else 'down'}")
                 print(f"  stats:   {json.dumps(state.get('stats', {}).get('totals', {}), ensure_ascii=False)}")
             except (OSError, ValueError, KeyError):
                 pass
@@ -654,7 +657,11 @@ def cmd_status(args) -> int:
         print(f"  rtt:      {node.get('rtt_ms') and round(node['rtt_ms'], 1) or '—'} ms")
         print(f"  reconnects: {node.get('reconnects', 0)}   error: {node.get('last_error') or '—'}")
     else:
-        print(f"  tunnels:  {node.get('tunnels', 0)}")
+        count = node.get("tunnel_count")
+        if count is None:
+            tunnels = node.get("tunnels", 0)
+            count = len(tunnels) if isinstance(tunnels, (list, tuple, set)) else tunnels
+        print(f"  tunnels:  {count}")
     stats = node.get("stats", {})
     totals = stats.get("totals", {})
     rates = stats.get("rates", {})
