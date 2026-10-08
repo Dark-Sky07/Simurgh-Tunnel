@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simurgh-tunnel"
+version = "2.0.0"
+description = "Simurgh Tunnel v2 — an Iran <-> Kharej transparent TCP/UDP relay for VPN panels (3x-ui, OMEGA, X-UI, ...)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Simurgh Tunnel contributors" }]
+keywords = ["tunnel", "relay", "iran", "kharej", "gost", "rathole", "3x-ui", "censorship"]
+dependencies = []
+
+[project.optional-dependencies]
+secure = ["cryptography>=41"]
+
+[project.scripts]
+simurgh = "simurgh.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["simurgh*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
