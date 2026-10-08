@@ -161,13 +161,13 @@ func EnsureCert(dir, cn string) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: cn, Organization: []string{"Simurgh"}},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(10, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{cn},
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: cn, Organization: []string{"Simurgh"}},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              []string{cn},
 		BasicConstraintsValid: true,
 	}
 	if ip := net.ParseIP(cn); ip != nil {
@@ -372,9 +372,9 @@ type ClientOptions struct {
 	Carrier     string
 	Address     string
 	Port        int
-	Domain      string   // SNI
-	Path        string   // websocket path
-	Fingerprint string   // pinned SHA-256 of the certificate
+	Domain      string // SNI
+	Path        string // websocket path
+	Fingerprint string // pinned SHA-256 of the certificate
 	Insecure    bool
 	Timeout     time.Duration
 	Token       string
