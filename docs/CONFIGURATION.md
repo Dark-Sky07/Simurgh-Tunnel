@@ -176,23 +176,37 @@ the Iranian side.
 
 ### Speed and resilience keys (both files)
 
-These three keys exist in `relay.toml` **and** `exit.toml`; the smaller of the
-two sides wins for any given stream, so setting them on the relay is enough.
+These keys exist in `relay.toml` **and** `exit.toml`; the smaller of the two
+sides wins for any given stream, so setting them on the relay is enough.
 
 | Key | Default | What it does |
 |---|---|---|
 | `stream_window` | `256 KiB` | How much a stream may have in flight *before* the tunnel learns the path. Leave it alone unless you know the link is slow to start. |
-| `max_stream_window` | `16 MiB` | The ceiling for the automatic growth. The tunnel measures the real throughput of each stream and doubles the window while the stream keeps the path busy, so a single user on a long (Iran ⇄ Europe) path is no longer capped at `window / RTT`. Lower it on a tiny VPS with little RAM. |
+| `max_stream_window` | `16 MiB` (Go engine: `8 MiB`) | The ceiling for the automatic growth. The tunnel measures the real throughput of each stream and doubles the window while the stream keeps the path busy, so a single user on a long (Iran ⇄ Europe) path is no longer capped at `window / RTT`. The memory it can park follows demand (only a stream that really drains fast grows), and it is the worst case per busy user — lower it to `4 MiB` if you run hundreds of heavy users on a small VPS, raise it to `16 MiB`+ for one very fat flow. |
 | `connections` | `1` | How many tunnel connections the relay keeps to the exit (1-16). Every connection is a separate TCP flow and a separate core's worth of work: on long, lossy paths 2-4 of them raise the total a lot and a single dropped connection only costs a fraction of the users. The relay hands each new user connection to the least busy tunnel. |
 | `chunk` | `64 KiB` | Largest payload per frame. Bigger frames mean less per-frame overhead and a little more latency headroom; 64 KiB is a good middle. |
+| `engine` | `python` | Which data plane runs this file: `python` (portable, no build step) or `go` (compiled, many cores, much less CPU per gigabyte). Both speak the same protocol, so one side may run Go while the other still runs Python. Switch with `simurgh engine go` after building it (`sudo bash tools/build-go.sh`). The panel, the menu and the CLI stay Python; with `engine = "go"` the live numbers you see come from `state.json`, which both engines write. |
 
-Measured on a simulated 120 ms path (2 vCPU container), single user, plain
-carrier, 80 MB: **2 MB/s with a fixed 256 KiB window → 38 MB/s with the
-window growing** (19×), 22 MB/s for the same transfer over `tls`, and 286 MB/s
-on a short path (one core's limit).  With `connections = 4` and a per-flow cap
-of 4 MB/s, eight users get 13.9 MB/s against 3.6 MB/s on a single tunnel.  RAM
-stays bounded: an idle stream's window falls back to `stream_window`, and the
-whole benchmark process (relay + exit + target) peaked at 95 MB.
+Measured on a simulated long path (2 vCPU container), single user, plain
+carrier, 80 MB: **2 MB/s with a fixed 256 KiB window → 38 MB/s with the window
+growing** (19×), 22 MB/s for the same transfer over `tls`, and 286 MB/s on a
+short path. With `connections = 4` and a per-flow cap of 4 MB/s, eight users get
+13.9 MB/s against 3.6 MB/s on a single tunnel. RAM stays bounded: an idle
+stream's window falls back to `stream_window`, and the whole benchmark process
+(relay + exit + target) peaked at 95 MB.
+
+The Go engine raises those ceilings and costs far less CPU per gigabyte:
+`tools/build-go.sh` > `simurgh engine go` > restart. Measured with the same
+harness on the same box:
+
+| Workload | Python engine | Go engine |
+|---|---|---|
+| one stream, 60 ms path, 80 MB | 38 MB/s | **39.9 MB/s** (319 Mbit/s) |
+| one stream, 60 ms path, `tls` | 22.7 MB/s | **24.1 MB/s** |
+| one stream, short path, 256 MB | 286 MB/s | **313 MB/s** (2.5 Gbit/s) |
+| 64 users, 2 tunnel connections, 20 ms | — | **391 MB/s** (3.1 Gbit/s) |
+| eight users, 4 tunnels, 4 MB/s cap | 13.9 MB/s | 14.4 MB/s |
+| CPU per 256 MB moved (64 users) | — | **1.0 CPU-second** |
 
 ### `[[mapping]]` keys
 

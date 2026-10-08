@@ -101,6 +101,31 @@ CDN, no external fonts.
 > Everything a server operator sees outside the panel — text menu, CLI,
 > installer output — is **English only**.
 
+## Two engines, one protocol
+
+Simurgh ships two implementations of the same wire protocol, and each side of a
+tunnel may run whichever one it likes:
+
+| Engine | What it is | When to use it |
+|---|---|---|
+| `python` *(default)* | the reference engine, pure standard library | everywhere; nothing to build |
+| `go` | compiled data plane: one goroutine per user connection, all cores, ~8× less CPU per gigabyte | busy relays, many simultaneous users |
+
+```bash
+sudo bash tools/build-go.sh     # needs a Go toolchain (the script installs one)
+simurgh engine go               # write engine = "go" into relay.toml / exit.toml
+simurgh restart
+```
+
+Nothing else changes: the panel, the text menu and the CLI stay Python, they
+read the same config files, and the live numbers in the panel come from the
+`state.json` both engines keep. Watch the speedup while you switch:
+
+```bash
+python tools/latency_bench.py 60 80 plain            # python engine
+go/bin/simurgh-go bench -mb 256 -delay 20 -streams 64  # go engine, 64 users
+```
+
 ## Carriers (tunnel disguises)
 
 | Carrier | Looks like | Use when |
@@ -130,6 +155,11 @@ CDN, no external fonts.
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
 | Throughput (one machine, loopback) | ≈ 3 Gbit/s down, ≈ 1.3 Gbit/s up through the tunnel |
 | Single stream on a 120 ms path | 2 MB/s with a fixed 256 KiB window → **38 MB/s** with the automatic window (19×, 80 MB transfer, same 2 vCPU container) |
+| Go engine, same 60 ms path | **39.9 MB/s** plain (319 Mbit/s) and **24.1 MB/s** over `tls`, same box |
+| Go engine, short path | **313 MB/s** single stream (2.5 Gbit/s) |
+| Go engine, many users | **391 MB/s (3.1 Gbit/s) for 64 simultaneous users** across 2 tunnel connections on 2 vCPUs |
+| Go engine, CPU | **1.0 CPU-second per 256 MB** moved with those 64 users |
+| Engine interop | Go relay ⇄ Python exit and Python relay ⇄ Go exit, both verified |
 | Single stream on a short path | 286 MB/s (2.3 Gbit/s) through the tunnel — the CPU limit of one core |
 | Pool | 8 user connections over 4 tunnels: 13.9 MB/s vs 3.6 MB/s on one tunnel with the same per-flow cap, load spread 2/2/2/2 |
 | Memory | 95 MB peak for relay + exit + test target together while moving 200 MB over 4 tunnels |
