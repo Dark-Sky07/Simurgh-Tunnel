@@ -315,10 +315,15 @@ def _service_names(role: str) -> tuple[str, ...]:
     return ("simurgh-exit",) if role == "exit" else ("simurgh-relay",)
 
 
+_SYSTEMCTL_ACTION = {"up": "start", "start": "start", "down": "stop", "stop": "stop",
+                     "restart": "restart", "enable": "enable", "disable": "disable",
+                     "reload": "reload"}
+
+
 def cmd_service(args) -> int:
     from . import systemd
 
-    action = args.service_action
+    action = _SYSTEMCTL_ACTION.get(args.service_action, args.service_action)
     names = _service_names(args.role)
     if action == "status":
         rows = []
@@ -466,7 +471,8 @@ def _service_action(name: str, role: str) -> dict:
 
     if not systemd.available():
         return {"ok": False, "error": "systemd نیست"}
-    return systemd.control(name, _service_names(role))
+    action = _SYSTEMCTL_ACTION.get(name, name)
+    return systemd.control(action, _service_names(role))
 
 
 def _load_panel_user(home: Home) -> str:
@@ -967,7 +973,9 @@ def build_parser() -> argparse.ArgumentParser:
         panel_host="0.0.0.0", panel_port=0)) if a.fg else cmd_service(
         argparse.Namespace(role=a.role, service_action="start", home=a.home, json=False)))
 
-    for action, helptext in (("down", "خاموش کردن سرویس"),
+    for action, helptext in (("start", "روشن کردن سرویس (systemd)"),
+                             ("stop", "خاموش کردن سرویس"),
+                             ("down", "خاموش کردن سرویس"),
                              ("restart", "ری‌استارت سرویس"),
                              ("enable", "فعال‌سازی خودکار در بوت"),
                              ("disable", "غیرفعال کردن در بوت"),

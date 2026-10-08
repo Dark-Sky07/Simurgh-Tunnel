@@ -431,7 +431,7 @@ class Panel:
                               "port_conflicts": getattr(self.node, "port_conflicts", list)()})
 
     async def action(self, body: dict) -> bytes:
-        name = str(body.get("name") or "")
+        name = str(body.get("name") or body.get("action") or "")
         if name == "speedtest":
             from .speedtest import run_speedtest
 
