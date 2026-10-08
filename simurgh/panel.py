@@ -209,10 +209,12 @@ class Panel:
         if not self._allowed(peer_ip):
             return json_response({"ok": False, "error": "forbidden"}, 403)
         if req.path == "/api/join":
-            if self.role != "exit":
+            if self.role != "exit" and not self._relay_is_reverse():
                 return json_response(
-                    {"ok": False, "error": "join links are served by the exit server"}, 400)
-            # a new relay presents the credentials from its link (POST body)
+                    {"ok": False, "error": "join links are served by the exit server "
+                                           "(or by a relay that listens: dial = \"exit\")"},
+                    400)
+            # the other server presents the credentials from its link (POST body)
             body = req.json() if req.method == "POST" else {}
             if not self._credentials_ok(body.get("user"), body.get("password"), req):
                 return json_response({"ok": False, "error": "bad credentials"}, 401)
@@ -491,10 +493,36 @@ class Panel:
         text = data.decode("utf-8", "replace").splitlines()[-count:]
         return {"ok": True, "lines": text, "file": str(path)}
 
+    def _tunnel_fingerprint(self, cfg) -> str | None:
+        """SHA-256 of the certificate the exit should pin (may be None)."""
+        from .certs import fingerprint_of
+
+        candidates = [cfg.tunnel.cert_file,
+                      str(Path(self.home.path) / "cert" / "cert.pem")]
+        for path in candidates:
+            if path and Path(path).exists():
+                try:
+                    return fingerprint_of(path)
+                except Exception:
+                    continue
+        return None
+
+    def _relay_is_reverse(self) -> bool:
+        """True when this relay accepts the tunnel (``dial = "exit"``)."""
+        try:
+            return load_relay(self.home.relay_cfg).reverse
+        except (ConfigError, OSError):
+            return False
+
     def join_payload(self, req: Request) -> bytes:
-        """The payload a new relay needs (exit role only)."""
+        """The link payload for the *other* server.
+
+        On an exit this hands a new relay its tunnel endpoint (direct mode).
+        On a relay that listens for the exit (``dial = "exit"``) it is the
+        other way round: the exit asks us where to dial.
+        """
         if self.role != "exit":
-            return json_response({"ok": False, "error": "join is served by the exit"}, 400)
+            return self._join_payload_reverse(req)
         try:
             cfg = load_exit(self.home.exit_cfg)
         except (ConfigError, OSError) as exc:
@@ -529,6 +557,26 @@ class Panel:
             "note": ("Keep this payload secret: the token is inside it. "
                      "Import it on the relay with `simurgh join <link>`."),
         }
+        return json_response(payload)
+
+    def _join_payload_reverse(self, req: Request) -> bytes:
+        """Reverse mode: tell the exit where to dial us."""
+        from .links import reverse_payload
+
+        try:
+            cfg = load_relay(self.home.relay_cfg)
+        except (ConfigError, OSError) as exc:
+            return json_response({"ok": False, "error": str(exc)}, 500)
+        if not cfg.reverse:
+            return json_response({
+                "ok": False,
+                "error": ("this relay dials the exit (direct mode): ask the exit "
+                          "server for its setup link instead"),
+            }, 400)
+        host = req.query.get("host") or (req.headers.get("host", "").split(":")[0])
+        fingerprint = self._tunnel_fingerprint(cfg)
+        payload = reverse_payload(cfg, host, fingerprint)
+        payload["version"] = __version__
         return json_response(payload)
 
     # ------------------------------------------------------------ dashboard

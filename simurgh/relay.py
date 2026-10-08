@@ -21,7 +21,7 @@ import json
 import time
 
 from .bridge import Bridge, proxy_v1_header
-from .carriers import client_connect
+from .carriers import ServerCarrier, client_connect
 from .config import Mapping, RelayConfig
 from .mux import Mux
 from .protocol import MODE_TCP, encode_addr
@@ -80,26 +80,79 @@ class RelayNode:
         self._fail_until: dict[str, float] = {}
         self._stopping = False
         self._tasks: set[asyncio.Task] = set()
+        self._tunnel_servers: list[asyncio.AbstractServer] = []
         self.started_at = time.time()
         self.connect_count = 0
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
         await self.rebind()
+        if self.cfg.reverse:
+            await self._start_tunnel_listener()
+            return
         task = asyncio.ensure_future(self._supervisor())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    async def _start_tunnel_listener(self) -> None:
+        """Reverse mode: wait for the foreign exit to connect to us."""
+        spec = self.cfg.tunnel
+        if not spec.enabled:
+            self.last_error = "the tunnel listener is disabled"
+            log.error("%s", self.last_error)
+            return
+        loop = asyncio.get_running_loop()
+        carrier = ServerCarrier(
+            spec.carrier, self.cfg.token,
+            cert_file=spec.cert_file, key_file=spec.key_file,
+            path=spec.path, fallback=spec.fallback,
+            decoy_file=spec.decoy_file, padding=spec.padding,
+        )
+        factory = carrier.protocol_factory(self._accept_tunnel)
+        try:
+            server = await loop.create_server(factory, spec.host, spec.port,
+                                              backlog=128)
+        except OSError as exc:
+            self.last_error = f"{spec.endpoint()}: {exc}"
+            self.bind_errors.append(self.last_error)
+            log.error("cannot listen on %s: %s", spec.endpoint(), exc)
+            return
+        self._tunnel_servers.append(server)
+        mode = "decoy website" if spec.carrier in ("tls", "wss") else "noise"
+        log.info("waiting for the exit on %s (probers see: %s)",
+                 spec.endpoint(), mode)
+
+    async def _accept_tunnel(self, channel) -> None:
+        """A tunnel connection from an exit node (reverse mode)."""
+        peer = getattr(channel, "peer", "") or "?"
+        if self.mux is not None and not self.mux.closed:
+            log.warning("a second exit connected (%s); replacing the current tunnel", peer)
+            self.mux.close()
+            await asyncio.sleep(0.2)
+        self.connect_count += 1
+        await self._run_tunnel(None, channel, label=f"in {channel.name}<-{peer}")
 
     async def stop(self) -> None:
         self._stopping = True
         for task in list(self._tasks):
             task.cancel()
+        for server in self._tunnel_servers:
+            server.close()
         for server in self._servers.values():
             server.close()
         for listener in self._udp.values():
             listener.close()
+        self._tunnel_servers.clear()
+        self._servers.clear()
+        self._udp.clear()
         if self.mux is not None:
             self.mux.close()
+        # the tunnel handler runs outside our task tree, so make the stopped
+        # state visible at once instead of waiting for its finally block
+        self.mux = None
+        self.current = ""
+        self.connected.clear()
+        await asyncio.sleep(0)
 
     def reconnect(self) -> None:
         """Drop the current tunnel; the supervisor dials a fresh one."""
@@ -119,6 +172,8 @@ class RelayNode:
             "reconnects": self.connect_count,
             "last_error": self.last_error,
             "bind_errors": list(self.bind_errors),
+            "dial": self.cfg.dial,
+            "tunnel_listen": ([self.cfg.tunnel.endpoint()] if self.cfg.reverse else []),
             "exit_info": self.exit_info,
             "mappings": [
                 {"key": m.key(), "name": m.name, "listen": m.listen,
@@ -194,6 +249,11 @@ class RelayNode:
         """Ports in the config that somebody else already holds."""
         used_before = set(self._servers) | set(self._udp)
         out = []
+        if self.cfg.reverse and self.cfg.tunnel.enabled and not self._tunnel_servers:
+            spec = self.cfg.tunnel
+            if all(spec.port != m.listen for m in self.cfg.mappings):
+                if not free_port(spec.port, spec.host):
+                    out.append(f"tunnel: {spec.host}:{spec.port}")
         for m in self.cfg.mappings:
             if not m.enabled or m.key() in used_before:
                 continue
@@ -255,7 +315,8 @@ class RelayNode:
             return ready[0]
         return None
 
-    async def _run_tunnel(self, ep, channel) -> None:
+    async def _run_tunnel(self, ep, channel, label: str = "") -> None:
+        label = label or ep.describe()
         mux = Mux(
             channel,
             is_relay=True,
@@ -264,11 +325,11 @@ class RelayNode:
             chunk=self.cfg.chunk,
         )
         self.mux = mux
-        self.current = ep.describe()
+        self.current = label
         self.connect_count += 1
         self.connected.set()
         self.last_error = ""
-        log.info("tunnel up via %s", ep.describe())
+        log.info("tunnel up via %s", label)
         mux.ctrl({
             "kind": "hello",
             "name": self.cfg.name or "relay",
@@ -284,12 +345,16 @@ class RelayNode:
         finally:
             for t in (keepalive, reporter, pinger):
                 t.cancel()
+            if self.mux is not mux:
+                return                      # a newer tunnel already took over
             self.connected.clear()
             self.mux = None
             if self._stopping:
-                log.info("tunnel closed (%s)", ep.describe())
+                log.info("tunnel closed (%s)", label)
+            elif self.cfg.reverse:
+                log.warning("the exit disconnected (%s); still listening", label)
             else:
-                log.warning("tunnel down (%s)", ep.describe())
+                log.warning("tunnel down (%s)", label)
 
     async def _reporter(self, mux: Mux) -> None:
         try:
