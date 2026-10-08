@@ -129,8 +129,10 @@ CDN, no external fonts.
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
 | Throughput (one machine, loopback) | ≈ 3 Gbit/s down, ≈ 1.3 Gbit/s up through the tunnel |
-| Single stream on a 120 ms path | 2 MB/s with a fixed window → **18 MB/s** with the automatic window (same 2 vCPU container) |
-| Pool | 8 user connections over 4 tunnels: **4× the aggregate** of one tunnel with the same per-flow cap, load spread 2/2/2/2 |
+| Single stream on a 120 ms path | 2 MB/s with a fixed 256 KiB window → **38 MB/s** with the automatic window (19×, 80 MB transfer, same 2 vCPU container) |
+| Single stream on a short path | 286 MB/s (2.3 Gbit/s) through the tunnel — the CPU limit of one core |
+| Pool | 8 user connections over 4 tunnels: 13.9 MB/s vs 3.6 MB/s on one tunnel with the same per-flow cap, load spread 2/2/2/2 |
+| Memory | 95 MB peak for relay + exit + test target together while moving 200 MB over 4 tunnels |
 | Decoy | plain HTTP → nginx page · TLS + garbage → silent close · raw → random noise |
 | Self-heal | killing the exit: the relay reconnects when it returns |
 | Reverse mode | traffic over tls/raw/plain, exit reconnects after a relay restart |

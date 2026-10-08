@@ -187,9 +187,12 @@ two sides wins for any given stream, so setting them on the relay is enough.
 | `chunk` | `64 KiB` | Largest payload per frame. Bigger frames mean less per-frame overhead and a little more latency headroom; 64 KiB is a good middle. |
 
 Measured on a simulated 120 ms path (2 vCPU container), single user, plain
-carrier: **2 MB/s with a fixed 256 KiB window → 18 MB/s with the window
-growing**, and the same class of test on a fast path reaches ~2 Gbit/s. RAM
-stays bounded: an idle stream's window falls back to `stream_window`.
+carrier, 80 MB: **2 MB/s with a fixed 256 KiB window → 38 MB/s with the
+window growing** (19×), 22 MB/s for the same transfer over `tls`, and 286 MB/s
+on a short path (one core's limit).  With `connections = 4` and a per-flow cap
+of 4 MB/s, eight users get 13.9 MB/s against 3.6 MB/s on a single tunnel.  RAM
+stays bounded: an idle stream's window falls back to `stream_window`, and the
+whole benchmark process (relay + exit + target) peaked at 95 MB.
 
 ### `[[mapping]]` keys
 
