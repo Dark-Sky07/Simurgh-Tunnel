@@ -131,7 +131,9 @@ async def test_dashboard_is_a_page(home, tmp_path, relay_cfg):
         text = body.decode()
         assert "<!DOCTYPE html>" in text
         assert "Simurgh" in text
-        assert 'dir="rtl"' in text          # Persian-first layout
+        # the layout direction follows the language picked in the browser
+        assert 'dir="ltr"' in text and 'data-i18n' in text
+        assert 'toggleLang' in text          # English / Persian switch
         assert "<canvas" in text            # live speed chart
         assert "/api/status" in text        # it polls the API
     finally:
@@ -317,5 +319,43 @@ async def test_one_click_login_link_sets_a_session_cookie(home, tmp_path, relay_
         raw = await asyncio.wait_for(reader.read(-1), 10)
         writer.close()
         assert b"200 OK" in raw and b'"ok": true' in raw
+    finally:
+        await panel.stop()
+
+
+def test_dashboard_is_bilingual_and_has_a_language_switch():
+    """The web panel ships English + Persian; the text menu stays English."""
+    import json
+    import re
+
+    from simurgh import panel as panel_module
+
+    html = panel_module.DASHBOARD_HTML
+    # the template itself is language neutral, the strings live in the i18n table
+    assert not re.search(r"[\u0600-\u06FF]", re.sub(r"فا", "", html.split("<script>")[0]))
+    langs = panel_module.PANEL_I18N
+    assert set(langs) == {"en", "fa"}
+    assert set(langs["en"]) == set(langs["fa"])
+    # every key used by the HTML/JS exists in both languages
+    used = set(re.findall(r'data-i18n="([a-z_0-9]+)"', html))
+    used |= set(re.findall(r"(?<![A-Za-z0-9_$.])t\('([a-z_0-9]+)'", html))
+    assert used, "no i18n keys found in the dashboard"
+    assert used <= set(langs["en"]), sorted(used - set(langs["en"]))
+    # placeholders are substituted with both languages
+    rendered = html.replace("__I18N__", json.dumps(langs, ensure_ascii=False))
+    assert "__I18N__" not in rendered
+    assert "سرعت لحظه‌ای" in rendered and "Live speed" in rendered
+    assert "toggleLang" in rendered and "localStorage" in rendered
+
+
+async def test_dashboard_served_over_http_carries_both_languages(home, tmp_path, relay_cfg):
+    save_relay(relay_cfg, home.relay_cfg)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(relay_cfg))
+    try:
+        status, raw = await _request(port, "/", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+        assert b'data-i18n="card_tunnel"' in raw
+        assert "وضعیت تونل".encode() in raw and b"Tunnel status" in raw
+        assert b"toggleLang" in raw
     finally:
         await panel.stop()

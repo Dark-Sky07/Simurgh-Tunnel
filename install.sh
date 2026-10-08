@@ -53,31 +53,31 @@ banner() {
    ╚══════╝╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
 ART
   printf '%s' "$RESET"
-  printf '   %s\n\n' "${DIM}تونل شفاف ایران ↔ خارج  •  Simurgh Tunnel${RESET}"
+printf '   %s\n\n' "${DIM}transparent Iran <-> Kharej tunnel  •  Simurgh Tunnel${RESET}"
 }
 
 usage() {
   cat <<EOF
-${BOLD}نصب سیمورغ${RESET}
+${BOLD}Simurgh Tunnel installer${RESET}
 
-  bash install.sh [گزینه‌ها]
+  bash install.sh [options]
 
-گزینه‌های اصلی:
-  --role exit|relay|both     نقش این سرور (خارج / ایران / هر دو)
-  --name NAME                نام این سرور
-  --token TOKEN              توکن مشترک (اگر ندهید ساخته/پرسیده می‌شود)
-  --exit HOST:PORT           آدرس و پورت سرور خارج (برای رله)
-  --carrier tls|wss|raw      نوع حامل تونل
-  --domain DOMAIN            دامنه برای SNI/گواهی
-  --fingerprint HEX          اثر انگشت گواهی سرور خارج (اختیاری)
-  --insecure                 تایید گواهی سرور خارج را رد کن (تست)
-  --listen PORTS             پورت‌های گوش‌دادن اگزیت، مثل 443,2053
-  --mapping L1:T1,L2:T2      پورت‌های فوروارد رله، مثل 443:443
-  --panel-port PORT          پورت پنل وب روی رله
-  --yes                      بدون پرسش، همه‌چیز را بپذیر
-  --no-systemd               سرویس systemd نساز (اجرای دستی)
-  --uninstall [--purge]      حذف سرویس‌ها
-  --force                    بازنویسی تنظیمات موجود
+main options:
+  --role exit|relay|both     role of this server (foreign / Iranian / both)
+  --name NAME                a name for this server
+  --token TOKEN              shared secret token (generated/asked if missing)
+  --exit HOST:PORT           foreign server address and port (for the relay)
+  --carrier tls|wss|raw      tunnel carrier
+  --domain DOMAIN            domain name for the SNI / certificate
+  --fingerprint HEX          certificate fingerprint of the foreign server (optional)
+  --insecure                 skip verifying the foreign certificate (testing)
+  --listen PORTS             exit listening ports, e.g. 443,2053
+  --mapping L1:T1,L2:T2      relay port forwardings, e.g. 443:443
+  --panel-port PORT          web panel port on the relay
+  --yes                      accept everything without asking
+  --no-systemd               do not create a systemd service (run manually)
+  --uninstall [--purge]      remove the services
+  --force                    overwrite the existing config
 EOF
 }
 
@@ -100,7 +100,7 @@ while [ $# -gt 0 ]; do
     --purge)       PURGE=1; shift ;;
     --force|-f)    FORCE=1; shift ;;
     -h|--help)     usage; exit 0 ;;
-    *) die "گزینه ناشناخته: $1  (با --help راهنما را ببینید)" ;;
+*) die "unknown option: $1  (see --help)";;
   esac
 done
 
@@ -108,10 +108,10 @@ if [ "$(id -u)" != "0" ]; then
   # Containers, WSL and "install into my home" setups: allow it explicitly,
   # but never touch systemd then.
   if [ "${SIMURGH_ALLOW_NONROOT:-0}" = "1" ]; then
-    warn "اجرای بدون root — سرویس systemd ساخته نمی‌شود و مسیر نصب در خانهٔ کاربر است."
+warn "running without root — no systemd service is created and the install goes into the user home."
     NO_SYSTEMD=1
   else
-    die "این اسکریپت باید با root اجرا شود (sudo)."
+die "this script must run as root (sudo)."
   fi
 fi
 
@@ -128,7 +128,7 @@ fi
 install_pkgs() {
   local pkgs="$*"
   if [ "$(id -u)" != "0" ]; then
-    warn "بدون root نمی‌توان بسته نصب کرد (رد شد: $pkgs)."
+warn "cannot install packages without root (skipped: $pkgs)."
     return 0
   fi
   case "$PKG" in
@@ -137,12 +137,12 @@ install_pkgs() {
     dnf) dnf install -y -q $pkgs ;;
     yum) yum install -y -q $pkgs ;;
     apk) apk add --no-cache $pkgs ;;
-    *)   warn "مدیر بسته شناخته نشد؛ مطمئن شوید پایتون نصب است." ;;
+*)   warn "unknown package manager; please make sure python3 is installed." ;;
   esac
 }
 
 if [ "$UNINSTALL" = "1" ]; then
-  say "حذف سرویس‌های سیمورغ…"
+say "removing the Simurgh services…"
   if command -v simurgh >/dev/null 2>&1; then
     simurgh uninstall --yes ${PURGE:+--purge} || true
   else
@@ -151,25 +151,25 @@ if [ "$UNINSTALL" = "1" ]; then
     systemctl daemon-reload 2>/dev/null || true
   fi
   [ "${PURGE:-0}" = "1" ] && rm -rf /etc/simurgh "$VENV_DIR"
-  ok "تمام شد."
+ok "done."
   exit 0
 fi
 
-say "بررسی پیش‌نیازها…"
+say "checking the prerequisites…"
 if ! command -v python3 >/dev/null 2>&1; then
-  say "نصب پایتون…"; install_pkgs "python3 python3-venv python3-pip"
+say "installing python…"; install_pkgs "python3 python3-venv python3-pip"
 fi
 PY=python3
 PYVER="$($PY -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
-say "پایتون $PYVER پیدا شد."
+say "python $PYVER found."
 case "$PYVER" in
-  3.8|3.7|3.6|2.*) die "پایتون ۳.۹ یا بالاتر لازم است (نسخه فعلی: $PYVER)." ;;
+3.8|3.7|3.6|2.*) die "python 3.9 or newer is required (found: $PYVER)." ;;
 esac
 if ! $PY -c 'import venv' 2>/dev/null; then
-  say "نصب ماژول venv…"; install_pkgs "python3-venv"
+say "installing the venv module…"; install_pkgs "python3-venv"
 fi
 if ! $PY -c 'import cryptography' 2>/dev/null; then
-  say "نصب cryptography (برای حامل raw و گواهی)…"
+say "installing cryptography (needed for the raw carrier and certificates)…"
   install_pkgs "python3-cryptography" || true
 fi
 command -v openssl >/dev/null 2>&1 || install_pkgs "openssl" || true
@@ -178,38 +178,38 @@ command -v openssl >/dev/null 2>&1 || install_pkgs "openssl" || true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/simurgh" ]; then
   SRC="$SCRIPT_DIR"
-  say "استفاده از سورس کنار اسکریپت: $SRC"
+say "using the source next to this script: $SRC"
 else
   if [ -d "$SRC_DIR/.git" ]; then
-    say "به‌روزرسانی سورس در $SRC_DIR…"
-    git -C "$SRC_DIR" pull --quiet --ff-only || warn "به‌روزرسانی سورس ناموفق بود؛ ادامه با نسخه موجود."
+say "updating the source in $SRC_DIR…"
+git -C "$SRC_DIR" pull --quiet --ff-only || warn "could not update the source; continuing with the existing copy."
   else
     command -v git >/dev/null 2>&1 || install_pkgs "git"
-    say "دریافت سورس از گیت‌هاب…"
-    git clone --depth 1 "$REPO_URL" "$SRC_DIR" || die "دریافت سورس ناموفق بود."
+say "downloading the source from GitHub…"
+git clone --depth 1 "$REPO_URL" "$SRC_DIR" || die "could not download the source."
   fi
   SRC="$SRC_DIR"
 fi
 
 # --------------------------------------------------------------- virtualenv
-say "ساخت محیط پایتون در $VENV_DIR…"
+say "creating the python environment in $VENV_DIR…"
 mkdir -p "$(dirname "$VENV_DIR")" "$BIN_DIR"
 $PY -m venv "$VENV_DIR" 2>/dev/null || {
   install_pkgs "python3-venv"; $PY -m venv "$VENV_DIR"; }
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
-say "نصب بسته سیمورغ…"
+say "installing the simurgh package…"
 install_pkg() {
   "$VENV_DIR/bin/pip" install --quiet "$@" && return 0
   return 1
 }
 if ! install_pkg "$SRC"; then
-  warn "نصب عادی ناموفق بود؛ تلاش بدون شبکه (no-build-isolation)…"
+warn "the normal install failed; trying offline (no-build-isolation)…"
   install_pkgs "python3-setuptools python3-wheel" || true
-  install_pkg --no-build-isolation "$SRC" || die "نصب بسته ناموفق بود."
+install_pkg --no-build-isolation "$SRC" || die "package installation failed."
 fi
 ln -sf "$VENV_DIR/bin/simurgh" "$BIN_DIR/simurgh"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) export PATH="$BIN_DIR:$PATH" ;; esac
-ok "فرمان simurgh نصب شد: $(command -v simurgh)"
+ok "the simurgh command is installed: $(command -v simurgh)"
 
 # --------------------------------------------------------------- configure
 ARGS=(--force)
@@ -234,24 +234,24 @@ if [ -z "$ROLE" ] && [ "$ASSUME_YES" = "1" ]; then
   ARGS+=(--role "$ROLE")
 fi
 if [ -z "$ROLE" ] && [ -t 0 ]; then
-  printf '\n%s\n' "${BOLD}این سرور چه نقشی دارد؟${RESET}"
-  printf '  %s1)%s سرور خارج (Exit)  — پنل اصلی و سرویس‌ها اینجا هستند\n' "$CYAN" "$RESET"
-  printf '  %s2)%s سرور ایران (Relay) — کاربران به این سرور وصل می‌شوند\n' "$CYAN" "$RESET"
-  read -r -p "  انتخاب [1]: " _role_choice
+printf '\n%s\n' "${BOLD}What is the role of this server?${RESET}"
+printf '  %s1)%s Foreign server (exit)  — your panel and services live here\n' "$CYAN" "$RESET"
+printf '  %s2)%s Iranian server (relay) — your users connect to this server\n' "$CYAN" "$RESET"
+read -r -p "  choice [1]: " _role_choice
   case "${_role_choice:-1}" in
-    2|relay|ایران) ROLE="relay" ;;
+2|relay) ROLE="relay" ;;
     *) ROLE="exit" ;;
   esac
   ARGS+=(--role "$ROLE")
 fi
 [ -n "$ROLE" ] || ROLE="auto"
 
-say "ساخت تنظیمات…"
-simurgh install "${ARGS[@]}" || die "نصب تنظیمات ناموفق بود."
+say "writing the config…"
+simurgh install "${ARGS[@]}" || die "writing the config failed."
 
 # ------------------------------------------------------------------- finish
 echo
-ok "نصب کامل شد."
+ok "installation complete."
 if [ -n "${SIMURGH_HOME:-}" ]; then SIMHOME="$SIMURGH_HOME"
 elif [ "$(id -u)" = "0" ]; then SIMHOME=/etc/simurgh
 else SIMHOME="$HOME/.simurgh"; fi
@@ -276,17 +276,17 @@ except Exception:
     pass
 PY
 )"
-  printf '%s\n' "  ${BOLD}پنل مدیریت:${RESET} ${CYAN}http://<IP-سرور-ایران>:$PANEL${RESET}"
-  [ -n "$CREDS" ] && printf '%s\n' "  ${BOLD}ورود:${RESET} $CREDS"
-  printf '%s\n' "  ${DIM}افزودن پورت: simurgh mapping add 443 443${RESET}"
-  printf '%s\n' "  ${DIM}منوی متنی: simurgh menu${RESET}"
+printf '%s\n' "  ${BOLD}web panel:${RESET} ${CYAN}http://<IRAN-SERVER-IP>:$PANEL${RESET}"
+[ -n "$CREDS" ] && printf '%s\n' "  ${BOLD}login:${RESET} $CREDS"
+printf '%s\n' "  ${DIM}add a port: simurgh mapping add 443 443${RESET}"
+printf '%s\n' "  ${DIM}text menu: simurgh menu${RESET}"
 else
   LINK="$(simurgh link --show 2>/dev/null || true)"
-  [ -n "$LINK" ] && printf '%s\n' "  ${BOLD}لینک اتصال رله:${RESET} ${CYAN}$LINK${RESET}"
-  printf '%s\n' "  ${DIM}پورت‌های فعال: ${PORTS:-443}${RESET}"
+[ -n "$LINK" ] && printf '%s\n' "  ${BOLD}relay setup link:${RESET} ${CYAN}$LINK${RESET}"
+printf '%s\n' "  ${DIM}active ports: ${PORTS:-443}${RESET}"
 fi
-printf '%s\n' "  ${DIM}وضعیت: simurgh status   •   لاگ: simurgh logs -f${RESET}"
+printf '%s\n' "  ${DIM}status: simurgh status   •   log: simurgh logs -f${RESET}"
 echo
 if [ "$NO_SYSTEMD" = "1" ]; then
-  warn "بدون systemd نصب شد. برای اجرا:  simurgh exit   یا   simurgh relay"
+warn "installed without systemd. To run it:  simurgh exit   or   simurgh relay"
 fi

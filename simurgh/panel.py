@@ -533,9 +533,11 @@ class Panel:
 
     # ------------------------------------------------------------ dashboard
     def dashboard(self) -> str:
+        """Serve the dashboard; the UI language is chosen in the browser."""
         return DASHBOARD_HTML.replace("__ROLE__", self.role) \
                              .replace("__VERSION__", __version__) \
-                             .replace("__PRODUCT__", __product__)
+                             .replace("__PRODUCT__", __product__) \
+                             .replace("__I18N__", json.dumps(PANEL_I18N, ensure_ascii=False))
 
 
 def _mask(token: str) -> str:
@@ -556,12 +558,147 @@ def _fingerprint(cfg: ExitConfig) -> str | None:
 
 
 # ------------------------------------------------------------------- html
+# UI strings for the dashboard: the panel ships English and Persian.
+# Keys are shared by the HTML (data-i18n attributes) and the JavaScript (t()).
+PANEL_I18N = {
+    "en": {
+        "state_connecting": "connecting…",
+        "refresh": "Refresh",
+        "card_tunnel": "Tunnel status",
+        "lbl_exit": "current exit",
+        "lbl_rtt": "round-trip time",
+        "lbl_uptime": "uptime",
+        "lbl_reconnects": "reconnects",
+        "lbl_last_error": "last error",
+        "card_speed": "Live speed",
+        "download": "download",
+        "upload": "upload",
+        "lbl_total_down": "total download",
+        "lbl_total_up": "total upload",
+        "lbl_active": "active connections",
+        "card_tools": "Tools",
+        "btn_speedtest": "Speed test through the tunnel",
+        "btn_reconnect": "Reconnect",
+        "btn_restart": "Restart service",
+        "lbl_panel_port": "panel port",
+        "lbl_panel_requests": "panel requests",
+        "card_mappings": "Port forwardings (mappings)",
+        "th_name": "name",
+        "th_iran_port": "Iranian port",
+        "th_target": "target",
+        "th_type": "type",
+        "th_state": "state",
+        "form_listen": "Iranian port",
+        "form_target": "target port (foreign)",
+        "form_name": "name (optional)",
+        "btn_add": "Add",
+        "hint_mappings": "A new mapping starts working right away and is saved to the config file.",
+        "card_logs": "Live log",
+        "btn_load_logs": "Load the log",
+        "footer": "transparent tunnel between an Iranian and a foreign server",
+        "no": "no",
+        "yes": "yes",
+        "state_connected": "connected",
+        "state_down": "down",
+        "state_error": "cannot reach the panel",
+        "role_relay": "Iranian server (relay)",
+        "role_exit": "Foreign server (exit)",
+        "up": "up",
+        "down": "down",
+        "waiting_exit": "waiting for the foreign server",
+        "waiting_relay": "waiting for a relay",
+        "relays_connected": "connected relays: {n}",
+        "no_error": "none",
+        "dur_days": "{d} days and {h} h",
+        "dur_hours": "{h} h and {m} min",
+        "dur_minutes": "{m} min",
+        "dur_seconds": "{s} s",
+        "state_on": "on",
+        "state_off": "off",
+        "btn_turn_off": "turn off",
+        "btn_turn_on": "turn on",
+        "btn_delete": "delete",
+        "confirm_delete": "Delete this mapping?",
+        "toast_done": "done",
+        "toast_error": "error: {msg}",
+        "toast_conflict": "port conflict: {list}",
+        "toast_need_listen": "enter the Iranian port",
+        "toast_speed": "download: {down} Mbps / upload: {up} Mbps",
+        "logs_empty": "no log yet"
+    },
+    "fa": {
+        "state_connecting": "در حال اتصال…",
+        "refresh": "به‌روزرسانی",
+        "card_tunnel": "وضعیت تونل",
+        "lbl_exit": "اکسای مقصد",
+        "lbl_rtt": "پینگ",
+        "lbl_uptime": "مدت اتصال",
+        "lbl_reconnects": "تعداد اتصال‌ها",
+        "lbl_last_error": "آخرین خطا",
+        "card_speed": "سرعت لحظه‌ای",
+        "download": "دانلود",
+        "upload": "آپلود",
+        "lbl_total_down": "کل دانلود",
+        "lbl_total_up": "کل آپلود",
+        "lbl_active": "اتصال‌های فعال",
+        "card_tools": "ابزارها",
+        "btn_speedtest": "تست سرعت از تونل",
+        "btn_reconnect": "اتصال مجدد",
+        "btn_restart": "ری‌استارت سرویس",
+        "lbl_panel_port": "پورت پنل",
+        "lbl_panel_requests": "درخواست‌های پنل",
+        "card_mappings": "پورت‌های فوروارد (مپینگ‌ها)",
+        "th_name": "نام",
+        "th_iran_port": "پورت ایران",
+        "th_target": "مقصد",
+        "th_type": "نوع",
+        "th_state": "وضعیت",
+        "form_listen": "پورت ایران",
+        "form_target": "پورت مقصد (خارج)",
+        "form_name": "نام (اختیاری)",
+        "btn_add": "افزودن",
+        "hint_mappings": "مپینگ‌ها پس از افزودن، بلافاصله فعال می‌شوند و در فایل تنظیمات ذخیره می‌شوند.",
+        "card_logs": "لاگ زنده",
+        "btn_load_logs": "بارگذاری لاگ",
+        "footer": "تونل شفاف بین سرور ایران و سرور خارج",
+        "no": "خیر",
+        "yes": "بله",
+        "state_connected": "متصل",
+        "state_down": "قطع",
+        "state_error": "خطا در اتصال به پنل",
+        "role_relay": "سرور ایران (رله)",
+        "role_exit": "سرور خارج (اگزیت)",
+        "up": "برقرار",
+        "down": "قطع",
+        "waiting_exit": "در انتظار اتصال به سرور خارج",
+        "waiting_relay": "در انتظار اتصال رله",
+        "relays_connected": "رله‌های متصل: {n}",
+        "no_error": "بدون خطا",
+        "dur_days": "{d} روز و {h} ساعت",
+        "dur_hours": "{h} ساعت و {m} دقیقه",
+        "dur_minutes": "{m} دقیقه",
+        "dur_seconds": "{s} ثانیه",
+        "state_on": "فعال",
+        "state_off": "غیرفعال",
+        "btn_turn_off": "خاموش",
+        "btn_turn_on": "روشن",
+        "btn_delete": "حذف",
+        "confirm_delete": "حذف شود؟",
+        "toast_done": "انجام شد",
+        "toast_error": "خطا: {msg}",
+        "toast_conflict": "هشدار پورت تکراری: {list}",
+        "toast_need_listen": "پورت ایران را وارد کنید",
+        "toast_speed": "دانلود: {down} Mbps / آپلود: {up} Mbps",
+        "logs_empty": "لاگی موجود نیست"
+    }
+}
+
 DASHBOARD_HTML = r"""<!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__PRODUCT__ — پنل مدیریت</title>
+<title>__PRODUCT__</title>
 <style>
 :root{
   --bg:#0b1020; --card:#141b31; --card2:#1b2440; --line:#26324f;
@@ -572,7 +709,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 body{margin:0;background:linear-gradient(180deg,#0b1020,#0e1428 60%);color:var(--fg);
   font-family:Vazirmatn,Tahoma,"Segoe UI",system-ui,sans-serif;font-size:15px}
 header{display:flex;align-items:center;gap:14px;padding:16px 22px;border-bottom:1px solid var(--line);
-  background:rgba(20,27,49,.7);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
+  background:rgba(20,27,49,.7);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5;flex-wrap:wrap}
 header .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));
   display:grid;place-items:center;font-weight:700}
 header h1{font-size:17px;margin:0;font-weight:600}
@@ -587,11 +724,11 @@ main{padding:20px;max-width:1200px;margin:0 auto;display:grid;gap:16px;
 .big{font-size:26px;font-weight:700}
 .sub{color:var(--dim);font-size:12px;margin-top:4px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--line)}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px dashed var(--line)}
 .kv:last-child{border-bottom:0}
 .kv span:first-child{color:var(--dim)}
 table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{padding:8px 6px;text-align:right;border-bottom:1px solid var(--line)}
+th,td{padding:8px 6px;text-align:start;border-bottom:1px solid var(--line)}
 th{color:var(--dim);font-weight:600;font-size:12px}
 button{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:10px;
   padding:8px 14px;cursor:pointer;font-family:inherit;font-size:14px}
@@ -620,75 +757,104 @@ footer{color:var(--dim);text-align:center;padding:24px;font-size:12px}
   <div class="logo">S</div>
   <h1>__PRODUCT__ <span class="muted">v__VERSION__</span></h1>
   <span class="badge" id="role">__ROLE__</span>
-  <span class="badge" id="state">در حال اتصال…</span>
+  <span class="badge" id="state" data-i18n="state_connecting">connecting…</span>
   <div class="sp"></div>
-  <button onclick="load()">به‌روزرسانی</button>
+  <button id="lang" onclick="toggleLang()" title="Switch language">فا</button>
+  <button onclick="load()" data-i18n="refresh">Refresh</button>
 </header>
 
 <main>
   <div class="card">
-    <h2>وضعیت تونل</h2>
+    <h2 data-i18n="card_tunnel">Tunnel status</h2>
     <div class="big" id="tunnel">—</div>
     <div class="sub" id="tunnel_sub">—</div>
-    <div class="kv"><span>اکسای مقصد</span><span id="exit">—</span></div>
-    <div class="kv"><span>پینگ</span><span id="rtt">—</span></div>
-    <div class="kv"><span>مدت اتصال</span><span id="uptime">—</span></div>
-    <div class="kv"><span>تعداد اتصال‌ها</span><span id="reconnects">—</span></div>
-    <div class="kv"><span>آخرین خطا</span><span id="last_error">—</span></div>
+    <div class="kv"><span data-i18n="lbl_exit">current exit</span><span id="exit">—</span></div>
+    <div class="kv"><span data-i18n="lbl_rtt">round-trip time</span><span id="rtt">—</span></div>
+    <div class="kv"><span data-i18n="lbl_uptime">uptime</span><span id="uptime">—</span></div>
+    <div class="kv"><span data-i18n="lbl_reconnects">reconnects</span><span id="reconnects">—</span></div>
+    <div class="kv"><span data-i18n="lbl_last_error">last error</span><span id="last_error">—</span></div>
   </div>
 
   <div class="card">
-    <h2>سرعت لحظه‌ای</h2>
+    <h2 data-i18n="card_speed">Live speed</h2>
     <div class="grid2">
-      <div><div class="big" id="down">0</div><div class="sub">دانلود</div></div>
-      <div><div class="big" id="up">0</div><div class="sub">آپلود</div></div>
+      <div><div class="big" id="down">0</div><div class="sub" data-i18n="download">download</div></div>
+      <div><div class="big" id="up">0</div><div class="sub" data-i18n="upload">upload</div></div>
     </div>
     <canvas id="spark" width="600" height="140"></canvas>
-    <div class="kv"><span>کل دانلود</span><span id="tot_in">0</span></div>
-    <div class="kv"><span>کل آپلود</span><span id="tot_out">0</span></div>
-    <div class="kv"><span>اتصال‌های فعال</span><span id="active">0</span></div>
+    <div class="kv"><span data-i18n="lbl_total_down">total download</span><span id="tot_in">0</span></div>
+    <div class="kv"><span data-i18n="lbl_total_up">total upload</span><span id="tot_out">0</span></div>
+    <div class="kv"><span data-i18n="lbl_active">active connections</span><span id="active">0</span></div>
   </div>
 
   <div class="card">
-    <h2>ابزارها</h2>
+    <h2 data-i18n="card_tools">Tools</h2>
     <div class="row">
-      <button class="primary" onclick="act('speedtest',{seconds:6})">تست سرعت از تونل</button>
-      <button onclick="act('reconnect')">اتصال مجدد</button>
-      <button onclick="act('restart')">ری‌استارت سرویس</button>
+      <button class="primary" onclick="act('speedtest',{seconds:6})" data-i18n="btn_speedtest">Speed test through the tunnel</button>
+      <button onclick="act('reconnect')" data-i18n="btn_reconnect">Reconnect</button>
+      <button onclick="act('restart')" data-i18n="btn_restart">Restart service</button>
     </div>
     <div style="margin-top:12px">
-      <div class="kv"><span>پورت پنل</span><span id="panel_port">—</span></div>
-      <div class="kv"><span>درخواست‌های پنل</span><span id="panel_req">—</span></div>
+      <div class="kv"><span data-i18n="lbl_panel_port">panel port</span><span id="panel_port">—</span></div>
+      <div class="kv"><span data-i18n="lbl_panel_requests">panel requests</span><span id="panel_req">—</span></div>
     </div>
   </div>
 
   <div class="card" style="grid-column:1/-1">
-    <h2>پورت‌های فوروارد (مپینگ‌ها)</h2>
+    <h2 data-i18n="card_mappings">Port forwardings (mappings)</h2>
     <table id="mappings"><thead><tr>
-      <th>نام</th><th>پورت ایران</th><th>مقصد</th><th>نوع</th><th>وضعیت</th><th></th>
+      <th data-i18n="th_name">name</th><th data-i18n="th_iran_port">Iranian port</th>
+      <th data-i18n="th_target">target</th><th data-i18n="th_type">type</th>
+      <th data-i18n="th_state">state</th><th></th>
     </tr></thead><tbody></tbody></table>
     <div class="row" style="margin-top:12px">
-      <div style="flex:1;min-width:120px"><label>پورت ایران</label><input id="m_listen" placeholder="443"></div>
-      <div style="flex:1;min-width:120px"><label>پورت مقصد (خارج)</label><input id="m_target" placeholder="443"></div>
-      <div style="flex:1;min-width:120px"><label>نام (اختیاری)</label><input id="m_name" placeholder="panel"></div>
-      <div style="min-width:110px"><label>UDP</label><select id="m_udp"><option value="no">خیر</option><option value="yes">بله</option></select></div>
-      <button class="primary" style="align-self:flex-end" onclick="addMapping()">افزودن</button>
+      <div style="flex:1;min-width:120px"><label data-i18n="form_listen">Iranian port</label><input id="m_listen" placeholder="443"></div>
+      <div style="flex:1;min-width:120px"><label data-i18n="form_target">target port (foreign)</label><input id="m_target" placeholder="443"></div>
+      <div style="flex:1;min-width:120px"><label data-i18n="form_name">name (optional)</label><input id="m_name" placeholder="panel"></div>
+      <div style="min-width:110px"><label>UDP</label><select id="m_udp"><option value="no">no</option><option value="yes">yes</option></select></div>
+      <button class="primary" style="align-self:flex-end" onclick="addMapping()" data-i18n="btn_add">Add</button>
     </div>
-    <div class="sub" id="mapping_hint">مپینگ‌ها پس از افزودن، بلافاصله فعال می‌شوند و در فایل تنظیمات ذخیره می‌شوند.</div>
+    <div class="sub" id="mapping_hint" data-i18n="hint_mappings"></div>
   </div>
 
   <div class="card" style="grid-column:1/-1">
-    <h2>لاگ زنده</h2>
+    <h2 data-i18n="card_logs">Live log</h2>
     <pre id="logs">…</pre>
-    <div class="row"><button onclick="loadLogs()">بارگذاری لاگ</button></div>
+    <div class="row"><button onclick="loadLogs()" data-i18n="btn_load_logs">Load the log</button></div>
   </div>
 </main>
 <div class="toast" id="toast"></div>
-<footer>__PRODUCT__ v__VERSION__ — تونل شفاف بین سرور ایران و سرور خارج</footer>
+<footer>__PRODUCT__ v__VERSION__ — <span data-i18n="footer"></span></footer>
 
 <script>
+const I18N = __I18N__;
 const $ = (id) => document.getElementById(id);
 let series = [];
+let LANG = localStorage.getItem('simurgh_lang');
+if(!LANG){
+  LANG = ((navigator.language||navigator.userLanguage||'en').toLowerCase().startsWith('fa')) ? 'fa' : 'en';
+}
+if(!I18N[LANG]){ LANG = 'en'; }
+function t(key, vars){
+  const table = I18N[LANG] || {};
+  let s = (key in table) ? table[key] : (I18N.en[key] || key);
+  if(vars){ for(const k in vars){ s = s.split('{'+k+'}').join(vars[k]); } }
+  return s;
+}
+function applyLang(){
+  document.documentElement.lang = LANG;
+  document.documentElement.dir = (LANG === 'fa') ? 'rtl' : 'ltr';
+  document.querySelectorAll('[data-i18n]').forEach(el=>{ el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-ph]').forEach(el=>{ el.placeholder = t(el.dataset.i18nPh); });
+  const btn = $('lang'); if(btn){ btn.textContent = (LANG === 'fa') ? 'EN' : 'فا'; }
+  const sel = $('m_udp');
+  if(sel){ sel.options[0].textContent = t('no'); sel.options[1].textContent = t('yes'); }
+}
+function toggleLang(){
+  LANG = (LANG === 'fa') ? 'en' : 'fa';
+  localStorage.setItem('simurgh_lang', LANG);
+  applyLang(); load(); loadLogs();
+}
 function fmtBytes(n){
   n = Number(n)||0; const u=['B','KB','MB','GB','TB']; let i=0;
   while(n>=1024 && i<u.length-1){n/=1024;i++;}
@@ -698,44 +864,45 @@ function fmtRate(bps){ return fmtBytes(bps)+'/s'; }
 function fmtDuration(s){
   s=Math.max(0,Math.floor(Number(s)||0));
   const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
-  if(d) return d+' روز و '+h+' ساعت';
-  if(h) return h+' ساعت و '+m+' دقیقه';
-  if(m) return m+' دقیقه';
-  return s+' ثانیه';
+  if(d) return t('dur_days', {d:d, h:h});
+  if(h) return t('dur_hours', {h:h, m:m});
+  if(m) return t('dur_minutes', {m:m});
+  return t('dur_seconds', {s:s});
 }
 function toast(msg, bad){
-  const t=$('toast'); t.textContent=msg; t.style.borderColor = bad? 'var(--err)':'var(--line)';
-  t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600);
+  const el=$('toast'); el.textContent=msg; el.style.borderColor = bad? 'var(--err)':'var(--line)';
+  el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),2600);
 }
 async function load(){
   try{
     const r = await fetch('/api/status', {cache:'no-store'});
     const d = await r.json();
-    const n = d.node || {}, rates = (n.stats && n.stats.rates) || {}, t = (n.stats && n.stats.totals) || {};
-    const connected = (d.panel.role==='relay') ? !!n.connected : (n.tunnels > 0);
-    $('state').textContent = connected ? 'متصل' : 'قطع';
+    const n = d.node || {}, rates = (n.stats && n.stats.rates) || {}, tot = (n.stats && n.stats.totals) || {};
+    const nTunnels = Array.isArray(n.tunnels) ? n.tunnels.length : (Number(n.tunnels)||0);
+    const connected = (d.panel.role==='relay') ? !!n.connected : (nTunnels > 0);
+    $('state').textContent = connected ? t('state_connected') : t('state_down');
     $('state').className = 'badge ' + (connected ? 'ok' : 'err');
-    $('role').textContent = d.panel.role==='relay' ? 'سرور ایران (رله)' : 'سرور خارج (اگزیت)';
-    $('tunnel').textContent = connected ? 'برقرار' : 'قطع';
+    $('role').textContent = d.panel.role==='relay' ? t('role_relay') : t('role_exit');
+    $('tunnel').textContent = connected ? t('up') : t('down');
     $('tunnel').style.color = connected ? 'var(--ok)' : 'var(--err)';
     $('tunnel_sub').textContent = (d.panel.role==='relay')
-       ? (n.current_exit || 'در انتظار اتصال به سرور خارج')
-       : (n.tunnels ? 'رله متصل: ' + (n.tunnels) : 'در انتظار اتصال رله');
+       ? (n.current_exit || t('waiting_exit'))
+       : (nTunnels ? t('relays_connected', {n:nTunnels}) : t('waiting_relay'));
     $('exit').textContent = (d.panel.role==='relay') ? (n.current_exit || '—')
        : ((n.exit_info && (n.exit_info.name||'-')) || '—');
     $('rtt').textContent = n.rtt_ms ? (n.rtt_ms.toFixed(1)+' ms') : '—';
     $('uptime').textContent = fmtDuration(n.uptime);
     $('reconnects').textContent = (n.reconnects!=null?n.reconnects:'—');
-    $('last_error').textContent = n.last_error || (n.error||'') || 'بدون خطا';
+    $('last_error').textContent = n.last_error || (n.error||'') || t('no_error');
     const down = rates.in_bps||0, up = rates.out_bps||0;
     $('down').textContent = fmtRate(down); $('up').textContent = fmtRate(up);
-    $('tot_in').textContent = fmtBytes(t.in_bytes||0); $('tot_out').textContent = fmtBytes(t.out_bytes||0);
-    $('active').textContent = (t.active!=null?t.active:(n.active_conns||0));
+    $('tot_in').textContent = fmtBytes(tot.in_bytes||0); $('tot_out').textContent = fmtBytes(tot.out_bytes||0);
+    $('active').textContent = (tot.active!=null?tot.active:(n.active_conns||0));
     $('panel_port').textContent = d.panel.port; $('panel_req').textContent = d.panel.requests;
     series.push(down); if(series.length>90) series.shift();
     draw();
     renderMappings(n.mappings||[]);
-  }catch(e){ $('state').textContent='خطا در اتصال به پنل'; $('state').className='badge err'; }
+  }catch(e){ $('state').textContent = t('state_error'); $('state').className='badge err'; }
 }
 function draw(){
   const c = $('spark'), ctx = c.getContext('2d');
@@ -755,14 +922,14 @@ function renderMappings(rows){
     tr.innerHTML = `<td>${m.name||'—'}</td><td>${m.listen}</td>
       <td>${m.target_host||'127.0.0.1'}:${m.target_port}</td>
       <td>${m.udp?'UDP':'TCP'}</td>
-      <td><span class="pill ${m.enabled?'on':'off'}">${m.enabled?'فعال':'غیرفعال'}</span></td>
+      <td><span class="pill ${m.enabled?'on':'off'}">${m.enabled?t('state_on'):t('state_off')}</span></td>
       <td></td>`;
     const cell = tr.lastElementChild;
-    const tog = document.createElement('button'); tog.textContent = m.enabled?'خاموش':'روشن';
+    const tog = document.createElement('button'); tog.textContent = m.enabled? t('btn_turn_off') : t('btn_turn_on');
     tog.onclick = ()=>mapping({action:'toggle', key:m.key});
-    const del = document.createElement('button'); del.textContent='حذف'; del.className='danger';
+    const del = document.createElement('button'); del.textContent = t('btn_delete'); del.className='danger';
     del.style.marginInlineStart='6px';
-    del.onclick = ()=>{ if(confirm('حذف شود؟')) mapping({action:'remove', key:m.key}); };
+    del.onclick = ()=>{ if(confirm(t('confirm_delete'))) mapping({action:'remove', key:m.key}); };
     cell.append(tog, del); tb.appendChild(tr);
   });
 }
@@ -770,13 +937,13 @@ async function mapping(payload){
   const r = await fetch('/api/mappings',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(payload)});
   const d = await r.json();
-  toast(d.ok?'انجام شد':('خطا: '+(d.error||'')), !d.ok);
-  if(d.port_conflicts && d.port_conflicts.length) toast('هشدار پورت تکراری: '+d.port_conflicts.join(', '), true);
+  toast(d.ok ? t('toast_done') : t('toast_error', {msg:(d.error||'')}), !d.ok);
+  if(d.port_conflicts && d.port_conflicts.length){ toast(t('toast_conflict', {list:d.port_conflicts.join(', ')}), true); }
   load();
 }
 function addMapping(){
   const listen = parseInt($('m_listen').value||'0',10);
-  if(!listen){ toast('پورت ایران را وارد کنید', true); return; }
+  if(!listen){ toast(t('toast_need_listen'), true); return; }
   mapping({action:'add', listen, target_port: parseInt($('m_target').value||listen,10),
            name:$('m_name').value, udp: $('m_udp').value==='yes'});
   $('m_listen').value=''; $('m_target').value=''; $('m_name').value='';
@@ -787,14 +954,15 @@ async function act(name, extra){
     body:JSON.stringify(body)});
   const d = await r.json();
   if(name==='speedtest' && d.ok){
-    toast('دانلود: '+d.speedtest.download_mbps.toFixed(1)+' Mbps / آپلود: '+d.speedtest.upload_mbps.toFixed(1)+' Mbps');
-  } else toast(d.ok?'انجام شد':('خطا: '+(d.error||'')), !d.ok);
+    toast(t('toast_speed', {down:d.speedtest.download_mbps.toFixed(1), up:d.speedtest.upload_mbps.toFixed(1)}));
+  } else { toast(d.ok ? t('toast_done') : t('toast_error', {msg:(d.error||'')}), !d.ok); }
   load();
 }
 async function loadLogs(){
   const r = await fetch('/api/logs?lines=150'); const d = await r.json();
-  $('logs').textContent = (d.lines||[]).join('\n') || 'لاگی موجود نیست';
+  $('logs').textContent = (d.lines||[]).join('\n') || t('logs_empty');
 }
+applyLang();
 load(); loadLogs(); setInterval(load, 2000);
 </script>
 </body>
