@@ -272,8 +272,10 @@ def edit_exit_target(home: Home) -> None:
     print(f"  5) fingerprint : {cfg.exit.fingerprint or '—'}")
     print(f"  6) token       : {cfg.token[:6]}…{cfg.token[-4:]}" if len(cfg.token) > 12
           else f"  6) token       : {cfg.token}")
+    print(f"  7) tunnels     : {cfg.connections} "
+          f"({'one connection' if cfg.connections == 1 else 'pool: load is spread'})")
     print()
-    field = ask("which field to change? (1-6 or Enter)", "")
+    field = ask("which field to change? (1-7 or Enter)", "")
     changed = True
     if field in ("1", "۱"):
         cfg.exit.address = ask("new address", cfg.exit.address)
@@ -292,6 +294,14 @@ def edit_exit_target(home: Home) -> None:
         cfg.exit.fingerprint = ask("certificate fingerprint (empty = remove)", cfg.exit.fingerprint or "") or None
     elif field in ("6", "۶"):
         cfg.token = ask("new token", cfg.token)
+    elif field in ("7", "۷"):
+        raw = ask("tunnel connections (1-16)", str(cfg.connections))
+        try:
+            cfg.connections = max(1, min(16, int(raw)))
+        except ValueError:
+            print(c("  Invalid number.", "red"))
+            pause()
+            return
     else:
         changed = False
     if changed:

@@ -32,6 +32,7 @@ import struct
 
 HEADER = struct.Struct(">BI")
 HEADER_LEN = HEADER.size  # 5
+_SID = struct.Struct(">I")              # sid lives at offset 1 of every frame
 
 T_OPEN = 1
 T_OPEN_OK = 2
@@ -51,6 +52,9 @@ WIN = struct.Struct(">II")
 
 #: how much a peer may send before it has to wait for credit
 DEFAULT_STREAM_WINDOW = 256 * 1024
+#: ceiling for the adaptive window: a stream that keeps draining fast is
+#: allowed this much in flight, so one user is not capped at window/RTT
+DEFAULT_MAX_STREAM_WINDOW = 16 * 1024 * 1024
 #: safety net across all streams of one tunnel connection
 DEFAULT_GLOBAL_WINDOW = 16 * 1024 * 1024
 #: biggest payload chunk the multiplexer puts in a single DATA frame
@@ -81,7 +85,7 @@ def frame_type(frame: bytes) -> int:
 
 
 def frame_sid(frame: bytes) -> int:
-    return int.from_bytes(frame[1:HEADER_LEN], "big")
+    return _SID.unpack_from(frame, 1)[0]
 
 
 def frame_payload(frame: bytes) -> bytes:

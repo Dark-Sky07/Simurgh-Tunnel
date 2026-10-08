@@ -21,7 +21,7 @@ customer ──same config, Iran IP──► [Iran relay] ══one disguised tu
 |---|---|
 | The foreign IP/domain must not be filtered | Customers only ever use the **Iranian** IP; the foreign address never appears in any config, QR code or subscription. |
 | DPI must not detect the tunnel | A real TLS connection to a real domain: valid certificate, SNI, and a **decoy website** (nginx page) for anything without the token. |
-| Speed and stability | One multiplexed connection (`mux`) serves every user and every port; no re-encryption of user traffic, credit-based flow control instead of buffering. |
+| Speed and stability | One multiplexed connection (`mux`) serves every user and every port; no re-encryption of user traffic, credit-based flow control instead of buffering. The per-stream window **grows itself** on long paths (bandwidth-delay product), and `connections = 2..16` keeps a pool of tunnels so one TCP flow — or one dropped tunnel — is never the ceiling for everyone. |
 | Easy install | One command per server, one link to move the config across. |
 | Minimal resources | Pure Python 3 + asyncio, no Node/Go/database. Idle memory ≈ 25–40 MB per role. |
 | Text menu + web panel | Full-featured **English text menu** (`simurgh menu`) and a **bilingual (EN/FA) web panel** with live graphs. |
@@ -125,10 +125,12 @@ CDN, no external fonts.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **100 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode) |
+| `python -m pytest -q` | **115 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, window autotuning) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
 | Throughput (one machine, loopback) | ≈ 3 Gbit/s down, ≈ 1.3 Gbit/s up through the tunnel |
+| Single stream on a 120 ms path | 2 MB/s with a fixed window → **18 MB/s** with the automatic window (same 2 vCPU container) |
+| Pool | 8 user connections over 4 tunnels: **4× the aggregate** of one tunnel with the same per-flow cap, load spread 2/2/2/2 |
 | Decoy | plain HTTP → nginx page · TLS + garbage → silent close · raw → random noise |
 | Self-heal | killing the exit: the relay reconnects when it returns |
 | Reverse mode | traffic over tls/raw/plain, exit reconnects after a relay restart |

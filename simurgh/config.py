@@ -156,6 +156,13 @@ class ExitConfig:
     strict_ports: bool = False
     speedtest_port: int = 8808
     log_level: str = "info"
+    #: flow control: base receive window per stream, and the ceiling the
+    #: adaptive window may grow to while a stream keeps draining fast
+    stream_window: int = 256 * 1024
+    max_stream_window: int = 16 * 1024 * 1024
+    chunk: int = 65536
+    #: reverse mode: how many tunnel connections this exit opens to the relay
+    connections: int = 1
 
     def to_dict(self) -> dict:
         d = {
@@ -166,6 +173,10 @@ class ExitConfig:
             "push_enabled": self.push_enabled,
             "strict_ports": self.strict_ports,
             "speedtest_port": self.speedtest_port,
+            "stream_window": self.stream_window,
+            "max_stream_window": self.max_stream_window,
+            "chunk": self.chunk,
+            "connections": self.connections,
         }
         if self.cert_file:
             d["cert_file"] = self.cert_file
@@ -211,6 +222,11 @@ def load_exit(path: str | Path) -> ExitConfig:
     cfg.speedtest_port = int(data.get("speedtest_port", 8808))
     cfg.proxy_protocol = str(data.get("proxy_protocol", "off"))
     cfg.log_level = str(data.get("log_level", "info"))
+    cfg.stream_window = max(16 * 1024, int(data.get("stream_window", 256 * 1024)))
+    cfg.max_stream_window = max(cfg.stream_window,
+                                int(data.get("max_stream_window", 16 * 1024 * 1024)))
+    cfg.chunk = max(4096, min(1024 * 1024, int(data.get("chunk", 65536))))
+    cfg.connections = max(1, min(16, int(data.get("connections", 1))))
     listen = data.get("listen") or []
     for item in listen:
         if isinstance(item, str):
@@ -302,7 +318,12 @@ class RelayConfig:
     accept_push: bool = True
     keepalive: int = 25
     stream_window: int = 256 * 1024
+    max_stream_window: int = 16 * 1024 * 1024
     chunk: int = 65536
+    #: how many tunnel connections to keep open to the exit (1 = one tunnel).
+    #: Several connections beat a single TCP flow on a long, lossy path and
+    #: they spread the head-of-line blocking of a busy tunnel.
+    connections: int = 1
     speedtest_port: int = 0
     log_level: str = "info"
     panel_port: int = 8787
@@ -327,7 +348,9 @@ class RelayConfig:
             "accept_push": self.accept_push,
             "keepalive": self.keepalive,
             "stream_window": self.stream_window,
+            "max_stream_window": self.max_stream_window,
             "chunk": self.chunk,
+            "connections": self.connections,
             "log_level": self.log_level,
             "panel_port": self.panel_port,
             "dial": self.dial,
@@ -403,8 +426,11 @@ def load_relay(path: str | Path) -> RelayConfig:
     cfg.name = str(data.get("name") or "")
     cfg.accept_push = bool(data.get("accept_push", True))
     cfg.keepalive = int(data.get("keepalive", 25))
-    cfg.stream_window = int(data.get("stream_window", 256 * 1024))
-    cfg.chunk = int(data.get("chunk", 65536))
+    cfg.stream_window = max(16 * 1024, int(data.get("stream_window", 256 * 1024)))
+    cfg.max_stream_window = max(cfg.stream_window,
+                                int(data.get("max_stream_window", 16 * 1024 * 1024)))
+    cfg.chunk = max(4096, min(1024 * 1024, int(data.get("chunk", 65536))))
+    cfg.connections = max(1, min(16, int(data.get("connections", 1))))
     cfg.speedtest_port = int(data.get("speedtest_port", 0))
     cfg.log_level = str(data.get("log_level", "info"))
     cfg.panel_port = int(data.get("panel_port", 8787))

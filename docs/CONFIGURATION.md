@@ -105,8 +105,10 @@ dial = "relay"                  # relay = direct, exit = reverse
 panel_port = 8787
 accept_push = true              # accept the port list the exit suggests
 keepalive = 25                  # seconds between pings
-stream_window = 262144          # per-stream receive window (bytes)
+stream_window = 262144          # starting per-stream receive window (bytes)
+max_stream_window = 16777216    # ceiling for the automatic window growth
 chunk = 65536                   # max payload per frame
+connections = 1                 # tunnel connections to keep open (2-16 = pool)
 log_level = "info"
 
 [exit]                          # the foreign server we dial (direct mode)
@@ -162,13 +164,32 @@ the Iranian side.
 | `panel_port` | `8787` | web panel port |
 | `accept_push` | `true` | honour the port list sent by the exit |
 | `keepalive` | `25` | ping interval in seconds |
-| `stream_window` | `262144` | per-stream receive window; raise it on very fast links |
+| `stream_window` | `262144` | starting per-stream receive window |
+| `max_stream_window` | `16777216` | ceiling for the automatic window growth (16 MiB) |
 | `chunk` | `65536` | max frame payload, in bytes |
+| `connections` | `1` | tunnel connections kept open; 2-16 spread the load |
 | `speedtest_port` | `0` | local speed endpoint (`0` = off) |
 | `[exit]` | — | the foreign endpoint (direct mode) |
 | `[tunnel]` | — | the listener (reverse mode) |
 | `[[pool]]` | `[]` | fallback foreign servers, tried when the primary is down |
 | `[[mapping]]` | `[]` | port forwardings |
+
+### Speed and resilience keys (both files)
+
+These three keys exist in `relay.toml` **and** `exit.toml`; the smaller of the
+two sides wins for any given stream, so setting them on the relay is enough.
+
+| Key | Default | What it does |
+|---|---|---|
+| `stream_window` | `256 KiB` | How much a stream may have in flight *before* the tunnel learns the path. Leave it alone unless you know the link is slow to start. |
+| `max_stream_window` | `16 MiB` | The ceiling for the automatic growth. The tunnel measures the real throughput of each stream and doubles the window while the stream keeps the path busy, so a single user on a long (Iran ⇄ Europe) path is no longer capped at `window / RTT`. Lower it on a tiny VPS with little RAM. |
+| `connections` | `1` | How many tunnel connections the relay keeps to the exit (1-16). Every connection is a separate TCP flow and a separate core's worth of work: on long, lossy paths 2-4 of them raise the total a lot and a single dropped connection only costs a fraction of the users. The relay hands each new user connection to the least busy tunnel. |
+| `chunk` | `64 KiB` | Largest payload per frame. Bigger frames mean less per-frame overhead and a little more latency headroom; 64 KiB is a good middle. |
+
+Measured on a simulated 120 ms path (2 vCPU container), single user, plain
+carrier: **2 MB/s with a fixed 256 KiB window → 18 MB/s with the window
+growing**, and the same class of test on a fast path reaches ~2 Gbit/s. RAM
+stays bounded: an idle stream's window falls back to `stream_window`.
 
 ### `[[mapping]]` keys
 

@@ -23,7 +23,7 @@ import time
 from .bridge import Bridge, proxy_v1_header
 from .carriers import ServerCarrier, client_connect
 from .config import Mapping, RelayConfig
-from .mux import Mux
+from .mux import Mux, StreamOpenError
 from .protocol import MODE_TCP, encode_addr
 from .stats import Stats
 from .udp import UdpRelayListener
@@ -68,7 +68,8 @@ class RelayNode:
         self.listen_enabled = listen
         self.stats = Stats()
         self.connected = asyncio.Event()
-        self.mux: Mux | None = None
+        #: every live tunnel connection (a pool: ``connections`` in the config)
+        self._tunnels: list[Mux] = []
         self.current: str = ""
         self.rtt_ms: float | None = None
         self.exit_info: dict = {}
@@ -85,14 +86,35 @@ class RelayNode:
         self.connect_count = 0
 
     # ------------------------------------------------------------- lifecycle
+    @property
+    def muxes(self) -> list[Mux]:
+        """Live tunnel connections, oldest first."""
+        return [m for m in self._tunnels if not m.closed]
+
+    @property
+    def mux(self) -> Mux | None:
+        """The primary tunnel: where the control plane talks."""
+        live = self.muxes
+        return live[0] if live else None
+
+    def _refresh_connected(self) -> None:
+        if self.muxes:
+            self.connected.set()
+        else:
+            self.connected.clear()
+
     async def start(self) -> None:
         await self.rebind()
         if self.cfg.reverse:
             await self._start_tunnel_listener()
             return
-        task = asyncio.ensure_future(self._supervisor())
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        total = max(1, min(16, self.cfg.connections))
+        if total > 1:
+            log.info("keeping %d tunnel connections to the exit", total)
+        for slot in range(total):
+            task = asyncio.ensure_future(self._supervisor(slot))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     async def _start_tunnel_listener(self) -> None:
         """Reverse mode: wait for the foreign exit to connect to us."""
@@ -141,9 +163,13 @@ class RelayNode:
     async def _accept_tunnel(self, channel) -> None:
         """A tunnel connection from an exit node (reverse mode)."""
         peer = getattr(channel, "peer", "") or "?"
-        if self.mux is not None and not self.mux.closed:
-            log.warning("a second exit connected (%s); replacing the current tunnel", peer)
-            self.mux.close()
+        wanted = max(1, min(16, self.cfg.connections))
+        if len(self.muxes) >= wanted:
+            # a pool is expected: an extra connection replaces the oldest, which
+            # is how a restarted exit takes over without duplicating tunnels
+            log.warning("a second exit connected (%s); replacing the oldest tunnel",
+                        peer)
+            self.muxes[0].close()
             await asyncio.sleep(0.2)
         self.connect_count += 1
         await self._run_tunnel(None, channel, label=f"in {channel.name}<-{peer}")
@@ -161,20 +187,20 @@ class RelayNode:
         self._tunnel_servers.clear()
         self._servers.clear()
         self._udp.clear()
-        if self.mux is not None:
-            self.mux.close()
-        # the tunnel handler runs outside our task tree, so make the stopped
-        # state visible at once instead of waiting for its finally block
-        self.mux = None
+        for mux in list(self._tunnels):
+            mux.close()
+        # the tunnel handlers run outside our task tree, so make the stopped
+        # state visible at once instead of waiting for their finally blocks
+        self._tunnels.clear()
         self.current = ""
         self.connected.clear()
         await asyncio.sleep(0)
 
     def reconnect(self) -> None:
-        """Drop the current tunnel; the supervisor dials a fresh one."""
+        """Drop every tunnel; the supervisors dial fresh ones."""
         self._fail_until.clear()
-        if self.mux is not None:
-            self.mux.close()
+        for mux in list(self._tunnels):
+            mux.close()
         self.current = ""
 
     def status(self) -> dict:
@@ -183,6 +209,8 @@ class RelayNode:
             "name": self.cfg.name or "relay",
             "connected": self.connected.is_set(),
             "current_exit": self.current,
+            "connections": len(self.muxes),
+            "tunnel_targets": [self.current] * len(self.muxes) if self.current else [],
             "rtt_ms": self.rtt_ms,
             "uptime": time.time() - self.started_at,
             "reconnects": self.connect_count,
@@ -280,26 +308,52 @@ class RelayNode:
     # ---------------------------------------------------------------- tunnel
     async def open_stream(self, addr: bytes, mode: int = MODE_TCP,
                           timeout: float = STREAM_WAIT):
+        """Open a stream on the least busy tunnel connection.
+
+        With a pool, a user connection lands on whichever tunnel currently
+        carries the fewest streams, so the load spreads and one dying
+        connection costs a fraction of the users.  A transport-level failure
+        (timeout, tunnel closed) is retried on another connection; a target
+        level failure (refused, denied) is final.
+        """
         try:
             await asyncio.wait_for(self.connected.wait(), timeout)
         except asyncio.TimeoutError:
             raise ConnectionError("tunnel is not connected yet") from None
-        mux = self.mux
-        if mux is None or mux.closed:
+        candidates = sorted(self.muxes, key=lambda m: len(m.streams))
+        if not candidates:
             raise ConnectionError("tunnel is down")
-        return await mux.open(addr, mode)
+        last: Exception | None = None
+        for mux in candidates:
+            if mux.closed:
+                continue
+            try:
+                return await mux.open(addr, mode)
+            except StreamOpenError as exc:
+                last = exc
+                if exc.code and exc.code != 2:      # target said no: stop here
+                    raise
+                log.debug("stream open failed on one tunnel (%s); trying another",
+                          exc)
+            except ConnectionError as exc:
+                last = exc
+        raise last or ConnectionError("no tunnel connection could open the stream")
 
-    async def _supervisor(self) -> None:
+    async def _supervisor(self, slot: int = 0) -> None:
         backoff = 0.5
         endpoints = self.cfg.endpoints()
         if not endpoints:
             self.last_error = "no exit endpoint configured"
             return
+        if slot:
+            # stagger a pool so the tunnels do not all flap in lockstep
+            await asyncio.sleep(0.15 * slot)
         while not self._stopping:
             ep = self._pick(endpoints)
             if ep is None:
                 await asyncio.sleep(1.0)
-                self._fail_until.clear()
+                if slot == 0:
+                    self._fail_until.clear()
                 continue
             try:
                 channel = await client_connect(
@@ -320,7 +374,7 @@ class RelayNode:
                 continue
             backoff = 0.5
             self._fail_until.pop(ep.describe(), None)
-            await self._run_tunnel(ep, channel)
+            await self._run_tunnel(ep, channel, slot=slot)
             if not self._stopping:
                 await asyncio.sleep(0.4)
 
@@ -331,46 +385,56 @@ class RelayNode:
             return ready[0]
         return None
 
-    async def _run_tunnel(self, ep, channel, label: str = "") -> None:
+    async def _run_tunnel(self, ep, channel, label: str = "", slot: int = 0) -> None:
         label = label or ep.describe()
         mux = Mux(
             channel,
             is_relay=True,
             on_ctrl=self._on_ctrl,
             stream_window=self.cfg.stream_window,
+            max_stream_window=self.cfg.max_stream_window,
             chunk=self.cfg.chunk,
         )
-        self.mux = mux
+        self._tunnels.append(mux)
+        primary = self.mux is mux
         self.current = label
         self.connect_count += 1
-        self.connected.set()
+        self._refresh_connected()
         self.last_error = ""
-        log.info("tunnel up via %s", label)
-        mux.ctrl({
-            "kind": "hello",
-            "name": self.cfg.name or "relay",
-            "mappings": [{"listen": m.listen, "target": m.target_port,
-                          "name": m.name} for m in self.cfg.mappings],
-            "uptime": time.time() - self.started_at,
-        })
-        keepalive = asyncio.ensure_future(mux.keepalive(self.cfg.keepalive))
-        reporter = asyncio.ensure_future(self._reporter(mux))
-        pinger = asyncio.ensure_future(self._pinger(mux))
+        log.info("tunnel up via %s%s", label,
+                 f" [{len(self.muxes)}/{max(1, self.cfg.connections)}]" if self.cfg.connections > 1 else "")
+        tasks = [asyncio.ensure_future(mux.keepalive(self.cfg.keepalive))]
+        if primary:
+            mux.ctrl({
+                "kind": "hello",
+                "name": self.cfg.name or "relay",
+                "mappings": [{"listen": m.listen, "target": m.target_port,
+                              "name": m.name} for m in self.cfg.mappings],
+                "uptime": time.time() - self.started_at,
+            })
+            tasks.append(asyncio.ensure_future(self._reporter(mux)))
+            tasks.append(asyncio.ensure_future(self._pinger(mux)))
         try:
             await mux.run()
         finally:
-            for t in (keepalive, reporter, pinger):
+            for t in tasks:
                 t.cancel()
-            if self.mux is not mux:
-                return                      # a newer tunnel already took over
-            self.connected.clear()
-            self.mux = None
+            if mux in self._tunnels:
+                self._tunnels.remove(mux)
+            remaining = self.muxes
+            if not remaining:
+                self.connected.clear()
+                self.current = ""
+            elif self.current == label:
+                # the primary left; promote whatever is still up
+                self.current = label
             if self._stopping:
                 log.info("tunnel closed (%s)", label)
             elif self.cfg.reverse:
                 log.warning("the exit disconnected (%s); still listening", label)
             else:
-                log.warning("tunnel down (%s)", label)
+                log.warning("tunnel down (%s); %d connection(s) left",
+                            label, len(remaining))
 
     async def _reporter(self, mux: Mux) -> None:
         try:

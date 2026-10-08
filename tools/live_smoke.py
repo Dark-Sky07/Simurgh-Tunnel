@@ -45,7 +45,11 @@ async def echo_server(reader, writer):
     writer.close()
 
 
-async def roundtrip(port, payload: bytes) -> bytes:
+async def roundtrip(port, payload: bytes, hold: float = 0.0) -> bytes:
+    """Send *payload*, read it back, optionally keep the socket open a moment.
+
+    ``hold`` exists so a test can look at the tunnel while the connection is
+    still up (the pool test checks which tunnel each stream landed on)."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(payload)
     await writer.drain()
@@ -56,6 +60,8 @@ async def roundtrip(port, payload: bytes) -> bytes:
         if not chunk:
             break
         got += chunk
+    if hold:
+        await asyncio.sleep(hold)
     writer.close()
     return got
 
@@ -114,6 +120,59 @@ async def carrier_test(name, exit_port, relay_port, cert, key) -> list[str]:
     return results
 
 
+async def pool_test(cert, key) -> list[str]:
+    """Several tunnels at once: the pool must fill, carry everyone and spread."""
+    results = []
+    exit_port, relay_port = free_port(), free_port()
+    home = Home("/tmp/smoke-pool")
+    home.ensure()
+    node = ExitNode(ExitConfig(
+        token=TOKEN, name="exit-pool", cert_file=cert, key_file=key,
+        cert_auto=False, connections=4,
+        listen=[ListenSpec(carrier="plain", host="127.0.0.1", port=exit_port)]))
+    await node.start()
+    relay = RelayNode(RelayConfig(
+        token=TOKEN, name="relay-pool", connections=4,
+        exit=ExitEndpoint(carrier="plain", address="127.0.0.1", port=exit_port,
+                          insecure_skip_verify=True),
+        mappings=[Mapping(name="echo", listen=relay_port, target_port=TARGET_PORT)]))
+    await relay.start()
+    try:
+        for _ in range(80):
+            if len(relay.muxes) >= 4 and len(node.tunnels) >= 4:
+                break
+            await asyncio.sleep(0.1)
+        results.append(f"[{'OK ' if len(relay.muxes) == 4 else 'FAIL'}] "
+                       f"pool: relay keeps 4 tunnels (got {len(relay.muxes)})")
+        results.append(f"[{'OK ' if len(node.tunnels) >= 4 else 'FAIL'}] "
+                       f"pool: exit sees 4 tunnels (got {len(node.tunnels)})")
+
+        async def worker(i):
+            data = (f"pool-worker-{i}-" * 400).encode()      # ~5 KB through the pool
+            got = await roundtrip(relay_port, data, hold=0.6)
+            return i, data == got, len(data), len(got)
+
+        tasks = [asyncio.ensure_future(worker(i)) for i in range(8)]
+        for _ in range(40):                                  # sample while they live
+            await asyncio.sleep(0.05)
+            spread = sorted(len(m.streams) for m in relay.muxes)
+            if sum(spread) >= 8:
+                break
+        done = await asyncio.gather(*tasks)
+        ok = all(ok for _i, ok, _s, _g in done)
+        used = sum(1 for n in spread if n)
+        results.append(f"[{'OK ' if used == 4 else 'FAIL'}] pool: 8 connections "
+                       f"landed on {used} tunnels, spread {spread}")
+        results.append(f"[{'OK ' if ok else 'FAIL'}] pool: 8 concurrent users, "
+                       f"all payloads intact")
+        total = sum(sent for _i, _ok, sent, _g in done)
+        results.append(f"[OK ] pool: {total} bytes through the pool")
+    finally:
+        await relay.stop()
+        await node.stop()
+    return results
+
+
 async def main() -> int:
     home = Home("/tmp/smoke-home")
     home.ensure()
@@ -127,6 +186,11 @@ async def main() -> int:
             print(line)
         total += len(results)
         bad += sum(1 for line in results if line.startswith("[FAIL"))
+    results = await pool_test(cert, key)
+    for line in results:
+        print(line)
+    total += len(results)
+    bad += sum(1 for line in results if line.startswith("[FAIL"))
     target.close()
     await target.wait_closed()
     print(f"RESULT: {'ALL GREEN' if bad == 0 else str(bad) + ' FAILURES'} "

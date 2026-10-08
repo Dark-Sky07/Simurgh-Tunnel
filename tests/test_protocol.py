@@ -81,6 +81,19 @@ def test_header_replay_is_refused():
     assert check_client_header(header, "tok", cache) is None  # same bytes twice
 
 
+def test_concurrent_connections_do_not_look_like_replays():
+    """A pool opens several tunnels at once: each needs its own header."""
+    from simurgh.carriers import client_timestamp
+
+    cache = ReplayCache()
+    stamps = [client_timestamp() for _ in range(8)]
+    assert len(set(stamps)) == 8                    # all different
+    for ts in stamps:
+        header = client_header("tok", ts)
+        assert check_client_header(header, "tok", cache) is not None
+    assert all(abs(time.time() - ts) <= 180 for ts in stamps)
+
+
 def test_auth_key_depends_on_token():
     assert auth_key("a") != auth_key("b")
     assert len(auth_key("a")) == 32

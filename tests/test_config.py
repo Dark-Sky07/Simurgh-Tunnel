@@ -112,3 +112,30 @@ def test_mapping_key_is_unique_per_protocol():
     a = Mapping(listen=443, target_port=443)
     b = Mapping(listen=443, target_port=443, udp=True)
     assert a.key() != b.key()
+
+def test_performance_keys_are_parsed_and_clamped(home):
+    """``connections``/``chunk``/``max_stream_window`` survive a round trip."""
+    from simurgh.config import ExitEndpoint
+    cfg = RelayConfig(token="tok", name="relay", connections=4, chunk=128 * 1024,
+                      max_stream_window=8 * 1024 * 1024,
+                      exit=ExitEndpoint(carrier="tls", address="198.51.100.7",
+                                        port=443))
+    save_relay(cfg, home.relay_cfg)
+    back = load_relay(home.relay_cfg)
+    assert back.connections == 4
+    assert back.chunk == 128 * 1024
+    assert back.max_stream_window == 8 * 1024 * 1024
+    assert back.to_dict()["connections"] == 4
+
+
+def test_silly_performance_values_are_clamped_not_fatal(home):
+    cfg = RelayConfig(token="tok", name="relay", connections=9999, chunk=1,
+                      stream_window=1024, max_stream_window=1024,
+                      exit=ExitEndpoint(carrier="tls", address="198.51.100.7",
+                                        port=443))
+    save_relay(cfg, home.relay_cfg)
+    back = load_relay(home.relay_cfg)
+    assert 1 <= back.connections <= 16
+    assert back.chunk >= 4 * 1024
+    assert back.stream_window >= 16 * 1024          # window has a sane floor
+    assert back.max_stream_window >= back.stream_window
