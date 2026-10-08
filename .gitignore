@@ -8,3 +8,7 @@ venv/
 .pytest_cache/
 .coverage
 *.log
+
+# compiled data engine (built by tools/build-go.sh)
+bin/simurgh-go
+bin/

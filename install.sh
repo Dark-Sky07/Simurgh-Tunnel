@@ -40,6 +40,8 @@ CARRIER=""
 DOMAIN=""
 FINGERPRINT=""
 INSECURE=""
+# data plane: auto = build the compiled engine when a toolchain is available
+ENGINE="${SIMURGH_ENGINE:-auto}"
 
 say()  { printf '%s\n' "${CYAN}•${RESET} $*"; }
 ok()   { printf '%s\n' "${GREEN}✔${RESET} $*"; }
@@ -84,6 +86,10 @@ main options:
   --panel-port PORT          web panel port on the relay
   --connections N            tunnel connections to keep open (2-16, default 1):
                              better speed and resilience on long paths
+  --engine auto|go|python    data plane: "go" is the compiled engine (many cores,
+                             much less cpu per gigabyte), "python" the portable
+                             one. auto = go when it can be built (default)
+  --no-go                    shortcut for --engine python
   --yes                      accept everything without asking
   --no-systemd               do not create a systemd service (run manually)
   --ref REF                  git ref to download when the source is missing
@@ -109,6 +115,8 @@ while [ $# -gt 0 ]; do
     --mapping|-m)  MAPPING="${2:-}"; shift 2 ;;
     --panel-port)  PANEL_PORT="${2:-}"; shift 2 ;;
     --connections) CONNECTIONS="${2:-}"; shift 2 ;;
+    --engine)      ENGINE="${2:-auto}"; shift 2 ;;
+    --no-go)       ENGINE="python"; shift ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
     --no-systemd)  NO_SYSTEMD=1; shift ;;
     --ref)         REF="${2:-main}"; shift 2 ;;
@@ -230,6 +238,28 @@ ln -sf "$VENV_DIR/bin/simurgh" "$BIN_DIR/simurgh"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) export PATH="$BIN_DIR:$PATH" ;; esac
 ok "the simurgh command is installed: $(command -v simurgh)"
 
+# ------------------------------------------------------------- go engine
+# The compiled engine speaks the same protocol and keeps many users fast on
+# one core-poor box; the python engine stays as the portable fallback.
+ENGINE_CHOSEN="python"
+if [ "$ENGINE" != "python" ]; then
+  say "building the compiled engine (this takes a few seconds)…"
+  if SIMURGH_GO_BIN="$BIN_DIR/simurgh-go" bash "$SRC/tools/build-go.sh" >/tmp/simurgh-go-build.log 2>&1; then
+    ENGINE_CHOSEN="go"
+    ok "the go engine is installed: $BIN_DIR/simurgh-go"
+  else
+    sed -n '1,3p' /tmp/simurgh-go-build.log 2>/dev/null | while read -r line; do warn "$line"; done
+    if [ "$ENGINE" = "go" ]; then
+      warn "the go engine could not be built here; the python engine is used instead."
+      warn "install a toolchain (apt install golang-go) and run: simurgh engine go"
+    else
+      say "the compiled engine could not be built here; using the python engine."
+    fi
+  fi
+else
+  say "using the python engine (--engine python)."
+fi
+
 # --------------------------------------------------------------- configure
 ARGS=(--force)
 [ -n "$ROLE" ]        && ARGS+=(--role "$ROLE")
@@ -246,6 +276,7 @@ ARGS=(--force)
 [ -n "$LISTEN" ]      && ARGS+=(--listen "$LISTEN")
 [ -n "$PANEL_PORT" ]  && ARGS+=(--panel-port "$PANEL_PORT")
 [ -n "$CONNECTIONS" ] && ARGS+=(--connections "$CONNECTIONS")
+ARGS+=(--engine "$ENGINE_CHOSEN")
 if [ -n "$MAPPING" ]; then
   IFS=',' read -ra _maps <<< "$MAPPING"
   for m in "${_maps[@]}"; do ARGS+=(--mapping "$m"); done

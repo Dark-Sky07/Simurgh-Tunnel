@@ -30,8 +30,9 @@ import time
 from pathlib import Path
 
 from . import __product__, __version__
-from .config import (ConfigError, ExitConfig, ExitEndpoint, ListenSpec, Mapping,
-                     RelayConfig, TunnelSpec, load_exit, load_relay, new_token,
+from .config import (ENGINES, ConfigError, ExitConfig, ExitEndpoint, ListenSpec,
+                     Mapping, RelayConfig, TunnelSpec, load_exit, load_relay,
+                     new_token,
                      save_exit, save_relay)
 from .util import (Home, free_port, get_logger, human_bytes, human_duration,
                    human_rate, is_ip, local_ips, parse_port_list, setup_logging)
@@ -157,6 +158,14 @@ def _write_state(home: Home, role: str, payload: dict) -> None:
 
 
 # ------------------------------------------------------------------- install
+def _init_engine(args) -> str:
+    """The data plane named on the command line (default: python)."""
+    want = str(getattr(args, "engine", "") or "").strip().lower()
+    if want in ("", "auto", "default"):
+        return "python"
+    return want if want in ENGINES else "python"
+
+
 def cmd_init(args) -> int:
     home = Home(args.home).ensure()
     role = args.role
@@ -190,6 +199,7 @@ def _init_exit(home: Home, args) -> int:
         token=token, name=name, cert_auto=True, push_ports=ports,
         speedtest_port=EXIT_DEFAULT_SPEEDTEST,
         connections=max(0, int(getattr(args, "connections", 0) or 0)) or 1,
+        engine=_init_engine(args),
     )
     cfg.listen = listen or [ListenSpec(carrier="tls", port=443, path="/ws")]
     try:
@@ -248,6 +258,7 @@ def _init_relay(home: Home, args) -> int:
                               fingerprint=args.fingerprint),
         )
         cfg.connections = max(0, int(getattr(args, "connections", 0) or 0)) or 1
+    cfg.engine = _init_engine(args)
     mappings = []
     for spec in args.mapping or []:
         try:
@@ -556,12 +567,78 @@ def _exit_panel_port(home: Home) -> int:
 
 def cmd_run(args) -> int:
     home = Home(args.home)
+    engine = _configured_engine(home, args.role)
+    if engine == "go":
+        binary = go_binary(home)
+        if binary:
+            _ok(f"engine: go ({binary})")
+            argv = [str(binary), args.role, "--home", str(home.path)]
+            if args.verbose:
+                argv.append("--verbose")
+            try:
+                os.execv(str(binary), argv)      # the go engine takes over
+            except OSError as exc:  # pragma: no cover - depends on the install
+                _warn(f"cannot start the go engine ({exc}); using python")
+        else:
+            _warn("engine is 'go' but no simurgh-go binary was found; "
+                  "run tools/build-go.sh (or set SIMURGH_GO_BIN). Using python.")
     try:
         if args.role == "exit":
             return asyncio.run(_run_exit(home, args))
         return asyncio.run(_run_relay(home, args))
     except KeyboardInterrupt:
         return 0
+
+
+def go_binary(home: Home) -> str | None:
+    """Where the compiled engine lives, if this installation has it."""
+    from .engines import find_binary
+
+    return find_binary(home)
+
+
+def _configured_engine(home: Home, role: str) -> str:
+    path = home.exit_cfg if role == "exit" else home.relay_cfg
+    try:
+        cfg = load_exit(path) if role == "exit" else load_relay(path)
+    except (ConfigError, OSError):
+        return "python"
+    return cfg.engine
+
+
+def cmd_engine(args) -> int:
+    """Show or switch the data plane (python | go) of this installation."""
+    home = _home_or_fail(args)
+    role = _detect_role(home, args.role)
+    path = home.exit_cfg if role == "exit" else home.relay_cfg
+    try:
+        cfg = load_exit(path) if role == "exit" else load_relay(path)
+    except (ConfigError, OSError) as exc:
+        _err(str(exc))
+        return 2
+    want = (args.engine or "").strip().lower()
+    if not want:
+        binary = go_binary(home)
+        print(f"engine: {cfg.engine}")
+        print(f"go binary: {binary or 'not built (run tools/build-go.sh)'}")
+        return 0
+    if want not in ENGINES:
+        _err(f"unknown engine {want!r} (use 'python' or 'go')")
+        return 2
+    if want == "go" and not go_binary(home):
+        _warn("no simurgh-go binary yet; run tools/build-go.sh first "
+              "(the config is written anyway, python is used until it exists)")
+    cfg.engine = want
+    try:
+        if role == "exit":
+            save_exit(cfg, path)
+        else:
+            save_relay(cfg, path)
+    except OSError as exc:
+        _err(str(exc))
+        return 2
+    _ok(f"engine set to {want}. Restart the service to apply: simurgh restart")
+    return 0
 
 
 # ------------------------------------------------------------------ mappings
@@ -904,6 +981,13 @@ def cmd_doctor(args) -> int:
         _err(f"config file not found: {cfg_path}")
         return 2
     _ok(f"config: {cfg_path}  (role: {role})")
+    from .engines import describe
+
+    engine = describe(home)
+    if engine["binary"]:
+        _ok(f"data engine: go ({engine['version'] or engine['binary']})")
+    else:
+        _info("data engine: python (build the go engine with tools/build-go.sh)")
     running = _service_running(home, role)
     if running:
         _ok(f"the {role} service is running")
@@ -1112,6 +1196,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tunnel connections to keep open (2-16 help on long, lossy paths)")
     p.add_argument("--mapping", action="append", help="initial mapping: 443:443")
     p.add_argument("--panel-port", type=int, default=0)
+    p.add_argument("--engine", choices=ENGINES, default="",
+                   help="data plane: python (default) or go (see tools/build-go.sh)")
     p.add_argument("--user", default="")
     p.add_argument("--config-only", action="store_true")
     p.add_argument("--no-enable", action="store_true")
@@ -1138,6 +1224,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tunnel connections to keep open (2-16 help on long, lossy paths)")
     p.add_argument("--mapping", action="append")
     p.add_argument("--panel-port", type=int, default=0)
+    p.add_argument("--engine", choices=ENGINES, default="",
+                   help="data plane to use (default: python; go needs tools/build-go.sh)")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init)
 
@@ -1205,6 +1293,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=15.0)
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_join)
+
+    p = sub.add_parser("engine", help="show or switch the data plane (python | go)")
+    p.add_argument("engine", nargs="?", choices=ENGINES, default=None)
+    p.add_argument("--role", choices=("exit", "relay"), default=None)
+    p.set_defaults(func=cmd_engine)
 
     p = sub.add_parser("doctor", help="health check and diagnostics")
     p.add_argument("--role", choices=("exit", "relay"), default=None, help="exit | relay (auto-detected by default)")
