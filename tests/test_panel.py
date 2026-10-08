@@ -290,3 +290,32 @@ async def test_speedtest_action_reports_a_result(home, tmp_path, relay_cfg,
         assert data["speedtest"]["download_mbps"] == 42.0
     finally:
         await panel.stop()
+
+
+async def test_one_click_login_link_sets_a_session_cookie(home, tmp_path, relay_cfg):
+    save_relay(relay_cfg, home.relay_cfg)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(relay_cfg))
+    try:
+        # wrong key: still asks for credentials
+        status, _ = await _request(port, "/?k=nope")
+        assert status == 401
+        # right key: page + cookie
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(f"GET /?k={PASSWORD} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                     .encode())
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(-1), 10)
+        writer.close()
+        assert b"200 OK" in raw
+        assert b"simurgh_session=" in raw
+        cookie = raw.split(b"simurgh_session=")[1].split(b";")[0].decode()
+        # and the cookie alone is enough for the API
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(f"GET /api/status HTTP/1.1\r\nHost: x\r\n"
+                     f"Cookie: simurgh_session={cookie}\r\nConnection: close\r\n\r\n".encode())
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(-1), 10)
+        writer.close()
+        assert b"200 OK" in raw and b'"ok": true' in raw
+    finally:
+        await panel.stop()
