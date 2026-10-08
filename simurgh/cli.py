@@ -31,8 +31,8 @@ from pathlib import Path
 
 from . import __product__, __version__
 from .config import (ConfigError, ExitConfig, ExitEndpoint, ListenSpec, Mapping,
-                     RelayConfig, load_exit, load_relay, new_token, save_exit,
-                     save_relay)
+                     RelayConfig, TunnelSpec, load_exit, load_relay, new_token,
+                     save_exit, save_relay)
 from .util import (Home, free_port, get_logger, human_bytes, human_duration,
                    human_rate, is_ip, local_ips, parse_port_list, setup_logging)
 
@@ -209,27 +209,42 @@ def _init_relay(home: Home, args) -> int:
     if home.relay_cfg.exists() and not args.force:
         _warn(f"relay config already exists: {home.relay_cfg} (use --force to overwrite)")
         return 1
-    exit_host = args.exit_host or _ask("foreign server address (IP or domain)")
-    if not exit_host:
-        return _fail("foreign server address is required: --exit-host 203.0.113.9")
-    exit_port = args.exit_port or int(_ask("tunnel port on the foreign server", "443"))
+    dial = getattr(args, "dial", "relay") or "relay"
     carrier = (args.carrier or _ask("carrier (tls/wss/raw/plain)", "tls")).lower()
     token = args.token or _ask("token (copy it from the foreign server)")
     if not token:
         return _fail("token is required: --token XXX")
-    domain = args.domain or None
-    if carrier in ("tls", "wss") and not domain and _interactive():
-        if _ask_yes("do you have a domain name for the SNI?", False):
-            domain = _ask("domain name")
     name = args.name or socket.gethostname()[:32]
     panel_port = args.panel_port or RELAY_DEFAULT_PANEL
-    cfg = RelayConfig(
-        token=token, name=name, panel_port=panel_port,
-        exit=ExitEndpoint(carrier=carrier, address=exit_host, port=exit_port,
-                          domain=domain, path=args.path or "/ws",
-                          insecure_skip_verify=args.insecure,
-                          fingerprint=args.fingerprint),
-    )
+    if dial == "exit":
+        # reverse mode: we listen, the foreign exit connects to us
+        exit_host = ""
+        exit_port = args.exit_port or int(_ask("tunnel port on THIS server", "8443"))
+        tunnel_cfg = TunnelSpec(
+            carrier=carrier,
+            host=str(getattr(args, "tunnel_host", "") or "0.0.0.0"),
+            port=exit_port,
+            path=args.path or "/ws",
+            fallback=str(getattr(args, "fallback", "") or "decoy"),
+        )
+        cfg = RelayConfig(token=token, name=name, panel_port=panel_port,
+                          dial="exit", tunnel=tunnel_cfg)
+    else:
+        exit_host = args.exit_host or _ask("foreign server address (IP or domain)")
+        if not exit_host:
+            return _fail("foreign server address is required: --exit-host 203.0.113.9")
+        exit_port = args.exit_port or int(_ask("tunnel port on the foreign server", "443"))
+        domain = args.domain or None
+        if carrier in ("tls", "wss") and not domain and _interactive():
+            if _ask_yes("do you have a domain name for the SNI?", False):
+                domain = _ask("domain name")
+        cfg = RelayConfig(
+            token=token, name=name, panel_port=panel_port,
+            exit=ExitEndpoint(carrier=carrier, address=exit_host, port=exit_port,
+                              domain=domain, path=args.path or "/ws",
+                              insecure_skip_verify=args.insecure,
+                              fingerprint=args.fingerprint),
+        )
     mappings = []
     for spec in args.mapping or []:
         try:
@@ -240,7 +255,12 @@ def _init_relay(home: Home, args) -> int:
     cfg.mappings = mappings
     save_relay(cfg, home.relay_cfg)
     _ok(f"relay config written: {home.relay_cfg}")
-    print(f"   foreign server: {carrier}://{exit_host}:{exit_port}")
+    if cfg.reverse:
+        print("   mode:           reverse (the exit dials us)")
+        print(f"   tunnel listen:  {cfg.tunnel.endpoint()}")
+        _info("run `simurgh link` on this server and paste the link on the exit")
+    else:
+        print(f"   foreign server: {carrier}://{exit_host}:{exit_port}")
     if not mappings:
         _info("to add a port: simurgh mapping add 443 443")
     return 0
@@ -270,8 +290,9 @@ def cmd_install(args) -> int:
     home = Home(args.home).ensure()
     role = args.role
     if role == "auto":
-        # if an exit config already exists we are probably on the exit
-        role = "exit" if not args.exit_host else "relay"
+        # with --exit-host (or --dial exit, which is the reverse direction) we
+        # are on the Iranian server, otherwise on the exit
+        role = "relay" if (args.exit_host or args.dial == "exit") else "exit"
     roles = ("exit", "relay") if args.both else (role,)
     if not args.config_only:
         for wanted in roles:
@@ -375,7 +396,7 @@ async def _run_exit(home: Home, args) -> int:
 
     cfg = _load_exit_or_fail(home)
     setup_logging(args.verbose, logfile=str(home.exit_log))
-    if cfg.cert_auto:
+    if cfg.cert_auto and any(not ls.reverse for ls in cfg.listen):
         from .certs import ensure_certificate
 
         cert, key = ensure_certificate(home, cfg.name or "simurgh.local")
@@ -417,6 +438,13 @@ async def _run_relay(home: Home, args) -> int:
 
     cfg = _load_relay_or_fail(home)
     setup_logging(args.verbose, logfile=str(home.relay_log))
+    if cfg.reverse and cfg.tunnel.cert_auto:
+        from .certs import ensure_certificate
+
+        cert, key = ensure_certificate(home, cfg.name or "simurgh.local",
+                                       cert_file=cfg.tunnel.cert_file,
+                                       key_file=cfg.tunnel.key_file)
+        cfg.tunnel.cert_file, cfg.tunnel.key_file = cert, key
     node = RelayNode(cfg, home=home)
     await node.start()
     conflicts = node.port_conflicts()
@@ -436,7 +464,9 @@ async def _run_relay(home: Home, args) -> int:
     stop = asyncio.Event()
     _install_signal_handlers(stop)
     writer = asyncio.ensure_future(_state_writer(home, "relay", node, panel))
-    _ok(f"relay \"{cfg.name or 'relay'}\" is up. target: {cfg.exit.describe()}")
+    where = (f"tunnel listen: {cfg.tunnel.endpoint()}" if cfg.reverse
+             else f"target: {cfg.exit.describe()}")
+    _ok(f"relay \"{cfg.name or 'relay'}\" is up. {where}")
     await stop.wait()
     writer.cancel()
     if panel is not None:
@@ -723,22 +753,64 @@ def cmd_speedtest(args) -> int:
         return 0
 
 
+def _join_exit(home: Home, payload: dict, args) -> int:
+    """Reverse mode: the relay handed us a link, so write ``exit.toml``."""
+    from .links import exit_config_from_payload
+
+    if home.exit_cfg.exists() and not getattr(args, "force", False):
+        _err(f"the exit config already exists ({home.exit_cfg}); "
+             "use --force to overwrite.")
+        return 2
+    try:
+        cfg = exit_config_from_payload(payload)
+    except (KeyError, ValueError, ConfigError) as exc:
+        _err(f"the link is incomplete: {exc}")
+        return 2
+    if getattr(args, "host", ""):
+        for spec in cfg.listen:
+            if spec.reverse:
+                spec.dial = args.host
+    save_exit(cfg, home.exit_cfg)
+    _ok(f"exit config built from the link: {home.exit_cfg}")
+    print("   mode:  reverse (this server dials the relay)")
+    for spec in cfg.listen:
+        print(f"   relay: {spec.carrier}://{spec.dial}:{spec.port}")
+    _info("to apply: simurgh restart   (or run: simurgh exit)")
+    return 0
+
+
 def cmd_link(args) -> int:
-    """Show the one-string setup link for a new relay (exit side)."""
+    """Show the one-string setup link for the *other* server.
+
+    On an exit the link is imported by a new relay (direct mode); on a relay
+    that listens for the exit (reverse mode) it is imported by the exit.
+    """
     home = _home_or_fail(args)
-    cfg = _load_exit_or_fail(home)
     from .links import build_join_link
 
+    reverse_cfg = None
+    if home.relay_cfg.exists() and not home.exit_cfg.exists():
+        relay_cfg = load_relay(home.relay_cfg)
+        if relay_cfg.reverse:
+            reverse_cfg = relay_cfg
+    cfg = reverse_cfg or _load_exit_or_fail(home)
     host = args.host or _public_ip()
     user, password = _panel_credentials(home)
     port = args.panel_port or RELAY_DEFAULT_PANEL
+    if reverse_cfg is not None:
+        port = args.panel_port or reverse_cfg.panel_port or RELAY_DEFAULT_PANEL
     link = build_join_link(host, port, user, password, cfg.name or "")
     if args.show:
         print(link)
         return 0
-    print(f"\033[1mrelay setup link (keep it secret):\033[0m\n{link}")
-    print()
-    _info("on the Iranian server: simurgh join '<link>'")
+    if reverse_cfg is not None:
+        print(f"\033[1mexit setup link (keep it secret):\033[0m\n{link}")
+        print()
+        _info("run this on the FOREIGN (exit) server: simurgh join '<link>'")
+    else:
+        print(f"\033[1mrelay setup link (keep it secret):\033[0m\n{link}")
+        print()
+        _info("run this on the Iranian server: simurgh join '<link>'")
     if not is_ip(host):
         _warn("a local address was detected; pass the public address with --host.")
     return 0
@@ -756,6 +828,8 @@ def cmd_join(args) -> int:
     except Exception as exc:
         _err(f"could not fetch the data from the link: {exc}")
         return 2
+    if str(payload.get("role") or "") == "exit":
+        return _join_exit(home, payload, args)
     cfg = relay_config_from_payload(payload)
     if home.relay_cfg.exists() and not args.force:
         _err(f"the relay config already exists ({home.relay_cfg}); use --force to overwrite.")
@@ -929,6 +1003,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--path", default="")
     p.add_argument("--fingerprint", default=None)
     p.add_argument("--insecure", action="store_true")
+    p.add_argument("--dial", choices=("relay", "exit"), default="relay",
+                   help="who dials the tunnel: relay (default) or exit (reverse)")
+    p.add_argument("--tunnel-host", default="", help="reverse: the address we listen on")
     p.add_argument("--mapping", action="append", help="initial mapping: 443:443")
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--user", default="")
@@ -950,6 +1027,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--path", default="")
     p.add_argument("--fingerprint", default=None)
     p.add_argument("--insecure", action="store_true")
+    p.add_argument("--dial", choices=("relay", "exit"), default="relay",
+                   help="who dials the tunnel: relay (default) or exit (reverse)")
+    p.add_argument("--tunnel-host", default="", help="reverse: the address we listen on")
     p.add_argument("--mapping", action="append")
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--force", action="store_true")

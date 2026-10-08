@@ -91,12 +91,48 @@ def toml_dumps(data: dict) -> str:
 
 @dataclass
 class ListenSpec:
+    """One tunnel endpoint of an exit node.
+
+    Normally this is a socket the exit *listens* on and the relay dials.  When
+    ``dial`` holds a host name (reverse mode, ``relay dial = "exit"``) the exit
+    dials that address instead -- the Iranian relay is then the listener.
+    """
+
     carrier: str = "tls"
     host: str = "0.0.0.0"
     port: int = 8443
     path: str = "/ws"
     fallback: str = "decoy"
     decoy_file: str | None = None
+    padding: bool = True
+    enabled: bool = True
+    dial: str = ""                       # reverse mode: dial this host
+    fingerprint: str | None = None       # pin the relay certificate (reverse)
+    insecure_skip_verify: bool = False
+
+    def endpoint(self) -> str:
+        if self.dial:
+            return f"{self.carrier}->{self.dial}:{self.port}"
+        return f"{self.carrier}://{self.host}:{self.port}"
+
+    @property
+    def reverse(self) -> bool:
+        return bool(self.dial)
+
+
+@dataclass
+class TunnelSpec:
+    """The socket the *relay* listens on when the exit dials it (reverse mode)."""
+
+    carrier: str = "tls"
+    host: str = "0.0.0.0"
+    port: int = 8443
+    path: str = "/ws"
+    fallback: str = "decoy"
+    decoy_file: str | None = None
+    cert_file: str | None = None
+    key_file: str | None = None
+    cert_auto: bool = True
     padding: bool = True
     enabled: bool = True
 
@@ -149,6 +185,9 @@ class ExitConfig:
                 "decoy_file": ls.decoy_file,
                 "padding": ls.padding,
                 "enabled": ls.enabled,
+                "dial": ls.dial or None,
+                "fingerprint": ls.fingerprint,
+                "insecure_skip_verify": ls.insecure_skip_verify or None,
             }.items() if v is not None}
             for ls in self.listen
         ]
@@ -192,10 +231,14 @@ def load_exit(path: str | Path) -> ExitConfig:
             decoy_file=item.get("decoy_file"),
             padding=bool(item.get("padding", True)),
             enabled=bool(item.get("enabled", True)),
+            dial=str(item.get("dial") or ""),
+            fingerprint=item.get("fingerprint"),
+            insecure_skip_verify=bool(item.get("insecure_skip_verify", False)),
         ))
     if not cfg.listen:
         raise ConfigError("exit config: at least one [[listen]] block is required")
-    if any(ls.carrier in ("tls", "wss") for ls in cfg.listen):
+    listeners = [ls for ls in cfg.listen if not ls.reverse]
+    if any(ls.carrier in ("tls", "wss") for ls in listeners):
         if not (cfg.cert_file and cfg.key_file) and not cfg.cert_auto:
             raise ConfigError("carrier tls/wss needs a certificate (or cert_auto = true)")
     if cfg.proxy_protocol not in PROXY_PROTOCOLS:
@@ -263,6 +306,14 @@ class RelayConfig:
     speedtest_port: int = 0
     log_level: str = "info"
     panel_port: int = 8787
+    #: who dials the tunnel: "relay" (we connect out, default) or "exit"
+    #: (the foreign server connects to us -- reverse mode).
+    dial: str = "relay"
+    tunnel: TunnelSpec = field(default_factory=TunnelSpec)
+
+    @property
+    def reverse(self) -> bool:
+        return self.dial == "exit"
 
     def endpoints(self) -> list[ExitEndpoint]:
         """Primary first, then the failover pool."""
@@ -279,14 +330,29 @@ class RelayConfig:
             "chunk": self.chunk,
             "log_level": self.log_level,
             "panel_port": self.panel_port,
+            "dial": self.dial,
         }
-        d["exit"] = {
-            "carrier": self.exit.carrier, "address": self.exit.address,
-            "port": self.exit.port, "domain": self.exit.domain,
-            "path": self.exit.path, "fingerprint": self.exit.fingerprint,
-            "insecure_skip_verify": self.exit.insecure_skip_verify,
-            "padding": self.exit.padding, "enabled": self.exit.enabled,
-        }
+        if self.reverse:
+            d["tunnel"] = {
+                "carrier": self.tunnel.carrier, "host": self.tunnel.host,
+                "port": self.tunnel.port,
+                "path": self.tunnel.path if self.tunnel.carrier in ("wss", "ws") else None,
+                "fallback": self.tunnel.fallback,
+                "decoy_file": self.tunnel.decoy_file,
+                "cert_auto": self.tunnel.cert_auto,
+                "cert_file": self.tunnel.cert_file,
+                "key_file": self.tunnel.key_file,
+                "padding": self.tunnel.padding,
+                "enabled": self.tunnel.enabled,
+            }
+        if self.exit.address or not self.reverse:
+            d["exit"] = {
+                "carrier": self.exit.carrier, "address": self.exit.address,
+                "port": self.exit.port, "domain": self.exit.domain,
+                "path": self.exit.path, "fingerprint": self.exit.fingerprint,
+                "insecure_skip_verify": self.exit.insecure_skip_verify,
+                "padding": self.exit.padding, "enabled": self.exit.enabled,
+            }
         if self.pool:
             d["pool"] = [
                 {"carrier": e.carrier, "address": e.address, "port": e.port,
@@ -343,10 +409,38 @@ def load_relay(path: str | Path) -> RelayConfig:
     cfg.log_level = str(data.get("log_level", "info"))
     cfg.panel_port = int(data.get("panel_port", 8787))
 
-    exit_data = data.get("exit")
-    if not exit_data:
-        raise ConfigError("relay config: an [exit] block is required")
-    cfg.exit = _endpoint_from(exit_data)
+    cfg.dial = str(data.get("dial", "relay")).lower()
+    if cfg.dial not in ("relay", "exit"):
+        raise ConfigError("relay config: dial must be 'relay' or 'exit'")
+
+    tunnel_data = data.get("tunnel") or {}
+    tcarrier = str(tunnel_data.get("carrier", "tls")).lower()
+    if tcarrier not in CARRIERS:
+        raise ConfigError(f"unknown carrier {tcarrier!r} in [tunnel]")
+    cfg.tunnel = TunnelSpec(
+        carrier=tcarrier,
+        host=str(tunnel_data.get("host", "0.0.0.0")),
+        port=int(tunnel_data.get("port", 8443)),
+        path=str(tunnel_data.get("path", "/ws")),
+        fallback=str(tunnel_data.get("fallback", "decoy")),
+        decoy_file=tunnel_data.get("decoy_file"),
+        cert_file=tunnel_data.get("cert_file"),
+        key_file=tunnel_data.get("key_file"),
+        cert_auto=bool(tunnel_data.get("cert_auto", True)),
+        padding=bool(tunnel_data.get("padding", True)),
+        enabled=bool(tunnel_data.get("enabled", True)),
+    )
+    if cfg.reverse and tcarrier in ("tls", "wss") \
+            and not (cfg.tunnel.cert_file and cfg.tunnel.key_file) \
+            and not cfg.tunnel.cert_auto:
+        raise ConfigError("reverse mode with tls/wss needs a certificate "
+                          "(or [tunnel] cert_auto = true)")
+
+    exit_data = data.get("exit") or {}
+    if exit_data.get("address") or exit_data.get("host"):
+        cfg.exit = _endpoint_from(exit_data)
+    elif not cfg.reverse:
+        raise ConfigError("relay config: an [exit] block with an address is required")
     cfg.pool = [_endpoint_from(e) for e in data.get("pool", [])]
 
     for item in data.get("mapping", []):

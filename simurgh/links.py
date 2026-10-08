@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .config import ExitEndpoint, RelayConfig, Mapping
+from .config import (ExitConfig, ExitEndpoint, ListenSpec, Mapping, RelayConfig)
 
 
 class LinkError(Exception):
@@ -90,7 +90,13 @@ def fetch_setup(link: str, timeout: float = 15.0, scheme: str = "http") -> dict:
     if not data.get("ok"):
         raise LinkError(str(data.get("error") or "panel refused the request"))
     cfg = data.get("relay") or data          # flat payload, or nested under "relay"
-    if not (cfg.get("token") and (cfg.get("exit") or {}).get("address")):
+    if not cfg.get("token"):
+        raise LinkError("panel sent an incomplete configuration")
+    if str(cfg.get("role") or "") == "exit":
+        # reverse mode: the relay tells the exit where it waits for it
+        if not (cfg.get("listen") or {}).get("address"):
+            raise LinkError("panel sent an incomplete configuration")
+    elif not (cfg.get("exit") or {}).get("address"):
         raise LinkError("panel sent an incomplete configuration")
     return {**cfg, "link_name": info["name"]}
 
@@ -133,4 +139,56 @@ def relay_config_from_payload(payload: dict) -> RelayConfig:
             target_host=str(item.get("target_host") or item.get("host") or "127.0.0.1"),
             udp=bool(item.get("udp", False)),
         ))
+    return cfg
+
+
+# --------------------------------------------------------------------------
+# reverse mode (relay dial = "exit"): the relay produces the payload
+# --------------------------------------------------------------------------
+
+
+def reverse_payload(relay_cfg: RelayConfig, host: str,
+                    fingerprint: str | None = None) -> dict:
+    """What the exit needs to dial this relay and push traffic to it."""
+    tunnel = relay_cfg.tunnel
+    return {
+        "ok": True,
+        "role": "exit",
+        "version": None,          # filled in by the caller (panel/cli)
+        "name": relay_cfg.name or "relay",
+        "token": relay_cfg.token,
+        "listen": {              # where the relay waits for this exit
+            "carrier": tunnel.carrier,
+            "address": host,
+            "port": tunnel.port,
+            "path": tunnel.path,
+            "fingerprint": fingerprint,
+            "insecure_skip_verify": False,
+        },
+        "push_ports": [],
+        "note": ("Keep this payload secret: the token is inside it. "
+                 "Import it on the foreign (exit) server with "
+                 "`simurgh join <link>`."),
+    }
+
+
+def exit_config_from_payload(payload: dict) -> ExitConfig:
+    """Build ``exit.toml`` from a relay payload (reverse mode)."""
+    relay = payload.get("listen") or payload.get("relay") or {}
+    address = str(relay.get("address") or "")
+    if not address:
+        raise ValueError("the payload has no relay address")
+    carrier = str(relay.get("carrier", "tls")).lower()
+    cfg = ExitConfig(token=str(payload["token"]),
+                     name=str(payload.get("name") or ""))
+    cfg.cert_auto = False        # a reverse exit only dials out; no certificate
+    cfg.listen = [ListenSpec(
+        carrier=carrier,
+        host="0.0.0.0",
+        port=int(relay.get("port", 8443)),
+        path=str(relay.get("path", "/ws")),
+        dial=address,
+        fingerprint=relay.get("fingerprint"),
+        insecure_skip_verify=bool(relay.get("insecure_skip_verify", False)),
+    )]
     return cfg

@@ -16,7 +16,7 @@ import json
 import time
 
 from .bridge import Bridge
-from .carriers import ServerCarrier
+from .carriers import ServerCarrier, client_connect
 from .config import ExitConfig
 from .mux import Mux, StreamOpenError
 from .protocol import (
@@ -37,6 +37,7 @@ from .util import get_logger
 log = get_logger("simurgh.exit")
 
 DIAL_TIMEOUT = 12.0
+RECONNECT_BACKOFF_MAX = 15.0
 
 
 class ExitNode:
@@ -56,12 +57,25 @@ class ExitNode:
         self._speed_server: asyncio.AbstractServer | None = None
         self.connected_at: float | None = None
         self.last_error = ""
+        #: reverse mode (relay dial = "exit"): we connect out instead of listening
+        self.reach_out: list[str] = []
+        self._dial_tasks: set[asyncio.Task] = set()
+        self._stopping = False
 
     # ------------------------------------------------------------------ start
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
         for spec in self.cfg.listen:
             if not spec.enabled:
+                continue
+            if spec.reverse:
+                # reverse mode: the relay listens, we dial it and keep it up
+                self.reach_out.append(spec.endpoint())
+                task = asyncio.ensure_future(self._dial_supervisor(spec))
+                self._dial_tasks.add(task)
+                task.add_done_callback(self._dial_tasks.discard)
+                log.info("dialling the relay at %s:%s (%s)", spec.dial, spec.port,
+                         spec.carrier)
                 continue
             carrier = ServerCarrier(
                 spec.carrier, self.cfg.token,
@@ -92,18 +106,59 @@ class ExitNode:
             self._speed_server = None
 
     async def stop(self) -> None:
+        self._stopping = True
+        for task in list(self._dial_tasks):
+            task.cancel()
         for s in self.servers:
             s.close()
         if self._speed_server:
             self._speed_server.close()
         for mux in list(self.tunnels):
             mux.close()
+        self.servers.clear()
+        self.tunnels.clear()
+        self.tunnel_peers.clear()
+        self.connected_at = None
+        await asyncio.sleep(0)
+
+    async def _dial_supervisor(self, spec) -> None:
+        """Keep one outbound tunnel to the relay alive (reverse mode)."""
+        backoff = 0.5
+        while True:
+            try:
+                channel = await client_connect(
+                    spec.carrier, spec.dial, spec.port, self.cfg.token,
+                    domain=spec.dial, path=spec.path,
+                    cert_fingerprint=spec.fingerprint,
+                    insecure=spec.insecure_skip_verify,
+                    padding=spec.padding,
+                    connect_timeout=15.0,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.last_error = f"{spec.endpoint()}: {exc}"
+                log.warning("cannot reach the relay at %s: %s", spec.endpoint(), exc)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 1.7, RECONNECT_BACKOFF_MAX)
+                continue
+            backoff = 0.5
+            try:
+                await self._on_channel(channel, check_ips=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:                      # pragma: no cover
+                self.last_error = f"{spec.endpoint()}: {exc}"
+                log.warning("tunnel to the relay failed: %s", exc)
+            if self._stopping:
+                return
+            await asyncio.sleep(0.4)
 
     # ------------------------------------------------------------ tunnel side
-    async def _on_channel(self, channel) -> None:
+    async def _on_channel(self, channel, check_ips: bool = True) -> None:
         peer = getattr(channel, "peer", "") or ""
         ip = _ip_of(peer)
-        if self.cfg.allow_ips and ip not in self.cfg.allow_ips:
+        if check_ips and self.cfg.allow_ips and ip not in self.cfg.allow_ips:
             log.warning("refused tunnel from %s (not in allow_ips)", peer)
             try:
                 await channel.close()

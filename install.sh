@@ -21,6 +21,8 @@ else
 fi
 
 ROLE=""
+DIAL=""
+TUNNEL_PORT=""
 NAME=""
 TOKEN=""
 EXIT_ADDR=""
@@ -67,11 +69,14 @@ main options:
   --name NAME                a name for this server
   --token TOKEN              shared secret token (generated/asked if missing)
   --exit HOST:PORT           foreign server address and port (for the relay)
+  --dial relay|exit          who dials the tunnel (default relay = direct mode;
+                             "exit" = reverse: this Iranian server listens)
   --carrier tls|wss|raw      tunnel carrier
   --domain DOMAIN            domain name for the SNI / certificate
   --fingerprint HEX          certificate fingerprint of the foreign server (optional)
   --insecure                 skip verifying the foreign certificate (testing)
   --listen PORTS             exit listening ports, e.g. 443,2053
+  --tunnel-port PORT         reverse mode: the tunnel port on THIS server
   --mapping L1:T1,L2:T2      relay port forwardings, e.g. 443:443
   --panel-port PORT          web panel port on the relay
   --yes                      accept everything without asking
@@ -87,6 +92,8 @@ while [ $# -gt 0 ]; do
     --name|-n)     NAME="${2:-}"; shift 2 ;;
     --token|-t)    TOKEN="${2:-}"; shift 2 ;;
     --exit|-e)     EXIT_ADDR="${2:-}"; shift 2 ;;
+    --dial)        DIAL="${2:-}"; shift 2 ;;
+    --tunnel-port) TUNNEL_PORT="${2:-}"; shift 2 ;;
     --carrier)     CARRIER="${2:-}"; shift 2 ;;
     --domain|-d)   DOMAIN="${2:-}"; shift 2 ;;
     --fingerprint) FINGERPRINT="${2:-}"; shift 2 ;;
@@ -217,6 +224,9 @@ ARGS=(--force)
 [ -n "$NAME" ]        && ARGS+=(--name "$NAME")
 [ -n "$TOKEN" ]       && ARGS+=(--token "$TOKEN")
 [ -n "$EXIT_ADDR" ]   && ARGS+=(--exit-host "${EXIT_ADDR%%:*}" --exit-port "${EXIT_ADDR##*:}")
+[ -n "$DIAL" ]        && ARGS+=(--dial "$DIAL")
+[ -n "$TUNNEL_PORT" ] && ARGS+=(--exit-port "$TUNNEL_PORT")
+[ -n "$TUNNEL_PORT" ] && [ -z "$ROLE" ] && [ "$DIAL" = "exit" ] && ROLE="relay"
 [ -n "$CARRIER" ]     && ARGS+=(--carrier "$CARRIER")
 [ -n "$DOMAIN" ]      && ARGS+=(--domain "$DOMAIN")
 [ -n "$FINGERPRINT" ] && ARGS+=(--fingerprint "$FINGERPRINT")
@@ -230,7 +240,7 @@ fi
 [ "$NO_SYSTEMD" = "1" ] && ARGS+=(--no-start --no-enable)
 
 if [ -z "$ROLE" ] && [ "$ASSUME_YES" = "1" ]; then
-  [ -n "$EXIT_ADDR" ] && ROLE="relay" || ROLE="exit"
+  if [ -n "$EXIT_ADDR" ] || [ "$DIAL" = "exit" ]; then ROLE="relay"; else ROLE="exit"; fi
   ARGS+=(--role "$ROLE")
 fi
 if [ -z "$ROLE" ] && [ -t 0 ]; then
@@ -243,6 +253,18 @@ read -r -p "  choice [1]: " _role_choice
     *) ROLE="exit" ;;
   esac
   ARGS+=(--role "$ROLE")
+  if [ "$ROLE" = "relay" ] && [ -z "$EXIT_ADDR" ]; then
+    printf '  %s1)%s direct: this server dials the foreign server (normal)\n' "$CYAN" "$RESET"
+    printf '  %s2)%s reverse: the foreign server dials this one (no open port needed there)\n' "$CYAN" "$RESET"
+    read -r -p "  choice [1]: " _dial_choice
+    if [ "${_dial_choice:-1}" = "2" ]; then
+      DIAL="exit"
+      ARGS+=(--dial exit)
+      read -r -p "  tunnel port on this server [8443]: " _tp
+      TUNNEL_PORT="${_tp:-8443}"
+      ARGS+=(--exit-port "$TUNNEL_PORT")
+    fi
+  fi
 fi
 [ -n "$ROLE" ] || ROLE="auto"
 
