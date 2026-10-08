@@ -100,6 +100,8 @@ def header(home: Home, role: str) -> None:
         rtt_text = f"{rtt:.0f} ms" if isinstance(rtt, (int, float)) else "—"
     else:
         tunnels = state.get("tunnels", 0)
+        if isinstance(tunnels, (list, tuple, set)):
+            tunnels = len(tunnels)
         status = c(f"{tunnels} tunnels", "green") if tunnels else c("no tunnels", "red")
         extra = "—"
         rtt_text = "—"

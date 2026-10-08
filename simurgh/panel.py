@@ -908,6 +908,7 @@ function fmtBytes(n){
   while(n>=1024 && i<u.length-1){n/=1024;i++;}
   return n.toFixed(n<10&&i>0?1:0)+' '+u[i];
 }
+function nTunnels(n){var t=n.tunnels;return Array.isArray(t)?t.length:(Number(t)||0);}
 function fmtRate(bps){ return fmtBytes(bps)+'/s'; }
 function fmtDuration(s){
   s=Math.max(0,Math.floor(Number(s)||0));
