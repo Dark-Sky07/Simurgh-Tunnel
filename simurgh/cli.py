@@ -72,7 +72,7 @@ def _ask(prompt: str, default: str = "") -> str:
     if not _interactive():
         if default:
             return default
-        raise SystemExit(_fail(f"مقدار «{prompt}» لازم است و ترمینال تعاملی نیست."))
+        raise SystemExit(_fail(f"{prompt} is required and the terminal is not interactive."))
     suffix = f" [{default}]" if default else ""
     try:
         answer = input(f"{prompt}{suffix}: ").strip()
@@ -83,8 +83,8 @@ def _ask(prompt: str, default: str = "") -> str:
 
 
 def _ask_yes(prompt: str, default: bool = True) -> bool:
-    answer = _ask(f"{prompt} (بله/خیر)", "بله" if default else "خیر").lower()
-    return answer in ("بله", "y", "yes", "ب", "1", "true")
+    answer = _ask(f"{prompt} (yes/no)", "yes" if default else "no").lower()
+    return answer in ("y", "yes", "1", "true")
 
 
 def _fail(text: str) -> int:
@@ -109,14 +109,14 @@ def _public_ip() -> str:
 def _home_or_fail(args) -> Home:
     home = Home(getattr(args, "home", None))
     if not home.path.exists():
-        _err(f"نصب پیدا نشد: {home.path} — اول `simurgh init` یا `simurgh install` را اجرا کنید.")
+        _err(f"installation not found: {home.path} — run `simurgh init` or `simurgh install` first.")
         raise SystemExit(2)
     return home
 
 
 def _load_relay_or_fail(home: Home) -> RelayConfig:
     if not home.relay_cfg.exists():
-        _err(f"فایل تنظیمات رله پیدا نشد: {home.relay_cfg}")
+        _err(f"relay config not found: {home.relay_cfg}")
         raise SystemExit(2)
     try:
         return load_relay(home.relay_cfg)
@@ -127,7 +127,7 @@ def _load_relay_or_fail(home: Home) -> RelayConfig:
 
 def _load_exit_or_fail(home: Home) -> ExitConfig:
     if not home.exit_cfg.exists():
-        _err(f"فایل تنظیمات اگزیت پیدا نشد: {home.exit_cfg}")
+        _err(f"exit config not found: {home.exit_cfg}")
         raise SystemExit(2)
     try:
         return load_exit(home.exit_cfg)
@@ -164,11 +164,11 @@ def cmd_init(args) -> int:
         if not sys.stdin.isatty():
             role = "exit" if args.exit_host == "" else "relay"
         else:
-            print("این سرور چه نقشی دارد؟")
-            print("  1) سرور خارج (Exit)  — پنل/سرویس اصلی اینجاست")
-            print("  2) سرور ایران (Relay) — کاربران به این وصل می‌شوند")
-            choice = _ask("انتخاب", "1")
-            role = "exit" if choice.strip() in ("1", "exit", "خارج") else "relay"
+            print("What is the role of this server?")
+            print("  1) Foreign server (exit)  — your panel/service lives here")
+            print("  2) Iranian server (relay) — your users connect here")
+            choice = _ask("choice", "1")
+            role = "exit" if choice.strip() in ("1", "exit") else "relay"
     if role == "exit":
         return _init_exit(home, args)
     return _init_relay(home, args)
@@ -176,9 +176,9 @@ def cmd_init(args) -> int:
 
 def _init_exit(home: Home, args) -> int:
     if home.exit_cfg.exists() and not args.force:
-        _warn(f"تنظیمات اگزیت از قبل هست: {home.exit_cfg} (برای بازنویسی --force)")
+        _warn(f"exit config already exists: {home.exit_cfg} (use --force to overwrite)")
         return 1
-    name = args.name or _ask("نام این سرور", socket.gethostname()[:32])
+    name = args.name or _ask("name of this server", socket.gethostname()[:32])
     token = args.token or new_token()
     ports = parse_port_list(args.listen or list(DEFAULT_TLS_PORTS)[:3])
     listen = [ListenSpec(carrier="tls", port=ports[0], path="/ws")] if ports else []
@@ -197,30 +197,30 @@ def _init_exit(home: Home, args) -> int:
         cert, key = ensure_certificate(home, args.domain or name or "simurgh.local")
         cfg.cert_file, cfg.key_file = cert, key
     except Exception as exc:  # pragma: no cover - depends on environment
-        _warn(f"ساخت گواهی خودکار ناموفق بود: {exc}")
+        _warn(f"automatic certificate generation failed: {exc}")
     save_exit(cfg, home.exit_cfg)
-    _ok(f"تنظیمات اگزیت ساخته شد: {home.exit_cfg}")
-    print(f"   توکن: {token}")
-    print(f"   پورت‌ها: {', '.join(str(s.port) for s in cfg.listen)}")
+    _ok(f"exit config written: {home.exit_cfg}")
+    print(f"   token: {token}")
+    print(f"   ports: {', '.join(str(s.port) for s in cfg.listen)}")
     return 0
 
 
 def _init_relay(home: Home, args) -> int:
     if home.relay_cfg.exists() and not args.force:
-        _warn(f"تنظیمات رله از قبل هست: {home.relay_cfg} (برای بازنویسی --force)")
+        _warn(f"relay config already exists: {home.relay_cfg} (use --force to overwrite)")
         return 1
-    exit_host = args.exit_host or _ask("آدرس سرور خارج (IP یا دامنه)")
+    exit_host = args.exit_host or _ask("foreign server address (IP or domain)")
     if not exit_host:
-        return _fail("آدرس سرور خارج لازم است: --exit-host 203.0.113.9")
-    exit_port = args.exit_port or int(_ask("پورت تونل روی سرور خارج", "443"))
-    carrier = (args.carrier or _ask("نوع حامل (tls/wss/raw/plain)", "tls")).lower()
-    token = args.token or _ask("توکن (از سرور خارج بگیرید)")
+        return _fail("foreign server address is required: --exit-host 203.0.113.9")
+    exit_port = args.exit_port or int(_ask("tunnel port on the foreign server", "443"))
+    carrier = (args.carrier or _ask("carrier (tls/wss/raw/plain)", "tls")).lower()
+    token = args.token or _ask("token (copy it from the foreign server)")
     if not token:
-        return _fail("توکن لازم است: --token XXX")
+        return _fail("token is required: --token XXX")
     domain = args.domain or None
     if carrier in ("tls", "wss") and not domain and _interactive():
-        if _ask_yes("برای SNI دامنه دارید؟", False):
-            domain = _ask("دامنه")
+        if _ask_yes("do you have a domain name for the SNI?", False):
+            domain = _ask("domain name")
     name = args.name or socket.gethostname()[:32]
     panel_port = args.panel_port or RELAY_DEFAULT_PANEL
     cfg = RelayConfig(
@@ -235,14 +235,14 @@ def _init_relay(home: Home, args) -> int:
         try:
             mappings.append(_parse_mapping(spec))
         except ValueError as exc:
-            _err(f"مپینگ نامعتبر «{spec}»: {exc}")
+            _err(f"invalid mapping '{spec}': {exc}")
             return 2
     cfg.mappings = mappings
     save_relay(cfg, home.relay_cfg)
-    _ok(f"تنظیمات رله ساخته شد: {home.relay_cfg}")
-    print(f"   سرور خارج: {carrier}://{exit_host}:{exit_port}")
+    _ok(f"relay config written: {home.relay_cfg}")
+    print(f"   foreign server: {carrier}://{exit_host}:{exit_port}")
     if not mappings:
-        _info("برای افزودن پورت: simurgh mapping add 443 443")
+        _info("to add a port: simurgh mapping add 443 443")
     return 0
 
 
@@ -250,15 +250,15 @@ def _parse_mapping(spec: str, udp: bool = False) -> Mapping:
     """``listen:target[:host]`` — e.g. ``443:443`` or ``8443:8443``."""
     parts = spec.split(":")
     if len(parts) < 2:
-        raise ValueError("قالب باید listen:target باشد، مثلاً 443:443")
+        raise ValueError("the format must be listen:target, e.g. 443:443")
     try:
         listen = int(parts[0])
         target = int(parts[1])
     except ValueError as exc:
-        raise ValueError("پورت باید عدد باشد") from exc
+        raise ValueError("the port must be a number") from exc
     host = ":".join(parts[2:]) or "127.0.0.1"
     if not (1 <= listen <= 65535 and 1 <= target <= 65535):
-        raise ValueError("پورت بیرون از بازه ۱ تا ۶۵۵۳۵ است")
+        raise ValueError("the port is outside the 1-65535 range")
     return Mapping(name="", listen=listen, target_port=target,
                    target_host=host, udp=udp)
 
@@ -279,25 +279,25 @@ def cmd_install(args) -> int:
             code = _init_exit(home, sub) if wanted == "exit" else _init_relay(home, sub)
             cfg_path = home.exit_cfg if wanted == "exit" else home.relay_cfg
             if code != 0 and not cfg_path.exists():
-                _err(f"ساخت تنظیمات «{wanted}» ناموفق بود؛ نصب متوقف شد.")
+                _err(f"could not build the {wanted} config; installation stopped.")
                 return 2
     report = systemd.install_services(
         home, roles=roles, enable=not args.no_enable, start=not args.no_start,
         user=args.user if args.user else None,
     )
     if not report.get("systemd"):
-        _warn("systemd در دسترس نیست؛ سرویس نصب نشد. حالا دستی اجرا کنید:")
+        _warn("systemd is not available; the service was not installed. Start it manually:")
         for wanted in roles:
             print(f"   simurgh {wanted}" + ("" if wanted != "relay" else ""))
         return 0
     for unit in report.get("units", []):
-        _ok(f"ساخت {unit}")
+        _ok(f"created {unit}")
     for svc, result in report.get("actions", {}).items():
         (_ok if result == "ok" else _warn)(f"{svc}: {result}")
     print()
-    _info(f"پنل مدیریت: http://{_public_ip()}:{_panel_port_of(home, roles)}")
-    _info("حالت متنی: simurgh menu")
-    _info("وضعیت: simurgh status")
+    _info(f"web panel: http://{_public_ip()}:{_panel_port_of(home, roles)}")
+    _info("text menu: simurgh menu")
+    _info("status: simurgh status")
     return 0
 
 
@@ -338,15 +338,15 @@ def cmd_service(args) -> int:
         cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
         print(f"{__product__} v{__version__}   ({role})")
         print(f"  home:   {home.path}")
-        print(f"  config: {cfg_path} {'✔' if cfg_path.exists() else '✘ (نیست)'}")
+        print(f"  config: {cfg_path} {'✔' if cfg_path.exists() else '✘ (missing)'}")
         for name, active, sub, enabled in rows:
             mark = "✔" if active == "active" else "✘"
-            print(f"  سرویس: {name}: {active}/{sub} enable={enabled} {mark}")
+            print(f"  service: {name}: {active}/{sub} enable={enabled} {mark}")
         if home.state.exists():
             try:
                 state = json.loads(home.state.read_text())[role]
-                print(f"  تونل:  {'متصل' if state.get('connected') or state.get('tunnels') else 'قطع'}")
-                print(f"  آمار:  {json.dumps(state.get('stats', {}).get('totals', {}), ensure_ascii=False)}")
+                print(f"  tunnel:  {'connected' if state.get('connected') or state.get('tunnels') else 'down'}")
+                print(f"  stats:   {json.dumps(state.get('stats', {}).get('totals', {}), ensure_ascii=False)}")
             except (OSError, ValueError, KeyError):
                 pass
         if args.json:
@@ -355,7 +355,7 @@ def cmd_service(args) -> int:
             ]}, ensure_ascii=False))
         return 0
     if not systemd.available():
-        _err("systemd در دسترس نیست؛ با `simurgh exit` / `simurgh relay` دستی اجرا کنید.")
+        _err("systemd is not available; run `simurgh exit` / `simurgh relay` manually.")
         return 1
     result = systemd.control(action, names)
     code = 0
@@ -384,7 +384,7 @@ async def _run_exit(home: Home, args) -> int:
     try:
         await node.start()
     except Exception as exc:
-        _err(f"اجرای اگزیت ناموفق بود: {exc}")
+        _err(f"could not start the exit: {exc}")
         return 1
     panel = None
     if not args.no_panel:
@@ -397,12 +397,12 @@ async def _run_exit(home: Home, args) -> int:
         try:
             await panel.start()
         except OSError as exc:
-            _warn(f"پنل بالا نیامد ({exc}); خود تونل ادامه می‌دهد.")
+            _warn(f"the panel did not start ({exc}); the tunnel keeps running.")
             panel = None
     stop = asyncio.Event()
     _install_signal_handlers(stop)
     writer = asyncio.ensure_future(_state_writer(home, "exit", node, panel))
-    _ok(f"اگزیت «{cfg.name or 'exit'}» بالا آمد.")
+    _ok(f"exit \"{cfg.name or 'exit'}\" is up.")
     await stop.wait()
     writer.cancel()
     if panel is not None:
@@ -431,12 +431,12 @@ async def _run_relay(home: Home, args) -> int:
         try:
             await panel.start()
         except OSError as exc:
-            _warn(f"پنل بالا نیامد ({exc}); تونل ادامه می‌دهد.")
+            _warn(f"the panel did not start ({exc}); the tunnel keeps running.")
             panel = None
     stop = asyncio.Event()
     _install_signal_handlers(stop)
     writer = asyncio.ensure_future(_state_writer(home, "relay", node, panel))
-    _ok(f"رله «{cfg.name or 'relay'}» بالا آمد. مقصد: {cfg.exit.describe()}")
+    _ok(f"relay \"{cfg.name or 'relay'}\" is up. target: {cfg.exit.describe()}")
     await stop.wait()
     writer.cancel()
     if panel is not None:
@@ -470,7 +470,7 @@ def _service_action(name: str, role: str) -> dict:
     from . import systemd
 
     if not systemd.available():
-        return {"ok": False, "error": "systemd نیست"}
+        return {"ok": False, "error": "systemd is not available"}
     action = _SYSTEMCTL_ACTION.get(name, name)
     return systemd.control(action, _service_names(role))
 
@@ -535,13 +535,13 @@ def cmd_mapping(args) -> int:
     action = args.mapping_action
     if action == "list":
         if not cfg.mappings:
-            _info("هیچ مپینگی ندارید.")
+            _info("no mappings yet.")
             return 0
-        print(f"{'نام':<12} {'پورت ایران':>11}  {'مقصد':<22} نوع   وضعیت")
+        print(f"{'name':<12} {'iran port':>11}  {'target':<22} type  state")
         for m in cfg.mappings:
             print(f"{m.name or '-':<12} {m.listen:>11}  "
                   f"{m.target_host + ':' + str(m.target_port):<22} "
-                  f"{'UDP' if m.udp else 'TCP'}  {'فعال' if m.enabled else 'خاموش'}")
+                  f"{'UDP' if m.udp else 'TCP'}  {'on' if m.enabled else 'off'}")
         return 0
     if action == "add":
         try:
@@ -553,29 +553,29 @@ def cmd_mapping(args) -> int:
             _err(str(exc))
             return 2
         if not (1 <= mapping.listen <= 65535 and 1 <= mapping.target_port <= 65535):
-            _err("پورت بیرون از بازه مجاز است.")
+            _err("the port is outside the allowed range.")
             return 2
         if any(m.key() == mapping.key() for m in cfg.mappings):
-            _err(f"پورت {mapping.listen} از قبل استفاده می‌شود.")
+            _err(f"port {mapping.listen} is already used.")
             return 2
         if not free_port(mapping.listen, mapping.listen_host):
-            _warn(f"پورت {mapping.listen} همین حالا اشغال است (شاید سرویس دیگری).")
+            _warn(f"port {mapping.listen} is already in use right now (maybe another service).")
         cfg.mappings.append(mapping)
     elif action in ("remove", "rm", "delete"):
         key = str(args.listen)
         if args.id is not None:
             if args.id < 0 or args.id >= len(cfg.mappings):
-                _err("شماره مپینگ نامعتبر است.")
+                _err("invalid mapping number.")
                 return 2
             removed = cfg.mappings.pop(args.id)
-            _ok(f"حذف شد: {removed.listen} → {removed.target_port}")
+            _ok(f"deleted: {removed.listen} → {removed.target_port}")
             save_relay(cfg, home.relay_cfg)
             return 0
         before = len(cfg.mappings)
         cfg.mappings = [m for m in cfg.mappings
                         if not (str(m.listen) == key or m.name == args.name)]
         if len(cfg.mappings) == before:
-            _err(f"مپینگی با پورت {key} پیدا نشد.")
+            _err(f"no mapping found with port {key}.")
             return 2
     elif action == "toggle":
         found = False
@@ -583,16 +583,16 @@ def cmd_mapping(args) -> int:
             if str(m.listen) == str(args.listen) or (args.name and m.name == args.name):
                 m.enabled = not m.enabled
                 found = True
-                _ok(f"{'فعال' if m.enabled else 'خاموش'} شد: {m.listen}")
+                _ok(f"{'on' if m.enabled else 'off'}: {m.listen}")
         if not found:
-            _err("پیدا نشد.")
+            _err("not found.")
             return 2
     else:
-        _err(f"دستور نامعتبر: {action}")
+        _err(f"unknown action: {action}")
         return 2
     save_relay(cfg, home.relay_cfg)
-    _ok(f"ذخیره شد در {home.relay_cfg}")
-    _info("برای اعمال: simurgh restart")
+    _ok(f"saved to {home.relay_cfg}")
+    _info("to apply: simurgh restart")
     return 0
 
 
@@ -612,30 +612,30 @@ def cmd_status(args) -> int:
         return 0
     print(f"\033[1m{__product__} v{__version__}\033[0m — {home.path}")
     cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
-    print(f"  تنظیمات: {cfg_path} {'✔' if cfg_path.exists() else '✘'}")
+    print(f"  config: {cfg_path} {'✔' if cfg_path.exists() else '✘'}")
     if not node:
-        _warn(f"داده زنده‌ای برای «{role}» نیست. سرویس روشن است؟ (simurgh status/up)")
+        _warn(f"no live data for {role}. Is the service running? (simurgh status/up)")
         return cmd_service(argparse.Namespace(role=role, service_action="status",
                                              home=args.home, json=False))
     if role == "relay":
         connected = node.get("connected")
-        tunnel = "\033[32mمتصل\033[0m" if connected else "\033[31mقطع\033[0m"
-        print(f"  تونل:   {tunnel}  ({node.get('current_exit') or '—'})")
-        print(f"  پینگ:   {node.get('rtt_ms') and round(node['rtt_ms'], 1) or '—'} ms")
-        print(f"  اتصال‌ها: {node.get('reconnects', 0)}   خطا: {node.get('last_error') or '—'}")
+        tunnel = "\033[32mconnected\033[0m" if connected else "\033[31mdown\033[0m"
+        print(f"  tunnel:   {tunnel}  ({node.get('current_exit') or '—'})")
+        print(f"  rtt:      {node.get('rtt_ms') and round(node['rtt_ms'], 1) or '—'} ms")
+        print(f"  reconnects: {node.get('reconnects', 0)}   error: {node.get('last_error') or '—'}")
     else:
-        print(f"  تونل‌ها: {node.get('tunnels', 0)}")
+        print(f"  tunnels:  {node.get('tunnels', 0)}")
     stats = node.get("stats", {})
     totals = stats.get("totals", {})
     rates = stats.get("rates", {})
-    print(f"  ترافیک: {human_bytes(totals.get('in_bytes', 0))} ↓ / "
+    print(f"  traffic: {human_bytes(totals.get('in_bytes', 0))} ↓ / "
           f"{human_bytes(totals.get('out_bytes', 0))} ↑")
-    print(f"  سرعت:   {human_rate(rates.get('in_bps', 0))} ↓ / "
+    print(f"  rate:    {human_rate(rates.get('in_bps', 0))} ↓ / "
           f"{human_rate(rates.get('out_bps', 0))} ↑")
-    print(f"  مدت:    {human_duration(node.get('uptime', 0))}")
+    print(f"  uptime:  {human_duration(node.get('uptime', 0))}")
     mappings = node.get("mappings") or []
     if mappings:
-        print("  مپینگ‌ها:")
+        print("  mappings:")
         for m in mappings:
             print(f"    {m.get('listen')} → {m.get('target')} "
                   f"({'UDP' if m.get('udp') else 'TCP'}) "
@@ -657,7 +657,7 @@ def cmd_logs(args) -> int:
     name = {"exit": home.exit_log, "relay": home.relay_log,
             "panel": home.panel_log}.get(args.role, home.relay_log)
     if not name.exists():
-        _err(f"فایل لاگ نیست: {name}")
+        _err(f"no log file: {name}")
         return 1
     try:
         with name.open("rb") as fh:
@@ -671,7 +671,7 @@ def cmd_logs(args) -> int:
     tail = lines[-args.lines:]
     print("\n".join(tail))
     if args.follow:
-        print("\033[36m— دنبال کردن لاگ (Ctrl+C برای خروج) —\033[0m")
+        print("\033[36m— following the log (Ctrl+C to stop) —\033[0m")
         try:
             with name.open("r", errors="replace") as fh:
                 fh.seek(0, os.SEEK_END)
@@ -701,7 +701,7 @@ def cmd_speedtest(args) -> int:
             await asyncio.sleep(0.25)
         if not node.connected.is_set():
             await node.stop()
-            _err("تونل برقرار نشد؛ اول `simurgh status` را بررسی کنید.")
+            _err("the tunnel is not up; check `simurgh status` first.")
             return 3
         try:
             result = await run_speedtest(node, seconds=args.seconds)
@@ -710,11 +710,11 @@ def cmd_speedtest(args) -> int:
         if args.json:
             print(json.dumps(result, ensure_ascii=False))
         else:
-            print(f"  دانلود: \033[32m{result['download_mbps']:.1f} Mbps\033[0m "
+            print(f"  download: \033[32m{result['download_mbps']:.1f} Mbps\033[0m "
                   f"({human_bytes(result['download_bytes'])})")
-            print(f"  آپلود:  \033[32m{result['upload_mbps']:.1f} Mbps\033[0m "
+            print(f"  upload:   \033[32m{result['upload_mbps']:.1f} Mbps\033[0m "
                   f"({human_bytes(result['upload_bytes'])})")
-            print(f"  مدت تست: {result['seconds']:.1f} ثانیه")
+            print(f"  test time: {result['seconds']:.1f} s")
         return 0
 
     try:
@@ -736,11 +736,11 @@ def cmd_link(args) -> int:
     if args.show:
         print(link)
         return 0
-    print(f"\033[1mلینک اتصال رله (محرمانه):\033[0m\n{link}")
+    print(f"\033[1mrelay setup link (keep it secret):\033[0m\n{link}")
     print()
-    _info("روی سرور ایران: simurgh join '<link>'")
+    _info("on the Iranian server: simurgh join '<link>'")
     if not is_ip(host):
-        _warn("آدرس محلی تشخیص داده شد؛ با --host آدرس عمومی را بدهید.")
+        _warn("a local address was detected; pass the public address with --host.")
     return 0
 
 
@@ -754,19 +754,19 @@ def cmd_join(args) -> int:
         _err(str(exc))
         return 2
     except Exception as exc:
-        _err(f"دریافت اطلاعات از لینک ناموفق بود: {exc}")
+        _err(f"could not fetch the data from the link: {exc}")
         return 2
     cfg = relay_config_from_payload(payload)
     if home.relay_cfg.exists() and not args.force:
-        _err(f"تنظیمات رله از قبل هست ({home.relay_cfg}); با --force بازنویسی کنید.")
+        _err(f"the relay config already exists ({home.relay_cfg}); use --force to overwrite.")
         return 2
     if args.host:
         cfg.exit.address = args.host
     save_relay(cfg, home.relay_cfg)
-    _ok(f"تنظیمات رله از لینک ساخته شد: {home.relay_cfg}")
-    print(f"   مقصد: {cfg.exit.describe()}")
+    _ok(f"relay config built from the link: {home.relay_cfg}")
+    print(f"   target: {cfg.exit.describe()}")
     for m in cfg.mappings:
-        print(f"   مپینگ: {m.listen} → {m.target_host}:{m.target_port}")
+        print(f"   mapping: {m.listen} → {m.target_host}:{m.target_port}")
     return 0
 
 
@@ -774,69 +774,69 @@ def cmd_doctor(args) -> int:
     """Diagnose the usual reasons a tunnel does not come up."""
     home = Home(args.home)
     problems = 0
-    print(f"\033[1m{__product__} v{__version__} — بررسی سلامت\033[0m  ({home.path})")
+    print(f"\033[1m{__product__} v{__version__} — health check\033[0m  ({home.path})")
     if not home.path.exists():
-        _err(f"پوشه نصب نیست: {home.path}")
+        _err(f"installation folder not found: {home.path}")
         return 2
 
     role = args.role
     cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
     if not cfg_path.exists():
-        _err(f"فایل تنظیمات نیست: {cfg_path}")
+        _err(f"config file not found: {cfg_path}")
         return 2
-    _ok(f"تنظیمات: {cfg_path}")
+    _ok(f"config: {cfg_path}")
 
     if role == "exit":
         cfg = _load_exit_or_fail(home)
         if not cfg.token:
-            _err("توکن خالی است.")
+            _err("the token is empty.")
             problems += 1
         for spec in cfg.listen:
             if not spec.enabled:
                 continue
             if free_port(spec.port, spec.host):
-                _ok(f"پورت {spec.carrier}://{spec.host}:{spec.port} آزاد است")
+                _ok(f"port {spec.carrier}://{spec.host}:{spec.port} is free")
             else:
-                _warn(f"پورت {spec.host}:{spec.port} همین حالا اشغال است")
-        for path, label in ((cfg.cert_file, "گواهی"), (cfg.key_file, "کلید")):
+                _warn(f"port {spec.host}:{spec.port} is already in use")
+        for path, label in ((cfg.cert_file, "certificate"), (cfg.key_file, "key")):
             if path and Path(path).exists():
                 _ok(f"{label}: {path}")
             elif path:
-                _warn(f"{label} پیدا نشد: {path}")
+                _warn(f"{label} not found: {path}")
         from . import systemd
 
         if systemd.available():
-            _ok("systemd در دسترس است")
+            _ok("systemd is available")
         else:
-            _warn("systemd نیست؛ دستی اجرا کنید: simurgh exit")
+            _warn("no systemd; start it manually: simurgh exit")
         return 0 if problems == 0 else 1
 
     cfg = _load_relay_or_fail(home)
     if not cfg.token:
-        _err("توکن خالی است (از سرور خارج بگیرید).")
+        _err("the token is empty (copy it from the foreign server).")
         problems += 1
     else:
-        _ok(f"توکن: {cfg.token[:6]}…{cfg.token[-4:]}")
+        _ok(f"token: {cfg.token[:6]}…{cfg.token[-4:]}")
     addresses = [(ep.address, ep.port, ep.describe()) for ep in cfg.endpoints()]
     if not addresses:
-        _err("هیچ سرور خارجی تنظیم نشده.")
+        _err("no foreign server is configured.")
         problems += 1
     for host, port, desc in addresses:
         try:
             with socket.create_connection((host, port), timeout=5):
-                _ok(f"دسترسی TCP به {desc}")
+                _ok(f"TCP reachable: {desc}")
         except OSError as exc:
-            _err(f"اتصال به {desc} ناموفق: {exc}")
+            _err(f"cannot reach {desc}: {exc}")
             problems += 1
     for m in cfg.mappings:
         if free_port(m.listen, m.listen_host):
-            _ok(f"پورت {m.listen} آزاد است → {m.target_host}:{m.target_port}")
+            _ok(f"port {m.listen} is free → {m.target_host}:{m.target_port}")
         else:
-            _warn(f"پورت {m.listen} اشغال است (شاید خود سرویس ما یا سرویس دیگری)")
+            _warn(f"port {m.listen} is in use (maybe our own service or another one)")
     if free_port(cfg.panel_port):
-        _ok(f"پورت پنل {cfg.panel_port} آزاد است")
+        _ok(f"panel port {cfg.panel_port} is free")
     else:
-        _warn(f"پورت پنل {cfg.panel_port} اشغال است")
+        _warn(f"panel port {cfg.panel_port} is in use")
     return 0 if problems == 0 else 1
 
 
@@ -854,8 +854,8 @@ def cmd_web(args) -> int:
         stop = asyncio.Event()
         _install_signal_handlers(stop)
         await panel.start()
-        print(f"  پنل: http://{host}:{port}   کاربر: {user}   رمز: {password}")
-        _info("Ctrl+C برای خروج")
+        print(f"  panel: http://{host}:{port}   user: {user}   pass: {password}")
+        _info("Ctrl+C to quit")
         await stop.wait()
         await panel.stop()
         return 0
@@ -870,17 +870,17 @@ def cmd_uninstall(args) -> int:
     from . import systemd
 
     home = Home(args.home)
-    if not args.yes and not _ask_yes(f"حذف کامل سرویس‌ها و پوشه {home.path}؟", False):
-        _info("لغو شد.")
+    if not args.yes and not _ask_yes(f"remove the services and the folder {home.path}?", False):
+        _info("cancelled.")
         return 0
     if systemd.available():
         for svc, result in systemd.uninstall_services().items():
             _ok(f"{svc}: {result}") if result == "ok" else _warn(f"{svc}: {result}")
     if args.purge and home.path.exists():
         shutil.rmtree(home.path, ignore_errors=True)
-        _ok(f"پوشه حذف شد: {home.path}")
+        _ok(f"folder removed: {home.path}")
     else:
-        _info(f"تنظیمات نگه داشته شد در {home.path} (برای حذف: --purge)")
+        _info(f"config kept in {home.path} (delete it with: --purge)")
     return 0
 
 
@@ -901,35 +901,35 @@ def cmd_menu(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="simurgh",
-        description=f"{__product__} v{__version__} — تونل شفاف بین سرور ایران و خارج",
+        description=f"{__product__} v{__version__} — transparent tunnel between an Iranian and a foreign server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "نمونه‌ها:\n"
+            "examples:\n"
             "  sudo simurgh install --role exit --name omega\n"
             "  sudo simurgh install --role relay --exit 203.0.113.9:443 --token XXX\n"
             "  simurgh mapping add 443 443 --name panel\n"
             "  simurgh status\n  simurgh menu\n  simurgh speedtest\n"
         ),
     )
-    parser.add_argument("--version", action="store_true", help="نمایش نسخه")
-    parser.add_argument("--home", help="پوشه نصب (پیش‌فرض /etc/simurgh یا ~/.simurgh)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="لاگ کامل")
+    parser.add_argument("--version", action="store_true", help="show the version")
+    parser.add_argument("--home", help="install folder (default /etc/simurgh or ~/.simurgh)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="verbose logging")
     sub = parser.add_subparsers(dest="command")
 
-    p = sub.add_parser("install", help="نصب کامل: ساخت تنظیمات + سرویس systemd")
+    p = sub.add_parser("install", help="full install: config + systemd service")
     p.add_argument("--role", choices=("exit", "relay", "auto"), default="auto")
-    p.add_argument("--both", action="store_true", help="هر دو سرویس روی همین سرور")
+    p.add_argument("--both", action="store_true", help="both services on this server")
     p.add_argument("--name")
     p.add_argument("--token")
-    p.add_argument("--listen", help="پورت‌های اگزیت، مثلاً 443,8443")
-    p.add_argument("--exit-host", default="", help="آدرس سرور خارج (برای رله)")
+    p.add_argument("--listen", help="exit ports, e.g. 443,8443")
+    p.add_argument("--exit-host", default="", help="foreign server address (for the relay)")
     p.add_argument("--exit-port", type=int, default=0)
     p.add_argument("--carrier", default="")
     p.add_argument("--domain", default="")
     p.add_argument("--path", default="")
     p.add_argument("--fingerprint", default=None)
     p.add_argument("--insecure", action="store_true")
-    p.add_argument("--mapping", action="append", help="مپینگ اولیه: 443:443")
+    p.add_argument("--mapping", action="append", help="initial mapping: 443:443")
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--user", default="")
     p.add_argument("--config-only", action="store_true")
@@ -938,7 +938,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_install)
 
-    p = sub.add_parser("init", help="فقط ساخت فایل تنظیمات")
+    p = sub.add_parser("init", help="write the config files only")
     p.add_argument("--role", choices=("exit", "relay", "auto"), default="auto")
     p.add_argument("--name")
     p.add_argument("--token")
@@ -955,37 +955,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init)
 
-    for role, helptext in (("exit", "اجرای سرور خارج (اگزیت)"),
-                           ("relay", "اجرای سرور ایران (رله)")):
+    for role, helptext in (("exit", "run the foreign server (exit)"),
+                           ("relay", "run the Iranian server (relay)")):
         p = sub.add_parser(role, help=helptext)
         p.add_argument("--role", default=role, help=argparse.SUPPRESS)
-        p.add_argument("--no-panel", action="store_true", help="بدون پنل وب")
+        p.add_argument("--no-panel", action="store_true", help="without the web panel")
         p.add_argument("--panel-host", default="0.0.0.0")
         p.add_argument("--panel-port", type=int, default=0)
         p.add_argument("--verbose", action="store_true")
         p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("up", help="روشن کردن سرویس")
+    p = sub.add_parser("up", help="start the service")
     p.add_argument("--role", choices=("exit", "relay"), default="relay")
-    p.add_argument("--fg", action="store_true", help="اجرا در ترمینال (بدون systemd)")
+    p.add_argument("--fg", action="store_true", help="run in the terminal (no systemd)")
     p.set_defaults(func=lambda a: cmd_run(argparse.Namespace(
         role=a.role, home=a.home, verbose=False, no_panel=False,
         panel_host="0.0.0.0", panel_port=0)) if a.fg else cmd_service(
         argparse.Namespace(role=a.role, service_action="start", home=a.home, json=False)))
 
-    for action, helptext in (("start", "روشن کردن سرویس (systemd)"),
-                             ("stop", "خاموش کردن سرویس"),
-                             ("down", "خاموش کردن سرویس"),
-                             ("restart", "ری‌استارت سرویس"),
-                             ("enable", "فعال‌سازی خودکار در بوت"),
-                             ("disable", "غیرفعال کردن در بوت"),
-                             ("status", "وضعیت سرویس")):
+    for action, helptext in (("start", "start the service (systemd)"),
+                             ("stop", "stop the service"),
+                             ("down", "stop the service"),
+                             ("restart", "restart the service"),
+                             ("enable", "start automatically at boot"),
+                             ("disable", "do not start at boot"),
+                             ("status", "service status")):
         p = sub.add_parser(action, help=helptext)
         p.add_argument("--role", choices=("exit", "relay"), default="relay")
         p.add_argument("--json", action="store_true")
         p.set_defaults(func=cmd_service, service_action=action)
 
-    p = sub.add_parser("mapping", aliases=["port"], help="مدیریت پورت‌های فوروارد")
+    p = sub.add_parser("mapping", aliases=["port"], help="manage port forwardings")
     p.add_argument("mapping_action", choices=("list", "add", "remove", "rm", "toggle"),
                    nargs="?", default="list")
     p.add_argument("listen", nargs="?", default="")
@@ -996,46 +996,46 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--id", type=int, default=None)
     p.set_defaults(func=cmd_mapping)
 
-    p = sub.add_parser("logs", help="نمایش لاگ")
+    p = sub.add_parser("logs", help="show the log")
     p.add_argument("--role", choices=("exit", "relay", "panel"), default="relay")
     p.add_argument("-n", "--lines", type=int, default=80)
     p.add_argument("-f", "--follow", action="store_true")
     p.set_defaults(func=cmd_logs)
 
-    p = sub.add_parser("speedtest", help="تست سرعت از داخل تونل")
+    p = sub.add_parser("speedtest", help="measure the real speed through the tunnel")
     p.add_argument("--seconds", type=int, default=6)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_speedtest)
 
-    p = sub.add_parser("link", help="ساخت لینک اتصال برای رله جدید (روی اگزیت)")
+    p = sub.add_parser("link", help="build the setup link for a new relay (on the exit)")
     p.add_argument("--host", default="")
     p.add_argument("--panel-port", type=int, default=0)
-    p.add_argument("--show", action="store_true", help="فقط لینک خام")
+    p.add_argument("--show", action="store_true", help="print just the raw link")
     p.set_defaults(func=cmd_link)
 
-    p = sub.add_parser("join", help="ساخت تنظیمات رله از لینک اگزیت")
+    p = sub.add_parser("join", help="build the relay config from an exit link")
     p.add_argument("link")
-    p.add_argument("--host", default="", help="جایگزینی آدرس اگزیت")
+    p.add_argument("--host", default="", help="override the exit address")
     p.add_argument("--timeout", type=float, default=15.0)
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_join)
 
-    p = sub.add_parser("doctor", help="بررسی سلامت و عیب‌یابی")
+    p = sub.add_parser("doctor", help="health check and diagnostics")
     p.add_argument("--role", choices=("exit", "relay"), default="relay")
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("web", help="اجرای پنل وب به‌تنهایی")
+    p = sub.add_parser("web", help="run only the web panel")
     p.add_argument("--role", choices=("exit", "relay"), default="relay")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=0)
     p.set_defaults(func=cmd_web)
 
-    p = sub.add_parser("uninstall", help="حذف سرویس‌ها")
-    p.add_argument("--purge", action="store_true", help="حذف پوشه تنظیمات هم")
+    p = sub.add_parser("uninstall", help="remove the services")
+    p.add_argument("--purge", action="store_true", help="also delete the config folder")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_uninstall)
 
-    p = sub.add_parser("menu", help="منوی فارسی متنی")
+    p = sub.add_parser("menu", help="interactive text menu")
     p.set_defaults(func=cmd_menu)
 
     return parser
