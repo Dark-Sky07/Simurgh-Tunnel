@@ -11,6 +11,9 @@ BOLD=$'\033[1m'; GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'
 CYAN=$'\033[36m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 
 REPO_URL="${SIMURGH_REPO:-https://github.com/Dark-Sky07/Simurgh-Tunnel.git}"
+# which git ref to fetch when this script has to download the source itself
+# (e.g. when you pipe it into bash).  Override with SIMURGH_REF or --ref.
+REF="${SIMURGH_REF:-main}"
 SRC_DIR="${SIMURGH_SRC:-/opt/simurgh-src}"
 if [ "$(id -u)" = "0" ]; then
   VENV_DIR="${SIMURGH_VENV:-/opt/simurgh/venv}"
@@ -81,6 +84,8 @@ main options:
   --panel-port PORT          web panel port on the relay
   --yes                      accept everything without asking
   --no-systemd               do not create a systemd service (run manually)
+  --ref REF                  git ref to download when the source is missing
+                             (branch or tag, default: main)
   --uninstall [--purge]      remove the services
   --force                    overwrite the existing config
 EOF
@@ -103,6 +108,7 @@ while [ $# -gt 0 ]; do
     --panel-port)  PANEL_PORT="${2:-}"; shift 2 ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
     --no-systemd)  NO_SYSTEMD=1; shift ;;
+    --ref)         REF="${2:-main}"; shift 2 ;;
     --uninstall)   UNINSTALL=1; shift ;;
     --purge)       PURGE=1; shift ;;
     --force|-f)    FORCE=1; shift ;;
@@ -188,12 +194,15 @@ if [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/simurgh" ]; then
 say "using the source next to this script: $SRC"
 else
   if [ -d "$SRC_DIR/.git" ]; then
-say "updating the source in $SRC_DIR…"
-git -C "$SRC_DIR" pull --quiet --ff-only || warn "could not update the source; continuing with the existing copy."
+say "updating the source in $SRC_DIR ($REF)…"
+git -C "$SRC_DIR" fetch --depth 1 origin "$REF" --quiet &&
+git -C "$SRC_DIR" checkout --quiet FETCH_HEAD ||
+warn "could not update the source; continuing with the existing copy."
   else
     command -v git >/dev/null 2>&1 || install_pkgs "git"
-say "downloading the source from GitHub…"
-git clone --depth 1 "$REPO_URL" "$SRC_DIR" || die "could not download the source."
+say "downloading the source from GitHub ($REF)…"
+git -c advice.detachedHead=false clone --depth 1 --branch "$REF" "$REPO_URL" "$SRC_DIR" ||
+die "could not download the source ($REF)."
   fi
   SRC="$SRC_DIR"
 fi
