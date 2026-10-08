@@ -25,6 +25,7 @@ import time
 
 from .protocol import (
     DEFAULT_CHUNK,
+    GLOBAL_WINDOW_CAP,
     HEADER,
     DEFAULT_GLOBAL_WINDOW,
     DEFAULT_MAX_STREAM_WINDOW,
@@ -191,25 +192,30 @@ class Stream:
         self.last_flush = now
         capacity = self.window / max(rtt, 0.001)
         bonus = 0
-        if peak > self.window // 2:
-            # our consumer fell behind: the window is bigger than it can take
-            if self.window > self.base_window:
-                self.window = max(self.base_window, self.window // 2)
-                _log.debug("stream %s: window -> %d (consumer behind)",
-                           self.sid, self.window)
-            return 0
         if rate >= 0.7 * capacity and self.window < self.max_window:
             # window limited and keeping up: probe a bigger one
             new_window = min(self.max_window, self.window * 2)
             bonus = new_window - self.window
-            self.window = new_window
+            self._set_window(new_window)
             _log.debug("stream %s: window -> %d (rate %.1f MB/s over %.0f ms)",
                        self.sid, new_window, rate / 1e6, dt * 1e3)
-        elif rate < 0.15 * capacity and self.window > self.base_window:
-            # idle or limited elsewhere: give the credit budget back
-            self.window = max(self.base_window, self.window // 2)
+        elif peak == 0 and self.backlog == 0 and rate < 0.05 * capacity \
+                and self.window > self.base_window:
+            # Shrinking is for streams that went quiet: it gives their share of
+            # the shared credit budget back.  A busy stream that is merely slow
+            # is limited by its own client, and halving its window here is what
+            # once collapsed a whole connection to a crawl.
+            self._set_window(max(self.base_window, self.window // 2))
             _log.debug("stream %s: window -> %d (idle)", self.sid, self.window)
         return bonus
+
+    def _set_window(self, window: int) -> None:
+        """Resize this stream's window and keep the connection total honest."""
+        if self.mux is not None:
+            self.mux.window_sum += window - self.window
+            if self.mux.window_sum < 0:
+                self.mux.window_sum = 0
+        self.window = window
 
     # --------------------------------------------------------------- send
     def can_send(self, n: int) -> int:
@@ -255,7 +261,7 @@ class Mux:
         on_open=None,
         on_ctrl=None,
         stream_window: int = DEFAULT_STREAM_WINDOW,
-        global_window: int = DEFAULT_GLOBAL_WINDOW,
+        global_window: int = 0,
         max_stream_window: int = DEFAULT_MAX_STREAM_WINDOW,
         chunk: int = DEFAULT_CHUNK,
     ):
@@ -266,11 +272,16 @@ class Mux:
         self.stream_window = stream_window
         self.max_stream_window = max(stream_window, max_stream_window)
         self.chunk = chunk
-        #: how much *we* may still send before the peer has to credit us again
-        self.global_credit = global_window
+        #: explicit ceiling, or 0 to scale with the number of live streams
+        self.global_window_limit = global_window
+        #: sum of the live streams' current windows (see _global_window)
+        self.window_sum = 0
         #: how much of the peer's budget we have consumed and not yet credited
         self.recv_unacked = 0
-        self.global_window = global_window
+        #: how much *we* may still send before the peer has to credit us again
+        #: (with no streams open the ceiling is the floor; self.streams does not
+        #: exist yet, so it is spelled out here)
+        self.global_credit = self.global_window_limit or DEFAULT_GLOBAL_WINDOW
         self.streams: dict[int, Stream] = {}
         self.closed = False
         self.started = time.monotonic()
@@ -336,16 +347,31 @@ class Mux:
                 break
             self.send(frame)
 
+    def _global_window(self) -> int:
+        """The connection wide credit ceiling.
+
+        A tunnel carrying a thousand users must not be limited to the in-flight
+        budget of one stream, so the shared ceiling follows the sum of the live
+        streams' *current* windows: a 16 MiB floor for the quiet case, and a
+        64 MiB cap so a peer that stops reading still cannot park more than
+        that here.  Following the current windows (not the initial ones) is what
+        keeps a busy connection from refusing every credit grant once its
+        streams have grown.  ``global_window`` overrides both.
+        """
+        if self.global_window_limit > 0:
+            return self.global_window_limit
+        return min(max(DEFAULT_GLOBAL_WINDOW, self.window_sum), GLOBAL_WINDOW_CAP)
+
     def take_global_credit(self, n: int) -> int:
         """How much connection-wide credit we can hand back for *n* bytes we
         just consumed.
 
         The rule that keeps the tunnel alive: we never allow the peer to have
-        more than ``global_window`` bytes in flight, and we credit back
+        more bytes in flight than the shared ceiling, and we credit back
         everything we consume.  (Getting this wrong is how a tunnel stalls
         after exactly one window of download traffic.)
         """
-        room = self.global_window - self.recv_unacked
+        room = self._global_window() - self.recv_unacked
         grant = max(0, min(n, room))
         self.recv_unacked -= grant
         return grant
@@ -356,6 +382,7 @@ class Mux:
         self._next_sid += 2
         stream = Stream(self, sid, mode=mode, target=target)
         self.streams[sid] = stream
+        self.window_sum += stream.window
         self.stats["streams_total"] += 1
         self.stats["streams_open"] = len(self.streams)
         self.send(make_frame(T_OPEN, sid, bytes((mode,)) + target))
@@ -365,13 +392,15 @@ class Mux:
             stream.close(rst=True)
             raise StreamOpenError("tunnel open timeout") from None
         if not stream.open_ok:
-            self.streams.pop(sid, None)
+            if self.streams.pop(sid, None) is not None:
+                self.window_sum = max(0, self.window_sum - stream.window)
             raise StreamOpenError(stream.open_error or "open failed")
         return stream
 
     def accept(self, sid: int, mode: int = 0, target: bytes = b"") -> Stream:
         stream = Stream(self, sid, mode=mode, target=target)
         self.streams[sid] = stream
+        self.window_sum += stream.window
         self.stats["streams_total"] += 1
         self.stats["streams_open"] = len(self.streams)
         return stream
@@ -379,6 +408,7 @@ class Mux:
     def drop_stream(self, sid: int) -> None:
         s = self.streams.pop(sid, None)
         if s is not None:
+            self.window_sum = max(0, self.window_sum - s.window)
             s.closed = True
             s.eof = True
             if s.on_eof:
@@ -393,6 +423,7 @@ class Mux:
         s = self.streams.get(sid)
         if s is not None and s.closed and s.eof:
             self.streams.pop(sid, None)
+            self.window_sum = max(0, self.window_sum - s.window)
             self.stats["streams_open"] = len(self.streams)
 
     def close(self) -> None:
@@ -402,6 +433,7 @@ class Mux:
         for sid in list(self.streams):
             s = self.streams.pop(sid, None)
             if s is not None:
+                self.window_sum = max(0, self.window_sum - s.window)
                 s.closed = s.eof = True
                 if s.on_eof:
                     try:
@@ -491,7 +523,7 @@ class Mux:
             if s is not None:
                 sc, gc = WIN.unpack_from(frame, 5)
                 s.send_credit += sc
-                self.global_credit = min(self.global_credit + gc, self.global_window)
+                self.global_credit = min(self.global_credit + gc, self._global_window())
                 if s.on_credit is not None and sc:
                     s.on_credit()
             return

@@ -51,12 +51,22 @@ MODE_UDP = 1
 WIN = struct.Struct(">II")
 
 #: how much a peer may send before it has to wait for credit
+#: Starting window per stream.  The window tuning below grows it towards
+#: DEFAULT_MAX_STREAM_WINDOW: it doubles whenever a stream really uses what it
+#: has, so the small start costs nothing and keeps the memory of idle streams
+#: tiny.  (The Go engine starts at 1 MiB: its growth rule needs a bigger start
+#: to reach full speed on a short path.)
 DEFAULT_STREAM_WINDOW = 256 * 1024
 #: ceiling for the adaptive window: a stream that keeps draining fast is
 #: allowed this much in flight, so one user is not capped at window/RTT
-DEFAULT_MAX_STREAM_WINDOW = 16 * 1024 * 1024
+DEFAULT_MAX_STREAM_WINDOW = 8 * 1024 * 1024
 #: safety net across all streams of one tunnel connection
+#: Connection wide credit: the floor every tunnel gets, and the ceiling it may
+#: grow to when many streams run at once.  A relay serving a thousand users must
+#: not be throttled by the shared budget of a single long fat pipe, so the mux
+#: scales it with the number of live streams (see Mux._global_window).
 DEFAULT_GLOBAL_WINDOW = 16 * 1024 * 1024
+GLOBAL_WINDOW_CAP = 64 * 1024 * 1024
 #: biggest payload chunk the multiplexer puts in a single DATA frame
 DEFAULT_CHUNK = 64 * 1024
 

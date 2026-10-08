@@ -36,9 +36,10 @@ RestartSec=3
 LimitNOFILE=1048576
 TimeoutStopSec=15
 KillMode=mixed
-# The data path is a single multiplexed session per peer: memory stays flat.
-MemoryHigh=512M
-MemoryMax=1G
+# A busy relay keeps one session per user, so memory grows with the user
+# count: 1G/2G keeps a thousand users comfortable without hiding a leak.
+MemoryHigh=1G
+MemoryMax=2G
 TasksMax=8192
 StandardOutput=append:{log}
 StandardError=append:{log}

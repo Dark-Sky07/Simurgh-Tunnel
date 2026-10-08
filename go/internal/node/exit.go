@@ -111,6 +111,9 @@ func (e *Exit) serverCert(spec config.ListenSpec) (tls.Certificate, error) {
 		pick(spec.CertFile, e.cfg.CertFile), pick(spec.KeyFile, e.cfg.KeyFile))
 }
 
+// decoyFileOf is the custom decoy page of one listening endpoint, if any.
+func decoyFileOf(spec config.ListenSpec) string { return spec.DecoyFile }
+
 func pick(values ...string) string {
 	for _, v := range values {
 		if v != "" {
@@ -139,13 +142,13 @@ func (e *Exit) startListener(spec config.ListenSpec) error {
 		if err != nil {
 			return err
 		}
-		srv = carrier.NewServer(spec.Carrier, e.cfg.Token, cert, spec.Fallback)
+		srv = carrier.NewServer(spec.Carrier, e.cfg.Token, cert, spec.Fallback, decoyFileOf(spec))
 		if fp, err := carrier.Fingerprint(cert); err == nil {
 			slog.Info("listening", "carrier", spec.Carrier, "address", ln.Addr().String(),
 				"probers see", decoyMessage(spec.Fallback), "fingerprint", fp)
 		}
 	} else {
-		srv = carrier.NewServer(spec.Carrier, e.cfg.Token, tls.Certificate{}, spec.Fallback)
+		srv = carrier.NewServer(spec.Carrier, e.cfg.Token, tls.Certificate{}, spec.Fallback, decoyFileOf(spec))
 		slog.Info("listening", "carrier", spec.Carrier, "address", ln.Addr().String(), "probers see", "noise")
 	}
 	e.wg.Add(1)

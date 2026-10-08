@@ -346,7 +346,7 @@ func (r *Relay) serveTunnel(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	srv := carrier.NewServer(t.Carrier, r.cfg.Token, cert, t.Fallback)
+	srv := carrier.NewServer(t.Carrier, r.cfg.Token, cert, t.Fallback, t.DecoyFile)
 	srv.Serve(conn, func(ch mux.Channel) {
 		m := mux.New(ch, true, mux.Options{
 			StreamWindow:    int64(r.cfg.StreamWindow),

@@ -150,20 +150,20 @@ go/bin/simurgh-go bench -mb 256 -delay 20 -streams 64  # go engine, 64 users
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **115 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, window autotuning) |
+| `python -m pytest -q` | **118 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, shared window, window autotuning) |
+| `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
-| Throughput (one machine, loopback) | ≈ 3 Gbit/s down, ≈ 1.3 Gbit/s up through the tunnel |
-| Single stream on a 120 ms path | 2 MB/s with a fixed 256 KiB window → **38 MB/s** with the automatic window (19×, 80 MB transfer, same 2 vCPU container) |
-| Go engine, same 60 ms path | **39.9 MB/s** plain (319 Mbit/s) and **24.1 MB/s** over `tls`, same box |
-| Go engine, short path | **313 MB/s** single stream (2.5 Gbit/s) |
-| Go engine, many users | **391 MB/s (3.1 Gbit/s) for 64 simultaneous users** across 2 tunnel connections on 2 vCPUs |
-| Go engine, CPU | **1.0 CPU-second per 256 MB** moved with those 64 users |
+| Single stream on a 60 ms path | 2 MB/s with a fixed 256 KiB window → **40.4 MB/s** with the automatic window (Python engine, 80 MB, same 2 vCPU container) |
+| Single stream on a 4 ms path | **233 MB/s (1.9 Gbit/s)** with the Python engine — the CPU limit of one core |
+| Go engine, same 60 ms path | **42.3 MB/s (338 Mbit/s)** plain, **30.5 MB/s (244 Mbit/s)** over `tls` (30.4 over `wss`) |
+| Go engine, short path | **383 MB/s (3.07 Gbit/s)** single stream |
+| Go engine, many users | **430 MB/s (3.4 Gbit/s) for 64 simultaneous users on one tunnel connection**, 503 MB/s (4.0 Gbit/s) over two — 2 vCPUs |
+| Go engine, CPU | **0.6-0.8 CPU-second per 256 MB** moved, relay + exit + test client in the same 2 vCPU process |
 | Engine interop | Go relay ⇄ Python exit and Python relay ⇄ Go exit, both verified |
-| Single stream on a short path | 286 MB/s (2.3 Gbit/s) through the tunnel — the CPU limit of one core |
-| Pool | 8 user connections over 4 tunnels: 13.9 MB/s vs 3.6 MB/s on one tunnel with the same per-flow cap, load spread 2/2/2/2 |
-| Memory | 95 MB peak for relay + exit + test target together while moving 200 MB over 4 tunnels |
-| Decoy | plain HTTP → nginx page · TLS + garbage → silent close · raw → random noise |
+| Pool | 8 user connections over 4 tunnels: 13.0 MB/s vs 3.6 MB/s on one tunnel with the same per-flow cap, load spread 1/1/1/1 |
+| Memory | 33-41 MB peak RSS for relay + exit + test target on a single fat stream; 95 MB moving 200 MB over 4 tunnels |
+| Decoy | plain HTTP or TLS + HTTP → real nginx page (200), unknown path → 404, HTTP/2 → `GOAWAY(HTTP_1_1_REQUIRED)` like a normal site, `fallback = "site:host:port"` → the port really serves that site, wrong token → 400/binary-noise or a silent close |
 | Self-heal | killing the exit: the relay reconnects when it returns |
 | Reverse mode | traffic over tls/raw/plain, exit reconnects after a relay restart |
 | UDP forwarding | 4/4 replies |
