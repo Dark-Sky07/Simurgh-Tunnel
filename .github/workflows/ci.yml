@@ -45,21 +45,23 @@ jobs:
           set -o pipefail
           python -m pytest -q 2>&1 | tee "$RUNNER_TEMP/pytest-no-tomllib.log"
 
-      # put the failing tests in the job summary, where a maintainer (or an
-      # agent) can read them without downloading the whole log
+      # show the failing tests both in the job summary and as an annotation
+      # (annotations are readable through the checks API without downloading
+      # the whole job log)
       - name: Summarise failures
         if: failure()
         run: |
-          {
-            echo "### python ${{ matrix.python }} — pytest tail"
-            for log in "$RUNNER_TEMP"/pytest*.log; do
-              [ -f "$log" ] || continue
-              echo "#### $(basename "$log")"
+          for log in "$RUNNER_TEMP"/pytest*.log; do
+            [ -f "$log" ] || continue
+            title="pytest $(basename "$log")"
+            echo "::error title=$title::$(tail -n 12 "$log" | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
+            {
+              echo "### python ${{ matrix.python }} — $(basename "$log")"
               echo '```'
               grep -E "FAILED|ERROR|assert|Error|error:" "$log" | tail -n 40
               echo '```'
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
 
   shell:
     name: installer and shell scripts
