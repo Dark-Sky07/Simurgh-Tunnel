@@ -389,7 +389,8 @@ warn "the go engine could not be built here (log: $GO_BUILD_LOG)."
     else
 say "no compiled engine here; the portable python engine will be used."
     fi
-    sed -n '1,3p' "$GO_BUILD_LOG" 2>/dev/null | while IFS= read -r line; do
+    # the last lines of the log are the reason (see tools/build-go.sh)
+    tail -n 3 "$GO_BUILD_LOG" 2>/dev/null | while IFS= read -r line; do
       printf '  %s%s%s\n' "$DIM" "$line" "$RESET"
     done
 say "build it later with:  sudo bash $SRC/tools/build-go.sh  &&  simurgh engine go"

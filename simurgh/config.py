@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import os
 import secrets
-import tomllib
+
+try:  # the standard library has a TOML reader from Python 3.11 on
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10 (Debian 11/12, Ubuntu 20.04/22.04)
+    from . import _tomli as tomllib  # bundled copy with the same API
+
 from dataclasses import dataclass, field
 from pathlib import Path
 

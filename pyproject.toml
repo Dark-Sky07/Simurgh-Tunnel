@@ -22,5 +22,10 @@ simurgh = "simurgh.cli:main"
 [tool.setuptools.packages.find]
 include = ["simurgh*"]
 
+# the bundled TOML reader keeps its licence next to it, and ships a py.typed
+# marker so type checkers work on every supported Python
+[tool.setuptools.package-data]
+"simurgh._tomli" = ["LICENSE", "py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
