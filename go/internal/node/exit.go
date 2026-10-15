@@ -134,8 +134,10 @@ func (e *Exit) startListener(spec config.ListenSpec) error {
 	if err != nil {
 		return err
 	}
+	e.mu.Lock()
 	e.listeners = append(e.listeners, ln)
 	e.endpoint = append(e.endpoint, fmt.Sprintf("%s://%s:%d", spec.Carrier, host, spec.Port))
+	e.mu.Unlock()
 	var srv *carrier.Server
 	if spec.Carrier == "tls" || spec.Carrier == "wss" {
 		cert, err := e.serverCert(spec)
@@ -202,20 +204,22 @@ func (e *Exit) onChannel(ch mux.Channel) {
 	left := len(e.tunnels)
 	e.mu.Unlock()
 	if err != nil {
+		e.mu.Lock()
 		e.lastError = err.Error()
+		e.mu.Unlock()
 	}
 	slog.Warn("tunnel closed", "peer", ch.Peer(), "left", left, "err", err)
 }
 
 // handleOpen connects one stream to the service behind this exit.
 func (e *Exit) handleOpen(s *mux.Stream) {
-	if s.Mode == proto.ModeUDP {
-		_ = s.Mux.OpenErr(s, proto.ErrBadRequest, "udp is not in the Go engine yet")
-		return
-	}
 	host, port, _, err := proto.DecodeAddr(s.Target)
 	if err != nil {
 		_ = s.Mux.OpenErr(s, proto.ErrBadRequest, "bad address")
+		return
+	}
+	if s.Mode == proto.ModeUDP {
+		e.openUDP(s, host, port)
 		return
 	}
 	dialer := net.Dialer{Timeout: 10 * time.Second}
@@ -268,8 +272,10 @@ func (e *Exit) reverseSupervisor(spec config.ListenSpec, slot int) {
 			backoff *= 2
 		}
 		if err != nil && !isClosed(err) {
+			e.mu.Lock()
 			e.dialErrors++
 			e.lastError = err.Error()
+			e.mu.Unlock()
 			slog.Warn("cannot reach the relay", "address", fmt.Sprintf("%s->%s:%d", spec.Carrier, spec.Dial, spec.Port), "err", err)
 		}
 	}
@@ -336,6 +342,7 @@ func (e *Exit) Status() map[string]any {
 		started[m] = e.started[m]
 	}
 	listening := append([]string(nil), e.endpoint...)
+	lastError, dialErrors := e.lastError, e.dialErrors
 	e.mu.Unlock()
 
 	var in, out int64
@@ -382,8 +389,8 @@ func (e *Exit) Status() map[string]any {
 		"reach_out":      []string{},
 		"targets":        []string{},
 		"connected":      len(tunnels) > 0,
-		"last_error":     e.lastError,
-		"dial_errors":    e.dialErrors,
+		"last_error":     lastError,
+		"dial_errors":    dialErrors,
 		"speedtest_port": e.cfg.SpeedtestPort,
 		"push_ports":     e.cfg.PushPorts,
 		"uptime":         time.Since(e.start).Seconds(),

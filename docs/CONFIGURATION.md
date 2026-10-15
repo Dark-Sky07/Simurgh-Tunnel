@@ -236,7 +236,7 @@ simurgh init --exit-host 203.0.113.9 --connections 8   # 1000 users, 8 cores
 | `listen_host` | `0.0.0.0` | bind address for that port |
 | `target_host` | `127.0.0.1` | address used **from the exit** |
 | `target_port` | — | service port on the foreign server |
-| `udp` | `false` | forward UDP instead of TCP |
+| `udp` | `false` | forward UDP instead of TCP. One datagram is one frame, so boundaries survive and nothing is retransmitted; when the far side is behind the datagram is dropped like a full UDP socket would. Each client address gets its own stream on the relay, reaped after 60 s of silence, and the exit talks to the target through one UDP socket per stream. Both engines speak it. |
 | `name` | — | label in the panel and CLI |
 | `enabled` | `true` | keep the entry but stop forwarding |
 

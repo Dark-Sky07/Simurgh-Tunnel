@@ -166,7 +166,7 @@ go/bin/simurgh-go bench -mb 256 -delay 20 -streams 64  # go engine, 64 users
 | Decoy | plain HTTP or TLS + HTTP → real nginx page (200), unknown path → 404, HTTP/2 → `GOAWAY(HTTP_1_1_REQUIRED)` like a normal site, `fallback = "site:host:port"` → the port really serves that site, wrong token → 400/binary-noise or a silent close |
 | Self-heal | killing the exit: the relay reconnects when it returns |
 | Reverse mode | traffic over tls/raw/plain, exit reconnects after a relay restart |
-| UDP forwarding | 4/4 replies |
+| UDP forwarding | 4/4 replies, boundaries kept for every size 1 B – 60 KB, one stream per client address, datagrams dropped (never queued) when the far side is behind; Go ⇄ Python interop verified in both directions |
 
 ## Documentation
 

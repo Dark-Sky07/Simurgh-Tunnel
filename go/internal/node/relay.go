@@ -58,13 +58,17 @@ type Relay struct {
 	once  sync.Once
 	start time.Time
 
+	listeners []net.Listener
+	tunnel    []net.Listener
+	udpListen []*udpListener
+	wg        sync.WaitGroup
+
+	// counters the supervisor goroutines write and the status reader reads
+	cmu        sync.Mutex
 	dialErrors int
 	openErrors int
 	lastError  string
 	connectCnt int
-	listeners  []net.Listener
-	tunnel     []net.Listener
-	wg         sync.WaitGroup
 
 	statMu   sync.Mutex
 	mappings map[string]*mapCounter // key = listen port
@@ -90,7 +94,9 @@ func (r *Relay) Start() error {
 			continue
 		}
 		if m.UDP {
-			slog.Warn("UDP mappings are not in the Go engine yet; skipping", "port", m.Listen)
+			if err := r.startUDP(m); err != nil {
+				slog.Error("cannot listen on udp", "port", m.Listen, "err", err)
+			}
 			continue
 		}
 		host := m.ListenHost
@@ -144,6 +150,9 @@ func (r *Relay) Stop() {
 	}
 	for _, ln := range r.tunnel {
 		ln.Close()
+	}
+	for _, ul := range r.udpListen {
+		ul.close()
 	}
 	r.pmu.Lock()
 	muxes := append([]*mux.Mux(nil), r.pool...)
@@ -209,8 +218,10 @@ func (r *Relay) handleUser(counter *mapCounter, conn net.Conn, m config.Mapping)
 	}
 	if err != nil {
 		counter.errors.Add(1)
+		r.cmu.Lock()
 		r.openErrors++
 		r.lastError = err.Error()
+		r.cmu.Unlock()
 		slog.Warn("cannot open a stream for a user", "peer", conn.RemoteAddr(), "err", err)
 		conn.Close()
 		return
@@ -390,7 +401,9 @@ func (r *Relay) supervisor(slot int) {
 	backoff := 500 * time.Millisecond
 	eps := r.endpoints()
 	if len(eps) == 0 {
+		r.cmu.Lock()
 		r.lastError = "no exit endpoint configured"
+		r.cmu.Unlock()
 		return
 	}
 	for {
@@ -414,8 +427,10 @@ func (r *Relay) supervisor(slot int) {
 			backoff *= 2
 		}
 		if err != nil && !isClosed(err) {
+			r.cmu.Lock()
 			r.dialErrors++
 			r.lastError = err.Error()
+			r.cmu.Unlock()
 			slog.Warn("cannot reach the exit", "address", fmt.Sprintf("%s://%s:%d", ep.Carrier, ep.Address, ep.Port), "err", err)
 		}
 	}
@@ -442,7 +457,9 @@ func (r *Relay) runTunnel(ep config.Endpoint, primary bool) error {
 		Chunk:           r.cfg.Chunk,
 		OnCtrl:          r.onCtrl,
 	})
+	r.cmu.Lock()
 	r.connectCnt++
+	r.cmu.Unlock()
 	if !r.addMux(m, false) {
 		m.Close()
 		return errors.New("pool is full")
@@ -554,6 +571,9 @@ func (r *Relay) Status() map[string]any {
 	r.pmu.Lock()
 	pool := append([]*mux.Mux(nil), r.pool...)
 	r.pmu.Unlock()
+	r.cmu.Lock()
+	connectCnt, lastError := r.connectCnt, r.lastError
+	r.cmu.Unlock()
 
 	var in, out int64
 	streams := 0
@@ -578,8 +598,12 @@ func (r *Relay) Status() map[string]any {
 	active := 0
 	for _, m := range r.cfg.Mappings {
 		c := mappingStats[fmt.Sprint(m.Listen)]
+		protoName := "tcp"
+		if m.UDP {
+			protoName = "udp"
+		}
 		entry := map[string]any{
-			"key":     fmt.Sprintf("tcp:%s:%d/%s:%d", m.ListenHost, m.Listen, m.TargetHost, m.TargetPort),
+			"key":     fmt.Sprintf("%s:%s:%d/%s:%d", protoName, m.ListenHost, m.Listen, m.TargetHost, m.TargetPort),
 			"name":    m.Name,
 			"listen":  m.Listen,
 			"target":  fmt.Sprintf("%s:%d", m.TargetHost, m.TargetPort),
@@ -625,8 +649,8 @@ func (r *Relay) Status() map[string]any {
 		"tunnel_targets": targets,
 		"rtt_ms":         float64(rtt.Microseconds()) / 1000.0,
 		"uptime":         time.Since(r.start).Seconds(),
-		"reconnects":     r.connectCnt,
-		"last_error":     r.lastError,
+		"reconnects":     connectCnt,
+		"last_error":     lastError,
 		"bind_errors":    []string{},
 		"dial":           r.cfg.Dial,
 		"tunnel_listen":  tunnelListen,
@@ -645,6 +669,11 @@ func (r *Relay) listening(port int) bool {
 	want := fmt.Sprint(port)
 	for _, ln := range r.listeners {
 		if _, p, err := net.SplitHostPort(ln.Addr().String()); err == nil && p == want {
+			return true
+		}
+	}
+	for _, ul := range r.udpListen {
+		if _, p, err := net.SplitHostPort(ul.conn.LocalAddr().String()); err == nil && p == want {
 			return true
 		}
 	}
