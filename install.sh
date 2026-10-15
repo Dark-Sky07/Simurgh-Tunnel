@@ -23,19 +23,28 @@ else
   BIN_DIR="$HOME/.local/bin"
 fi
 
+# every variable the script reads must exist before it is read: the script runs
+# with `set -u`, so a missing one aborts the install with "unbound variable".
 ROLE=""
 DIAL=""
 TUNNEL_PORT=""
+CONNECTIONS=""
 NAME=""
 TOKEN=""
 EXIT_ADDR=""
+EXIT_HOST=""
+EXIT_PORT=""
 LISTEN=""
 MAPPING=""
 PANEL_PORT=""
 ASSUME_YES=0
 NO_SYSTEMD=0
 UNINSTALL=0
-FORCE=0
+PURGE=0
+BOTH=0
+# a re-run refreshes the configuration; that is what people expect from
+# "run the installer again" (back up /etc/simurgh first if you edited it by hand)
+FORCE=1
 CARRIER=""
 SPLIT=""
 DOMAIN=""
@@ -72,12 +81,15 @@ ${BOLD}Simurgh Tunnel installer${RESET}
 
 main options:
   --role exit|relay|both     role of this server (foreign / Iranian / both)
+                             without --role the installer asks (or picks the
+                             foreign/exit role when there is no terminal)
+  --both                     run both services on one server (same as --role both)
   --name NAME                a name for this server
   --token TOKEN              shared secret token (generated/asked if missing)
   --exit HOST:PORT           foreign server address and port (for the relay)
   --dial relay|exit          who dials the tunnel (default relay = direct mode;
                              "exit" = reverse: this Iranian server listens)
-  --carrier tls|wss|raw      tunnel carrier
+  --carrier tls|wss|raw|plain  tunnel carrier
   --domain DOMAIN            domain name for the SNI / certificate
   --fingerprint HEX          certificate fingerprint of the foreign server (optional)
   --insecure                 skip verifying the foreign certificate (testing)
@@ -99,14 +111,19 @@ main options:
   --no-systemd               do not create a systemd service (run manually)
   --ref REF                  git ref to download when the source is missing
                              (branch or tag, default: main)
-  --uninstall [--purge]      remove the services
-  --force                    overwrite the existing config
+  --uninstall [--purge]      remove the services (--purge also deletes the
+                             config, the python environment and the source)
+  --force                    overwrite the existing config (this is the default)
+  --help                     this text
 EOF
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --role|-r)     ROLE="${2:-}"; shift 2 ;;
+    --role|-r)     ROLE="${2:-}"
+                   case "$ROLE" in both|all) ROLE="auto"; BOTH=1 ;; esac
+                   shift 2 ;;
+    --both)        BOTH=1; shift ;;
     --name|-n)     NAME="${2:-}"; shift 2 ;;
     --token|-t)    TOKEN="${2:-}"; shift 2 ;;
     --exit|-e)     EXIT_ADDR="${2:-}"; shift 2 ;;
@@ -133,6 +150,50 @@ while [ $# -gt 0 ]; do
 *) die "unknown option: $1  (see --help)";;
   esac
 done
+
+# ------------------------------------------------------- validate the options
+# fail here, with a clear sentence, instead of inside the CLI later.
+case "$ROLE" in
+  ""|exit|relay|auto) ;;
+  *) die "unknown role: $ROLE  (exit | relay | both)" ;;
+esac
+case "$DIAL" in
+  ""|relay|exit) ;;
+  *) die "unknown --dial: $DIAL  (relay | exit)" ;;
+esac
+case "$ENGINE" in
+  auto|go|python) ;;
+  *) die "unknown --engine: $ENGINE  (auto | go | python)" ;;
+esac
+if [ -n "$CARRIER" ]; then
+  case "$CARRIER" in
+    tls|wss|raw|plain) ;;
+    *) die "unknown --carrier: $CARRIER  (tls | wss | raw | plain)" ;;
+  esac
+fi
+for _var in "tunnel port:$TUNNEL_PORT" "panel port:$PANEL_PORT" \
+            "connections:$CONNECTIONS" "split:$SPLIT"; do
+  _val="${_var#*:}"
+  [ -n "$_val" ] || continue
+  case "$_val" in
+    *[!0-9]*) die "the ${_var%%:*} must be a number (got: $_val)" ;;
+  esac
+done
+if [ -n "$EXIT_ADDR" ]; then
+  EXIT_ADDR="${EXIT_ADDR#*://}"            # accept a pasted tls://host:port
+  case "$EXIT_ADDR" in
+    *:*) ;;
+    *) die "--exit wants HOST:PORT, e.g.  --exit 203.0.113.9:443" ;;
+  esac
+  EXIT_HOST="${EXIT_ADDR%:*}"
+  EXIT_PORT="${EXIT_ADDR##*:}"
+  [ -n "$EXIT_HOST" ] || die "--exit has no address: $EXIT_ADDR"
+  case "$EXIT_PORT" in
+    *[!0-9]*|"") die "--exit wants HOST:PORT with a numeric port (got: $EXIT_ADDR)" ;;
+  esac
+  { [ "$EXIT_PORT" -ge 1 ] && [ "$EXIT_PORT" -le 65535 ]; } ||
+    die "the --exit port is outside 1-65535 (got: $EXIT_PORT)"
+fi
 
 if [ "$(id -u)" != "0" ]; then
   # Containers, WSL and "install into my home" setups: allow it explicitly,
@@ -161,6 +222,8 @@ install_pkgs() {
 warn "cannot install packages without root (skipped: $pkgs)."
     return 0
   fi
+  # the package list is meant to be split into separate arguments here
+  # shellcheck disable=SC2086
   case "$PKG" in
     apt) DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs ;;
@@ -173,14 +236,29 @@ warn "cannot install packages without root (skipped: $pkgs)."
 
 if [ "$UNINSTALL" = "1" ]; then
 say "removing the Simurgh services…"
-  if command -v simurgh >/dev/null 2>&1; then
-    simurgh uninstall --yes ${PURGE:+--purge} || true
+  # prefer the simurgh that this installer put here, then whatever is in PATH
+  if [ -x "$VENV_DIR/bin/simurgh" ]; then
+    if [ "$PURGE" = "1" ]; then
+      "$VENV_DIR/bin/simurgh" uninstall --yes --purge || true
+    else
+      "$VENV_DIR/bin/simurgh" uninstall --yes || true
+    fi
+  elif command -v simurgh >/dev/null 2>&1; then
+    if [ "$PURGE" = "1" ]; then
+      simurgh uninstall --yes --purge || true
+    else
+      simurgh uninstall --yes || true
+    fi
   else
     systemctl disable --now simurgh-exit simurgh-relay 2>/dev/null || true
     rm -f /etc/systemd/system/simurgh-*.service
     systemctl daemon-reload 2>/dev/null || true
   fi
-  [ "${PURGE:-0}" = "1" ] && rm -rf /etc/simurgh "$VENV_DIR"
+  if [ "$PURGE" = "1" ]; then
+    rm -rf /etc/simurgh "$VENV_DIR" "$SRC_DIR" /etc/sysctl.d/99-simurgh.conf
+    rm -f "$BIN_DIR/simurgh" "$BIN_DIR/simurgh-go"
+ok "everything removed (config, environment and source)."
+  fi
 ok "done."
   exit 0
 fi
@@ -205,10 +283,19 @@ fi
 command -v openssl >/dev/null 2>&1 || install_pkgs "openssl" || true
 
 # ------------------------------------------------------------------ source
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/simurgh" ]; then
+# The documented one-liner pipes this script into bash, and then BASH_SOURCE is
+# empty — reading ${BASH_SOURCE[0]} unconditionally aborts with `set -u`.
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+fi
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/simurgh" ]; then
   SRC="$SCRIPT_DIR"
 say "using the source next to this script: $SRC"
+elif [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/simurgh" ]; then
+  # a checkout that was put there by hand (or by a previous run)
+  SRC="$SRC_DIR"
+say "using the source in $SRC"
 else
   if [ -d "$SRC_DIR/.git" ]; then
 say "updating the source in $SRC_DIR ($REF)…"
@@ -236,31 +323,76 @@ install_pkg() {
   return 1
 }
 if ! install_pkg "$SRC"; then
-warn "the normal install failed; trying offline (no-build-isolation)…"
-  install_pkgs "python3-setuptools python3-wheel" || true
-install_pkg --no-build-isolation "$SRC" || die "package installation failed."
+  # No PyPI (usual on an Iranian server): build with the distribution's own
+  # setuptools and wheel, which the venv is then allowed to see.
+warn "the normal install failed; retrying without downloading build tools…"
+  install_pkgs "python3-setuptools python3-wheel python3-pip" || true
+  if ! "$VENV_DIR/bin/python" -c 'import setuptools, wheel' >/dev/null 2>&1; then
+say "recreating the environment with access to the system packages…"
+    case "$VENV_DIR" in ""|"/") die "refusing to remove '$VENV_DIR'." ;; esac
+    rm -rf "$VENV_DIR"
+    $PY -m venv --system-site-packages "$VENV_DIR" ||
+      die "could not create the python environment in $VENV_DIR."
+    "$VENV_DIR/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+  fi
+  if install_pkg --no-build-isolation "$SRC"; then
+    :
+  else
+    # Last resort, and it needs no build tooling at all: point the interpreter
+    # at this checkout and start the CLI with `python -m simurgh`.
+warn "the package could not be built; running it from $SRC instead."
+    SITE="$("$VENV_DIR/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
+    [ -n "$SITE" ] && printf '%s\n' "$SRC" > "$SITE/simurgh-src.pth"
+    "$VENV_DIR/bin/python" -c 'import simurgh' >/dev/null 2>&1 ||
+      die "package installation failed (and $SRC cannot be imported either)."
+    printf '#!/bin/sh\nexec "%s/bin/python" -m simurgh "$@"\n' "$VENV_DIR" > "$VENV_DIR/bin/simurgh"
+    chmod +x "$VENV_DIR/bin/simurgh"
+  fi
 fi
-ln -sf "$VENV_DIR/bin/simurgh" "$BIN_DIR/simurgh"
-case ":$PATH:" in *":$BIN_DIR:"*) ;; *) export PATH="$BIN_DIR:$PATH" ;; esac
+
+# `cryptography` is optional for the package but needed by the raw carrier and
+# by the certificate helper, and the system package above does not reach into
+# this venv — so try the venv's own pip, and carry on when it is offline.
+if "$VENV_DIR/bin/python" -c 'import cryptography' >/dev/null 2>&1; then
+  :
+elif install_pkg --timeout 20 --retries 2 "cryptography>=41" 2>/dev/null; then
+ok "cryptography installed (raw carrier + certificates)."
+else
+warn "cryptography is not installed: the 'raw' carrier is unavailable and"
+warn "certificates fall back to openssl. Add it later with:"
+warn "  $VENV_DIR/bin/pip install cryptography"
+fi
+
+[ -x "$VENV_DIR/bin/simurgh" ] && ln -sf "$VENV_DIR/bin/simurgh" "$BIN_DIR/simurgh"
+case ":$PATH:" in
+  *":$BIN_DIR:"*) ;;
+  *) export PATH="$BIN_DIR:$PATH"
+warn "$BIN_DIR is not in your PATH; use $BIN_DIR/simurgh or add it to PATH." ;;
+esac
 ok "the simurgh command is installed: $(command -v simurgh)"
 
 # ------------------------------------------------------------- go engine
 # The compiled engine speaks the same protocol and keeps many users fast on
 # one core-poor box; the python engine stays as the portable fallback.
 ENGINE_CHOSEN="python"
+GO_BUILD_LOG="${TMPDIR:-/tmp}/simurgh-go-build.log"
 if [ "$ENGINE" != "python" ]; then
   say "building the compiled engine (this takes a few seconds)…"
-  if SIMURGH_GO_BIN="$BIN_DIR/simurgh-go" bash "$SRC/tools/build-go.sh" >/tmp/simurgh-go-build.log 2>&1; then
+  if SIMURGH_GO_BIN="$BIN_DIR/simurgh-go" bash "$SRC/tools/build-go.sh" >"$GO_BUILD_LOG" 2>&1; then
     ENGINE_CHOSEN="go"
     ok "the go engine is installed: $BIN_DIR/simurgh-go"
   else
-    sed -n '1,3p' /tmp/simurgh-go-build.log 2>/dev/null | while read -r line; do warn "$line"; done
+    # no toolchain, no network, or an unsupported cpu: the python engine always
+    # works, so this is only a warning unless the user asked for --engine go.
     if [ "$ENGINE" = "go" ]; then
-      warn "the go engine could not be built here; the python engine is used instead."
-      warn "install a toolchain (apt install golang-go) and run: simurgh engine go"
+warn "the go engine could not be built here (log: $GO_BUILD_LOG)."
     else
-      say "the compiled engine could not be built here; using the python engine."
+say "no compiled engine here; the portable python engine will be used."
     fi
+    sed -n '1,3p' "$GO_BUILD_LOG" 2>/dev/null | while IFS= read -r line; do
+      printf '  %s%s%s\n' "$DIM" "$line" "$RESET"
+    done
+say "build it later with:  sudo bash $SRC/tools/build-go.sh  &&  simurgh engine go"
   fi
 else
   say "using the python engine (--engine python)."
@@ -294,34 +426,10 @@ if [ "$(id -u)" = "0" ] && [ -d /etc/sysctl.d ] && command -v sysctl >/dev/null 
 fi
 
 # --------------------------------------------------------------- configure
-ARGS=(--force)
-[ -n "$ROLE" ]        && ARGS+=(--role "$ROLE")
-[ -n "$NAME" ]        && ARGS+=(--name "$NAME")
-[ -n "$TOKEN" ]       && ARGS+=(--token "$TOKEN")
-[ -n "$EXIT_ADDR" ]   && ARGS+=(--exit-host "${EXIT_ADDR%%:*}" --exit-port "${EXIT_ADDR##*:}")
-[ -n "$DIAL" ]        && ARGS+=(--dial "$DIAL")
-[ -n "$TUNNEL_PORT" ] && ARGS+=(--exit-port "$TUNNEL_PORT")
-[ -n "$TUNNEL_PORT" ] && [ -z "$ROLE" ] && [ "$DIAL" = "exit" ] && ROLE="relay"
-[ -n "$CARRIER" ]     && ARGS+=(--carrier "$CARRIER")
-[ -n "$DOMAIN" ]      && ARGS+=(--domain "$DOMAIN")
-[ -n "$FINGERPRINT" ] && ARGS+=(--fingerprint "$FINGERPRINT")
-[ -n "$INSECURE" ]    && ARGS+=("$INSECURE")
-[ -n "$LISTEN" ]      && ARGS+=(--listen "$LISTEN")
-[ -n "$PANEL_PORT" ]  && ARGS+=(--panel-port "$PANEL_PORT")
-[ -n "$CONNECTIONS" ] && ARGS+=(--connections "$CONNECTIONS")
-[ -n "$SPLIT" ]       && ARGS+=(--split "$SPLIT")
-ARGS+=(--engine "$ENGINE_CHOSEN")
-if [ -n "$MAPPING" ]; then
-  IFS=',' read -ra _maps <<< "$MAPPING"
-  for m in "${_maps[@]}"; do ARGS+=(--mapping "$m"); done
-fi
-[ "$NO_SYSTEMD" = "1" ] && ARGS+=(--no-start --no-enable)
-
-if [ -z "$ROLE" ] && [ "$ASSUME_YES" = "1" ]; then
-  if [ -n "$EXIT_ADDR" ] || [ "$DIAL" = "exit" ]; then ROLE="relay"; else ROLE="exit"; fi
-  ARGS+=(--role "$ROLE")
-fi
-if [ -z "$ROLE" ] && [ -t 0 ]; then
+# Ask first, build the argument list afterwards: the answers decide what
+# `simurgh install` is told (asking about the tunnel port after the argument
+# list was already built is how --tunnel-port used to get lost).
+if [ -z "$ROLE" ] && [ "$ASSUME_YES" != "1" ] && [ -t 0 ]; then
 printf '\n%s\n' "${BOLD}What is the role of this server?${RESET}"
 printf '  %s1)%s Foreign server (exit)  — your panel and services live here\n' "$CYAN" "$RESET"
 printf '  %s2)%s Iranian server (relay) — your users connect to this server\n' "$CYAN" "$RESET"
@@ -330,24 +438,82 @@ read -r -p "  choice [1]: " _role_choice
 2|relay) ROLE="relay" ;;
     *) ROLE="exit" ;;
   esac
-  ARGS+=(--role "$ROLE")
   if [ "$ROLE" = "relay" ] && [ -z "$EXIT_ADDR" ]; then
     printf '  %s1)%s direct: this server dials the foreign server (normal)\n' "$CYAN" "$RESET"
     printf '  %s2)%s reverse: the foreign server dials this one (no open port needed there)\n' "$CYAN" "$RESET"
     read -r -p "  choice [1]: " _dial_choice
     if [ "${_dial_choice:-1}" = "2" ]; then
       DIAL="exit"
-      ARGS+=(--dial exit)
       read -r -p "  tunnel port on this server [8443]: " _tp
       TUNNEL_PORT="${_tp:-8443}"
-      ARGS+=(--exit-port "$TUNNEL_PORT")
     fi
   fi
 fi
-[ -n "$ROLE" ] || ROLE="auto"
+if [ -z "$ROLE" ]; then
+  # no answer needed: a relay dials a foreign server, the exit is what is left
+  if [ -n "$EXIT_ADDR" ] || [ "$DIAL" = "exit" ]; then ROLE="relay"; else ROLE="exit"; fi
+fi
+
+ARGS=()
+[ "$FORCE" = "1" ]     && ARGS+=(--force)
+ARGS+=(--role "$ROLE")
+[ "$BOTH" = "1" ]      && ARGS+=(--both)
+[ -n "$NAME" ]         && ARGS+=(--name "$NAME")
+[ -n "$EXIT_HOST" ]    && ARGS+=(--exit-host "$EXIT_HOST")
+[ -n "$DIAL" ]         && ARGS+=(--dial "$DIAL")
+[ -n "$CARRIER" ]      && ARGS+=(--carrier "$CARRIER")
+[ -n "$DOMAIN" ]       && ARGS+=(--domain "$DOMAIN")
+[ -n "$FINGERPRINT" ]  && ARGS+=(--fingerprint "$FINGERPRINT")
+[ -n "$INSECURE" ]     && ARGS+=("$INSECURE")
+[ -n "$LISTEN" ]       && ARGS+=(--listen "$LISTEN")
+[ -n "$PANEL_PORT" ]   && ARGS+=(--panel-port "$PANEL_PORT")
+[ -n "$CONNECTIONS" ]  && ARGS+=(--connections "$CONNECTIONS")
+[ -n "$SPLIT" ]        && ARGS+=(--split "$SPLIT")
+ARGS+=(--engine "$ENGINE_CHOSEN")
+if [ -n "$MAPPING" ]; then
+  IFS=',' read -ra _maps <<< "$MAPPING"
+  for m in "${_maps[@]}"; do ARGS+=(--mapping "$m"); done
+fi
+# ------------------------------------------------- where is the exit server?
+# Both services on one server: the relay dials the exit that runs next to it.
+if [ -z "$EXIT_HOST" ] && [ "$BOTH" = "1" ] && [ "$DIAL" != "exit" ]; then
+  EXIT_HOST="127.0.0.1"
+  [ -n "$TUNNEL_PORT" ] || TUNNEL_PORT="443"
+say "both roles on this server: the relay dials the local exit on $EXIT_HOST:$TUNNEL_PORT"
+fi
+if [ -n "$EXIT_HOST" ]; then
+  [ -n "$EXIT_PORT" ] || EXIT_PORT="443"
+  ARGS+=(--exit-host "$EXIT_HOST" --exit-port "$EXIT_PORT")
+elif [ -n "$TUNNEL_PORT" ]; then
+  # in reverse mode the tunnel port is the port THIS server listens on, which
+  # is what `--exit-port` means there. In direct mode it would silently replace
+  # the foreign port, so we say so instead of doing that.
+  if [ "$DIAL" = "exit" ]; then
+    ARGS+=(--exit-port "$TUNNEL_PORT")
+  else
+warn "--tunnel-port only applies in reverse mode (--dial exit); ignoring it."
+  fi
+fi
+[ "$NO_SYSTEMD" = "1" ] && ARGS+=(--no-start --no-enable)
+
+SIMURGH_BIN="$VENV_DIR/bin/simurgh"
+if [ -z "$TOKEN" ]; then
+  if [ "$BOTH" = "1" ]; then
+    # one token for the two local services, generated here and shown at the end
+    TOKEN="$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
+    [ -n "$TOKEN" ] || TOKEN="tok$(date +%s)$RANDOM"
+    ARGS+=(--token "$TOKEN")
+ok "generated a shared token: $TOKEN"
+  elif [ "$ROLE" = "relay" ] && [ ! -t 0 ]; then
+die "the relay needs the shared token:  --token XXX  (copy it from the exit,
+     or install the exit first and run:  sudo simurgh join '<setup link>')"
+  fi
+else
+  ARGS+=(--token "$TOKEN")
+fi
 
 say "writing the config…"
-simurgh install "${ARGS[@]}" || die "writing the config failed."
+"$SIMURGH_BIN" install "${ARGS[@]}" || die "writing the config failed."
 
 # ------------------------------------------------------------------- finish
 echo
@@ -356,7 +522,17 @@ if [ -n "${SIMURGH_HOME:-}" ]; then SIMHOME="$SIMURGH_HOME"
 elif [ "$(id -u)" = "0" ]; then SIMHOME=/etc/simurgh
 else SIMHOME="$HOME/.simurgh"; fi
 PORTS="$(grep -E '^port = ' "$SIMHOME/exit.toml" 2>/dev/null | awk '{print $3}' | paste -sd, - || true)"
-if [ "$ROLE" = "relay" ]; then
+# `auto` means "the relay when there is a foreign server, otherwise the exit";
+# resolve it here only so the summary shows the right instructions.
+EFFECTIVE_ROLE="$ROLE"
+if [ "$ROLE" = "auto" ]; then
+  if [ -n "$EXIT_HOST" ] || [ "$DIAL" = "exit" ]; then EFFECTIVE_ROLE="relay"; else EFFECTIVE_ROLE="exit"; fi
+fi
+SHOW_PANEL=0; SHOW_LINK=0
+[ "$EFFECTIVE_ROLE" = "relay" ] && SHOW_PANEL=1
+[ "$EFFECTIVE_ROLE" = "exit" ] && SHOW_LINK=1
+if [ "$BOTH" = "1" ]; then SHOW_PANEL=1; SHOW_LINK=1; fi
+if [ "$SHOW_PANEL" = "1" ]; then
   PANEL="$(SIMHOME="$SIMHOME" "$VENV_DIR/bin/python" - <<'PY' 2>/dev/null || echo 8787
 import os
 from simurgh.config import load_relay
@@ -380,10 +556,16 @@ printf '%s\n' "  ${BOLD}web panel:${RESET} ${CYAN}http://<IRAN-SERVER-IP>:$PANEL
 [ -n "$CREDS" ] && printf '%s\n' "  ${BOLD}login:${RESET} $CREDS"
 printf '%s\n' "  ${DIM}add a port: simurgh mapping add 443 443${RESET}"
 printf '%s\n' "  ${DIM}text menu: simurgh menu${RESET}"
-else
-  LINK="$(simurgh link --show 2>/dev/null || true)"
+fi
+if [ "$SHOW_LINK" = "1" ]; then
+  LINK="$("$SIMURGH_BIN" link --show 2>/dev/null || true)"
 [ -n "$LINK" ] && printf '%s\n' "  ${BOLD}relay setup link:${RESET} ${CYAN}$LINK${RESET}"
 printf '%s\n' "  ${DIM}active ports: ${PORTS:-443}${RESET}"
+  if [ "$BOTH" = "1" ] && [ "$DIAL" = "exit" ]; then
+    # reverse + both: the local exit still has to be told to dial this server
+printf '%s\n' "  ${DIM}reverse mode: import the link on this server as well (the local${RESET}"
+printf '%s\n' "  ${DIM}exit dials it):  sudo simurgh join '<link>'${RESET}"
+  fi
 fi
 printf '%s\n' "  ${DIM}status: simurgh status   •   log: simurgh logs -f${RESET}"
 echo

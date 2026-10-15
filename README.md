@@ -71,6 +71,19 @@ sudo simurgh restart
 Change only the address in their config: from the foreign IP/domain to the
 **Iranian IP**. Ports, credentials, TLS, SNI, everything else stays identical.
 
+### Both roles on one server
+
+`--role both` installs the relay and the exit together; the relay dials the
+local exit on `127.0.0.1:443` (change it with `--tunnel-port` or `--exit`):
+
+```bash
+sudo bash install.sh --role both --name my-server
+```
+
+The installer is safe to run again: it refreshes the configuration and can be
+re-run after an upgrade or a network change (`--uninstall --purge` removes
+everything again).
+
 ## Everyday commands
 
 ```bash

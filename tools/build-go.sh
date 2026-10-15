@@ -123,7 +123,8 @@ if [ -n "$RELEASE_DIR" ]; then
     [ "$os_name$goarch" = "windowsamd64" ] && ext=".exe" || ext=""
     out="$RELEASE_DIR/simurgh-go-${os_name}-${asset_arch}${ext}"
     say "building $out"
-    CGO_ENABLED=0 GOOS="$os_name" GOARCH="$goarch" GOARM=7 GOFLAGS= GOPROXY=off GOTOOLCHAIN=local \
+    # GOFLAGS is cleared on purpose: an inherited -mod=vendor would break the build
+    CGO_ENABLED=0 GOOS="$os_name" GOARCH="$goarch" GOARM=7 GOFLAGS="" GOPROXY=off GOTOOLCHAIN=local \
       "$GO" build -trimpath -ldflags "-s -w" -o "$out" ./cmd/simurgh
   done
   ls -1 "$RELEASE_DIR"

@@ -1,0 +1,148 @@
+"""Regression tests for the easy installer (``install.sh``).
+
+The installer is the first thing people run, and it runs in two very different
+ways:
+
+* ``sudo bash install.sh --role exit …`` — a file, so ``BASH_SOURCE`` exists;
+* ``curl -fsSL …/install.sh | sudo bash …`` — stdin is the script, so
+  ``BASH_SOURCE`` is empty and there is no terminal to ask questions on.
+
+Both used to abort with ``…: unbound variable`` (a variable that was read but
+never set, under ``set -u``), and ``--listen`` was silently dropped. These
+tests keep both holes closed.
+
+They never touch the network: ``SIMURGH_SRC`` points at this checkout, and
+``--no-go`` skips the compiled engine.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+INSTALL = ROOT / "install.sh"
+
+# a non-root install is enough to test the script: it then skips systemd and
+# puts everything below the temporary home directory
+BASE_ENV = {
+    "SIMURGH_ALLOW_NONROOT": "1",
+    "SIMURGH_SRC": str(ROOT),
+}
+
+TIMEOUT = 300
+
+
+def _env(tmp_path: Path) -> dict:
+    env = dict(os.environ)
+    env.update(BASE_ENV)
+    env["HOME"] = str(tmp_path / "home")
+    env["SIMURGH_VENV"] = str(tmp_path / "venv")
+    env["SIMURGH_HOME"] = str(tmp_path / "etc")
+    (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+    return env
+
+
+def _config(tmp_path: Path, name: str = "exit.toml") -> str:
+    return (tmp_path / "etc" / name).read_text(encoding="utf-8")
+
+
+def test_install_script_has_no_syntax_errors():
+    subprocess.run(["bash", "-n", str(INSTALL)], check=True, timeout=60)
+
+
+def test_bad_options_fail_with_a_sentence_not_a_trace():
+    """A typo must name the option, not print a cryptic unbound variable."""
+    worst = "unbound variable"
+    for args in (["--role", "bogus"], ["--engine", "foo"], ["--dial", "maybe"],
+                 ["--exit", "1.2.3.4"], ["--connections", "x"]):
+        proc = subprocess.run(["bash", str(INSTALL), *args, "--yes"],
+                              env={**os.environ, **BASE_ENV},
+                              capture_output=True, text=True, timeout=60)
+        output = proc.stdout + proc.stderr
+        assert proc.returncode != 0
+        assert worst not in output, output
+        assert "unknown" in output or "must be" in output or "wants" in output, output
+
+
+def test_install_from_a_file_forwards_every_option(tmp_path):
+    """``sudo bash install.sh --role exit …`` with no --connections flag.
+
+    ``--connections`` used to be read without ever being set, which aborted the
+    install right before the config was written.
+    """
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", "--role", "exit",
+         "--name", "omega-de", "--token", "test-token",
+         "--listen", "8443,9443", "--panel-port", "9999"],
+        env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "unbound variable" not in (proc.stdout + proc.stderr)
+    cfg = _config(tmp_path)
+    assert "test-token" in cfg
+    assert "omega-de" in cfg
+    for port in ("8443", "9443"):
+        assert port in cfg, f"--listen {port} was dropped"
+
+
+def test_install_when_the_script_is_piped_into_bash(tmp_path):
+    """``curl … | sudo bash`` — no BASH_SOURCE, no terminal, no questions."""
+    script = INSTALL.read_text(encoding="utf-8")
+    proc = subprocess.run(
+        ["bash", "-s", "--", "--yes", "--no-go", "--role", "exit", "--token", "piped-token"],
+        input=script, env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "unbound variable" not in output, output
+    assert "BASH_SOURCE" not in output, output
+    assert (tmp_path / "etc" / "exit.toml").exists()
+
+
+def test_installs_without_reaching_pypi(tmp_path):
+    """An Iranian server often cannot reach PyPI. The install must still end
+    with a working ``simurgh`` command (the build falls back to whatever
+    setuptools the machine has, and in the worst case to the source itself)."""
+    env = _env(tmp_path)
+    env["PIP_NO_INDEX"] = "1"
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", "--role", "exit", "--token", "offline"],
+        env=env, capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    binary = tmp_path / "venv" / "bin" / "simurgh"
+    assert binary.exists(), output
+    version = subprocess.run([str(binary), "--version"], capture_output=True,
+                             text=True, timeout=60)
+    assert version.returncode == 0, version.stdout + version.stderr
+
+
+def test_relay_without_a_token_explains_what_to_do(tmp_path):
+    """A piped relay install cannot ask for the token — it must say so instead
+    of failing inside the CLI with an unclear message."""
+    script = INSTALL.read_text(encoding="utf-8")
+    proc = subprocess.run(
+        ["bash", "-s", "--", "--yes", "--no-go", "--role", "relay"],
+        input=script, env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "--token" in output and "unbound variable" not in output, output
+
+
+def test_role_both_writes_both_configs(tmp_path):
+    """``--role both`` is documented; it must produce a relay that dials the
+    local exit (and a shared token), not a half-configured server."""
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", "--role", "both", "--name", "dual"],
+        env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    relay = _config(tmp_path, "relay.toml")
+    exit_cfg = _config(tmp_path)
+    assert "127.0.0.1" in relay
+    token_line = [line for line in exit_cfg.splitlines() if line.startswith("token")][0]
+    assert token_line in relay, "the relay and the exit must share the token"
