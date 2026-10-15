@@ -319,3 +319,73 @@ func TestRawProberGetsNoise(t *testing.T) {
 		t.Fatalf("noise leaked a protocol string: %q", buf[:n])
 	}
 }
+
+// splitConn must hand the first write to the socket in two pieces (and only
+// the first), which is what gets a ClientHello past segment-level inspection.
+func TestSplitFirstWriteOnly(t *testing.T) {
+	rec := &recordingConn{}
+	conn := splitFirst(rec, 1)
+	pkt := []byte("hello world, this is the first write")
+	if n, err := conn.Write(pkt); err != nil || n != len(pkt) {
+		t.Fatalf("write: %d %v", n, err)
+	}
+	if len(rec.writes) != 2 || len(rec.writes[0]) != 1 || !bytes.Equal(rec.writes[1], pkt[1:]) {
+		t.Fatalf("first write was split as %v", sizesOf(rec.writes))
+	}
+	// everything after that goes out in one piece
+	if _, err := conn.Write([]byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.writes) != 3 || string(rec.writes[2]) != "second" {
+		t.Fatalf("second write: %v", sizesOf(rec.writes))
+	}
+	if got := string(rec.flat()); got != string(pkt)+"second" {
+		t.Fatalf("bytes on the wire changed: %q", got)
+	}
+
+	// a write that already fits in the first piece is not delayed, and a
+	// disabled splitter returns the connection untouched
+	small := &recordingConn{}
+	if _, err := splitFirst(small, 64).Write([]byte("fits")); err != nil {
+		t.Fatal(err)
+	}
+	if len(small.writes) != 1 {
+		t.Fatalf("a small first write was split: %v", sizesOf(small.writes))
+	}
+	plain := splitFirst(&recordingConn{}, 0)
+	if _, isSplit := plain.(*splitConn); isSplit {
+		t.Fatal("split = 0 must not wrap the connection")
+	}
+}
+
+func sizesOf(chunks [][]byte) []int {
+	out := make([]int, 0, len(chunks))
+	for _, c := range chunks {
+		out = append(out, len(c))
+	}
+	return out
+}
+
+type recordingConn struct {
+	writes [][]byte
+}
+
+func (c *recordingConn) Read(b []byte) (int, error) { return 0, io.EOF }
+func (c *recordingConn) Write(b []byte) (int, error) {
+	c.writes = append(c.writes, append([]byte(nil), b...))
+	return len(b), nil
+}
+func (c *recordingConn) Close() error                     { return nil }
+func (c *recordingConn) LocalAddr() net.Addr              { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+func (c *recordingConn) RemoteAddr() net.Addr             { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+func (c *recordingConn) SetDeadline(time.Time) error      { return nil }
+func (c *recordingConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *recordingConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *recordingConn) flat() []byte {
+	out := []byte{}
+	for _, w := range c.writes {
+		out = append(out, w...)
+	}
+	return out
+}

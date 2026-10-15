@@ -139,6 +139,7 @@ class ExitNode:
                     cert_fingerprint=spec.fingerprint,
                     insecure=spec.insecure_skip_verify,
                     padding=spec.padding,
+                    split=spec.split,
                     connect_timeout=15.0,
                 )
             except asyncio.CancelledError:

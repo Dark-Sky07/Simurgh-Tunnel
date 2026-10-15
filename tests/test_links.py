@@ -7,9 +7,11 @@ import asyncio
 import pytest
 
 from conftest import free_port
-from simurgh.config import ExitConfig, ListenSpec, load_relay, save_exit, save_relay
+from simurgh.config import (ExitConfig, ListenSpec, RelayConfig, load_exit,
+                            load_relay, save_exit, save_relay)
 from simurgh.links import (LinkError, build_join_link, fetch_setup,
-                           parse_join_link, relay_config_from_payload)
+                           parse_join_link, relay_config_from_payload,
+                           reverse_payload)
 from simurgh.panel import Panel
 
 pytestmark = pytest.mark.asyncio
@@ -125,3 +127,24 @@ async def test_fetch_setup_without_a_panel():
     link = build_join_link("127.0.0.1", free_port(), USER, PASSWORD, "")
     with pytest.raises(LinkError):
         await asyncio.to_thread(fetch_setup, link, 2.0)
+
+
+def test_a_reverse_exit_dials_with_the_anti_dpi_split(tmp_path):
+    """In reverse mode the exit is the side that dials, so `simurgh join` must
+    put the split there: a one-byte ClientHello fragment is then what a DPI box
+    that reads only the first TCP segment gets to see."""
+    from types import SimpleNamespace
+    from simurgh import cli
+
+    relay_cfg = RelayConfig(token="t0k", name="ir",
+                            tunnel=ListenSpec(carrier="tls", port=8443, path="/ws"))
+    payload = reverse_payload(relay_cfg, "203.0.113.9")
+    args = SimpleNamespace(host="", force=True, split=3)
+    home = cli.Home(tmp_path)
+    assert cli._join_exit(home, payload, args) == 0
+    spec = load_exit(home.exit_cfg).listen[0]
+    assert spec.reverse and spec.split == 3
+
+    args.split = 0
+    assert cli._join_exit(home, payload, args) == 0
+    assert load_exit(home.exit_cfg).listen[0].split == 0

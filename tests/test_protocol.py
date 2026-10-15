@@ -97,3 +97,52 @@ def test_concurrent_connections_do_not_look_like_replays():
 def test_auth_key_depends_on_token():
     assert auth_key("a") != auth_key("b")
     assert len(auth_key("a")) == 32
+
+
+def test_split_sends_the_hello_in_two_pieces():
+    """`split = N` puts the first N bytes of the first write in their own TCP
+    segment: a filter that only reads the first segment then sees a truncated
+    ClientHello instead of an SNI it can block."""
+    import asyncio
+    from simurgh.carriers import RawConn
+
+    class FakeTransport:
+        def __init__(self):
+            self.pieces = []
+            self.closed = False
+
+        def write(self, data):
+            self.pieces.append(bytes(data))
+
+        def is_closing(self):
+            return self.closed
+
+        def get_write_buffer_size(self):
+            return 0
+
+    async def run():
+        conn = RawConn()
+        transport = FakeTransport()
+        conn.transport = transport
+        conn.split_first = 1
+        conn.write(b"\x16\x03\x01hello-client-hello")
+        conn.write(b"second-write")
+        await asyncio.sleep(0.02)          # the second piece is deferred 1 ms
+        return transport.pieces
+
+    pieces = asyncio.run(run())
+    assert pieces[0] == b"\x16", pieces
+    # whatever follows is queued behind the deferred piece: byte order holds
+    assert pieces[1] == b"\x03\x01hello-client-hello"
+    assert pieces[2] == b"second-write"
+    assert b"".join(pieces) == b"\x16\x03\x01hello-client-hello" + b"second-write"
+
+    async def unsplit():
+        conn = RawConn()
+        transport = FakeTransport()
+        conn.transport = transport
+        conn.split_first = 0
+        conn.write(b"one-piece")
+        return transport.pieces
+
+    assert asyncio.run(unsplit()) == [b"one-piece"]

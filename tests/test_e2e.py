@@ -42,7 +42,7 @@ async def _http_server() -> tuple[asyncio.AbstractServer, int]:
     return server, port
 
 
-async def _stack(carrier: str, cert, target_port: int | None):
+async def _stack(carrier: str, cert, target_port: int | None, split: int = 0):
     """Bring up exit + relay for one carrier; returns (relay, node, relay_port)."""
     exit_port = free_port()
     relay_port = free_port()
@@ -56,7 +56,7 @@ async def _stack(carrier: str, cert, target_port: int | None):
     relay_cfg = RelayConfig(
         token=TOKEN,
         exit=ExitEndpoint(carrier=carrier, address="127.0.0.1", port=exit_port,
-                          insecure_skip_verify=True),
+                          insecure_skip_verify=True, split=split),
         mappings=[Mapping(name="panel", listen=relay_port, target_port=target_port
                           or free_port())],
     )
@@ -81,6 +81,26 @@ async def test_user_gets_the_foreign_server_content(carrier, certs):
         response = await asyncio.wait_for(reader.read(4096), 15)
         writer.close()
         assert b"200 OK" in response
+        assert b"<h1>foreign panel</h1>" in response
+    finally:
+        await relay.stop()
+        await node.stop()
+        web.close()
+
+
+@pytest.mark.parametrize("carrier", ("tls", "wss"))
+@pytest.mark.parametrize("split", (1, 3))
+async def test_a_fragmented_client_hello_still_opens_the_tunnel(carrier, split, certs):
+    """The relay splits its ClientHello to beat DPI that reads only the first
+    TCP segment; the exit must not mistake the fragment for a prober."""
+    web, port = await _http_server()
+    relay, node, relay_port = await _stack(carrier, certs, port, split=split)
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", relay_port)
+        writer.write(b"GET / HTTP/1.1\r\nHost: panel\r\n\r\n")
+        await writer.drain()
+        response = await asyncio.wait_for(reader.read(4096), 15)
+        writer.close()
         assert b"<h1>foreign panel</h1>" in response
     finally:
         await relay.stop()

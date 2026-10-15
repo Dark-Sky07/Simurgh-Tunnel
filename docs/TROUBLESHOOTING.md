@@ -51,6 +51,27 @@ In reverse mode the **exit dials the relay**, so the checks are mirrored:
 5. After `systemctl restart simurgh-relay`, the exit reconnects within a few
    seconds by itself.
 
+## The tunnel is up but the connection is filtered
+
+Iranian filters often classify a connection from its **first TCP packet**. The
+tunnel answers that with `split`: the first bytes of the handshake (the TLS
+record header, `0x16 0x03 …`) go out in a packet of their own and the rest
+follows ~10 ms later, so a stateless filter sees a fragment of a record instead
+of a readable ClientHello.
+
+* Fresh installs write `split = 3` in the dialling side's config (`[exit]` on
+  the relay, `[[listen]]` on a reverse exit). Check it with
+  `grep -n split /etc/simurgh/relay.toml`.
+* `simurgh install --split 0` (or `simurgh init --split 0`, or editing the file)
+  turns it off — useful when the path has an aggressive middlebox that drops
+  fragmented handshakes.
+* Keep `split = 3` when the other side is an **older release** (v2.0.0, Python):
+  it recognises three bytes as the start of TLS, while a one-byte fragment makes
+  it serve the decoy page and the tunnel never comes up. This release and newer
+  accept any fragment size.
+* It costs one 10 ms pause per tunnel connection, and nothing at all afterwards:
+  only the first write of the handshake is split.
+
 ## A port on the relay does not work
 
 ```bash

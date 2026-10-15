@@ -126,6 +126,15 @@ class ReplayCache:
         return True
 
 
+#: how long the second piece of a split first write waits, so the first one
+#: travels as a TCP segment of its own (see :attr:`RawConn.split_first`)
+SPLIT_GAP = 0.010
+
+#: how long the TLS listener waits for the first three bytes of a connection
+#: before it decides the peer is a prober and serves the decoy page
+SNIFF_TIMEOUT = 5.0
+
+
 # --------------------------------------------------------------------------
 # raw connection: one socket + asyncio transport
 # --------------------------------------------------------------------------
@@ -144,6 +153,13 @@ class RawConn(asyncio.Protocol):
         self._read_waiters: list[asyncio.Future] = []
         self._drain_waiters: list[asyncio.Future] = []
         self._paused = False
+        #: split the *first* write into two pieces (tls/wss: the ClientHello).
+        #: A DPI box that only inspects the first TCP segment then sees a
+        #: truncated handshake -- the classic SNI hiding trick.
+        self.split_first = 0
+        #: bytes of a split first write that have not gone out yet; they are
+        #: flushed before anything else, so the byte order never changes
+        self.split_tail = b""
 
     # -- asyncio protocol ---------------------------------------------------
     def connection_made(self, transport):
@@ -262,7 +278,22 @@ class RawConn(asyncio.Protocol):
     def write(self, data) -> None:
         if self.transport is None:
             raise ConnectionError("connection closed")
+        self._flush_tail()          # a deferred piece always goes first
+        first = self.split_first
+        if first and len(data) > first:
+            self.split_first = 0
+            self.transport.write(data[:first])
+            # the rest follows a moment later, so the kernel sends two segments
+            # instead of coalescing both pieces into one packet
+            self.split_tail = bytes(data[first:])
+            asyncio.get_running_loop().call_later(SPLIT_GAP, self._flush_tail)
+            return
         self.transport.write(data)
+
+    def _flush_tail(self) -> None:
+        tail, self.split_tail = self.split_tail, b""
+        if tail and self.transport is not None and not self.transport.is_closing():
+            self.transport.write(tail)
 
     async def drain(self) -> None:
         if not self._paused or self.transport is None:
@@ -697,6 +728,7 @@ async def client_connect(carrier: str, host: str, port: int, token: str, *,
                          insecure: bool = False,
                          connect_timeout: float = 10.0,
                          padding: bool = True,
+                         split: int = 0,
                          ws_headers: dict | None = None,
                          chunk: int = DEFAULT_CHUNK) -> BaseChannel:
     """Open a client-side tunnel channel using *carrier*."""
@@ -722,6 +754,7 @@ async def client_connect(carrier: str, host: str, port: int, token: str, *,
     if carrier in ("tls", "wss"):
         ctx = client_context(sni, insecure or bool(cert_fingerprint))
         conn = await tcp_connect(host, port, connect_timeout)
+        conn.split_first = max(0, int(split or 0))
         tls = TlsLayer(conn, ctx, server_side=False, server_hostname=sni)
         await tls.handshake(connect_timeout)
         if cert_fingerprint:
@@ -912,11 +945,24 @@ async def _server_tls_like(conn: RawConn, carrier: ServerCarrier, on_channel) ->
     """Sniff the first bytes: TLS tunnel, or a prober we must fool."""
     from .decoy import serve_decoy_plain
 
-    try:
-        first = await asyncio.wait_for(conn.read_some(3), 20)
-    except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-        conn.close()
-        return
+    # Wait for three bytes before judging: a client that fragments its
+    # ClientHello (the `split` option, which guards against DPI boxes that only
+    # read the first TCP segment) delivers them one piece at a time, and a
+    # one-byte first read is not a prober.
+    first = b""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SNIFF_TIMEOUT
+    while len(first) < 3:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            chunk = await asyncio.wait_for(conn.read_some(3 - len(first)), remaining)
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+            break
+        if not chunk:
+            break
+        first += chunk
     if not first:
         conn.close()
         return

@@ -205,6 +205,12 @@ def cmd_init(args) -> int:
     return _init_relay(home, args)
 
 
+def _split_arg(args) -> int:
+    """``--split N``: how many bytes of the first write travel in a TCP segment
+    of their own (anti-DPI). 0 turns the trick off."""
+    return max(0, int(getattr(args, "split", 0) or 0))
+
+
 def _init_exit(home: Home, args) -> int:
     if home.exit_cfg.exists() and not args.force:
         _warn(f"exit config already exists: {home.exit_cfg} (use --force to overwrite)")
@@ -278,7 +284,8 @@ def _init_relay(home: Home, args) -> int:
             exit=ExitEndpoint(carrier=carrier, address=exit_host, port=exit_port,
                               domain=domain, path=args.path or "/ws",
                               insecure_skip_verify=args.insecure,
-                              fingerprint=args.fingerprint),
+                              fingerprint=args.fingerprint,
+                              split=_split_arg(args)),
         )
         cfg.connections = max(0, int(getattr(args, "connections", 0) or 0)) or 1
     cfg.engine = _init_engine(args, home)
@@ -299,6 +306,10 @@ def _init_relay(home: Home, args) -> int:
         _info("run `simurgh link` on this server and paste the link on the exit")
     else:
         print(f"   foreign server: {carrier}://{exit_host}:{exit_port}")
+        split = _split_arg(args)
+        if split and carrier in ("tls", "wss"):
+            print(f"   anti-DPI:       the first {split} byte(s) of the handshake "
+                  f"travel alone (split = {split})")
     if not mappings:
         _info("to add a port: simurgh mapping add 443 443")
     return 0
@@ -882,9 +893,13 @@ def _join_exit(home: Home, payload: dict, args) -> int:
     except (KeyError, ValueError, ConfigError) as exc:
         _err(f"the link is incomplete: {exc}")
         return 2
-    if getattr(args, "host", ""):
-        for spec in cfg.listen:
-            if spec.reverse:
+    split = _split_arg(args)
+    for spec in cfg.listen:
+        if spec.reverse:
+            # the exit is the one that dials here, so the anti-DPI split lives
+            # on this side; the relay only sees two TCP segments of one record
+            spec.split = split
+            if getattr(args, "host", ""):
                 spec.dial = args.host
     save_exit(cfg, home.exit_cfg)
     _ok(f"exit config built from the link: {home.exit_cfg}")
@@ -1219,6 +1234,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--connections", type=int, default=0,
                    help="tunnel connections to keep open (2-16 help on long, lossy paths)")
     p.add_argument("--mapping", action="append", help="initial mapping: 443:443")
+    p.add_argument("--split", type=int, default=3, help="bytes of the first write that travel in their own TCP segment (anti-DPI); 0 disables it")
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--engine", choices=ENGINES, default="",
                    help="data plane: python (default) or go (see tools/build-go.sh)")
@@ -1247,6 +1263,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--connections", type=int, default=0,
                    help="tunnel connections to keep open (2-16 help on long, lossy paths)")
     p.add_argument("--mapping", action="append")
+    p.add_argument("--split", type=int, default=3, help="bytes of the first write that travel in their own TCP segment (anti-DPI); 0 disables it")
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--engine", choices=ENGINES, default="",
                    help="data plane to use (default: python; go needs tools/build-go.sh)")
@@ -1315,6 +1332,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("link")
     p.add_argument("--host", default="", help="override the exit address")
     p.add_argument("--timeout", type=float, default=15.0)
+    p.add_argument("--split", type=int, default=3, help="bytes of the first write that travel in their own TCP segment (anti-DPI); 0 disables it")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_join)
 

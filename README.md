@@ -155,13 +155,17 @@ vendored in `go/third_party/`, so its build needs no network and no package.
   probes learn nothing.
 * The exit's self-signed certificate can be **pinned by SHA-256 fingerprint**
   (`fingerprint`), or a real Let's Encrypt certificate can be used.
+* The first bytes of a connection leave in a TCP segment of their own
+  (`split = 3`, the installer default): a filter that classifies traffic by the
+  first segment alone reads a fragment, while the real ClientHello completes
+  milliseconds later. `--split 0` turns it off.
 * Config files are written atomically with mode `0600`.
 
 ## Verified in this repository
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **119 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default) |
+| `python -m pytest -q` | **126 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -179,7 +183,8 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 | Reverse mode | traffic over tls/raw/plain, exit reconnects after a relay restart |
 | UDP forwarding | 4/4 replies, boundaries kept for every size 1 B – 60 KB, one stream per client address, datagrams dropped (never queued) when the far side is behind; Go ⇄ Python interop verified in both directions |
 | `raw` carrier on both engines | Go relay ⇄ Python exit and Python relay ⇄ Go exit, 3/3 requests each way; the Go side is checked against the same padding table as `simurgh/carriers.py` |
-| Go per-carrier e2e | `go test ./...` runs a real relay + exit + target over `plain`, `tls`, `wss` and `raw`: single users of 41 B / 100 KB / 3 MB and 8 users at once, byte for byte |
+| ClientHello splitting | `split = 1` and `split = 3` on a real TLS exit: the first TCP segment on the wire carries **exactly n bytes** (checked with a recording proxy in front of the exit), and the tunnel comes up on both engines — the exit no longer mistakes a one-byte fragment for a prober |
+| Go per-carrier e2e | `go test ./...` runs a real relay + exit + target over `plain`, `tls`, `wss` and `raw`: single users of 41 B / 100 KB / 3 MB and 8 users at once, byte for byte; a split ClientHello (1, 3 and 500 bytes) still carries traffic |
 
 ## Documentation
 
@@ -195,7 +200,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 119 tests, no test-only dependencies
+python -m pytest -q                 # 126 tests, no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)

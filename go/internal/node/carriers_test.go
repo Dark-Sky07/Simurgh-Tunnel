@@ -40,7 +40,7 @@ func startTCPDataEcho(t *testing.T, port int) {
 }
 
 // pairForCarrier runs exit + relay over one carrier and returns the relay.
-func pairForCarrier(t *testing.T, carrier string, relayPort, targetPort int) *Relay {
+func pairForCarrier(t *testing.T, carrier string, relayPort, targetPort, split int) *Relay {
 	t.Helper()
 	exitPort := freeTCPPort(t)
 	const token = "carrier-e2e-token"
@@ -67,7 +67,7 @@ func pairForCarrier(t *testing.T, carrier string, relayPort, targetPort int) *Re
 		LogLevel:    "error",
 		Exit: config.Endpoint{
 			Carrier: carrier, Address: "127.0.0.1", Port: exitPort, Path: "/ws",
-			InsecureSkipVerify: true, Padding: true, Enabled: true,
+			InsecureSkipVerify: true, Padding: true, Split: split, Enabled: true,
 		},
 		Mappings: []config.Mapping{{
 			Name: "web", Listen: relayPort, ListenHost: "127.0.0.1",
@@ -131,7 +131,7 @@ func TestCarrierEndToEnd(t *testing.T) {
 			targetPort := freeTCPPort(t)
 			relayPort := freeTCPPort(t)
 			startTCPDataEcho(t, targetPort)
-			relay := pairForCarrier(t, carrier, relayPort, targetPort)
+			relay := pairForCarrier(t, carrier, relayPort, targetPort, 0)
 			waitTunnelUp(t, relay)
 
 			for _, size := range []int{41, 100 << 10, 3 << 20} {
@@ -180,6 +180,24 @@ func TestCarrierEndToEnd(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s: concurrent user %d: %v", carrier, i, err)
 				}
+			}
+		})
+	}
+}
+
+// The split first write must not disturb a real TLS handshake: the ClientHello
+// goes out in two TCP segments and the tunnel still carries traffic.
+func TestSplitHelloStillTunnels(t *testing.T) {
+	for _, split := range []int{1, 3, 500} {
+		t.Run(fmt.Sprintf("split=%d", split), func(t *testing.T) {
+			targetPort := freeTCPPort(t)
+			relayPort := freeTCPPort(t)
+			startTCPDataEcho(t, targetPort)
+			relay := pairForCarrier(t, "tls", relayPort, targetPort, split)
+			waitTunnelUp(t, relay)
+			payload := bytes.Repeat([]byte("split"), 2000)
+			if got := roundTrip(t, relayPort, payload); !bytes.Equal(got, payload) {
+				t.Fatalf("split=%d: %d bytes came back as %d", split, len(payload), len(got))
 			}
 		})
 	}

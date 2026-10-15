@@ -414,6 +414,7 @@ type ClientOptions struct {
 	Fingerprint string // pinned SHA-256 of the certificate
 	Insecure    bool
 	Padding     bool
+	Split       int // tls/wss: bytes in the first TCP segment of the ClientHello
 	Timeout     time.Duration
 	Token       string
 }
@@ -481,6 +482,7 @@ func Dial(opt ClientOptions) (mux.Channel, error) {
 		if err != nil {
 			return nil, err
 		}
+		conn = splitFirst(conn, opt.Split)
 		tlsConn := tls.Client(conn, cfg)
 		ctx, cancel := context.WithTimeout(context.Background(), opt.Timeout)
 		defer cancel()
@@ -531,6 +533,46 @@ func Dial(opt ClientOptions) (mux.Channel, error) {
 		return newWSAdapter(ws), nil
 	}
 	return nil, fmt.Errorf("unknown carrier: %q", opt.Carrier)
+}
+
+// splitGap is how long the second piece waits, so the first one travels as a
+// segment of its own.
+const splitGap = 10 * time.Millisecond
+
+// splitConn hands the first write to the socket in two pieces. A DPI box that
+// only looks at the first TCP segment then sees a truncated ClientHello -- the
+// classic way to get past SNI inspection (zapret, GoodbyeDPI and friends do the
+// same). Nothing changes for the peer: it just reassembles.
+type splitConn struct {
+	net.Conn
+	first int
+	done  bool
+}
+
+func (c *splitConn) Write(b []byte) (int, error) {
+	if c.done || c.first <= 0 || len(b) <= c.first {
+		c.done = true
+		return c.Conn.Write(b)
+	}
+	c.done = true
+	n, err := c.Conn.Write(b[:c.first])
+	if err != nil {
+		return n, err
+	}
+	// the pause is what makes the kernel send two segments instead of
+	// coalescing them into one; it is paid once per tunnel connection
+	time.Sleep(splitGap)
+	m, err := c.Conn.Write(b[c.first:])
+	return n + m, err
+}
+
+// splitFirst wraps a fresh connection so that its first write goes out in two
+// parts. Only the TLS carriers use it: their first write is the ClientHello.
+func splitFirst(conn net.Conn, first int) net.Conn {
+	if first <= 0 {
+		return conn
+	}
+	return &splitConn{Conn: conn, first: first}
 }
 
 func dialTCP(host string, port int, timeout time.Duration) (net.Conn, error) {

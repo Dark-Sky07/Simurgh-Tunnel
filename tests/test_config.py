@@ -189,3 +189,26 @@ def test_fresh_config_picks_the_engine_that_is_installed(home, tmp_path, monkeyp
     monkeypatch.setenv("SIMURGH_GO_BIN", str(tmp_path / "does-not-exist"))
     assert cli._init_engine(SimpleNamespace(engine="go"), home) == "go"
     assert cli._init_engine(SimpleNamespace(engine="python"), home) == "python"
+
+
+def _init(tmp_path, argv):
+    from simurgh.cli import build_parser
+
+    args = build_parser().parse_args(["--home", str(tmp_path), "init", *argv])
+    assert args.func(args) == 0
+    return args
+
+
+def test_init_writes_the_anti_dpi_split(tmp_path, monkeypatch):
+    """A fresh install hides the ClientHello from DPI that only reads the first
+    TCP segment — and `--split 0` (or a non-TLS carrier) turns it off."""
+    monkeypatch.setenv("SIMURGH_GO_BIN", str(tmp_path / "no-go"))
+    _init(tmp_path, ["--role", "relay", "--exit-host", "203.0.113.9",
+                     "--exit-port", "443", "--token", "t0k", "--carrier", "tls"])
+    assert load_relay(tmp_path / "relay.toml").exit.split == 3
+
+    (tmp_path / "relay.toml").unlink()
+    _init(tmp_path, ["--role", "relay", "--exit-host", "203.0.113.9",
+                     "--exit-port", "443", "--token", "t0k", "--carrier", "tls",
+                     "--split", "0"])
+    assert load_relay(tmp_path / "relay.toml").exit.split == 0

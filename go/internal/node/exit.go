@@ -292,6 +292,7 @@ func (e *Exit) reverseTunnel(spec config.ListenSpec) error {
 		Fingerprint: spec.Fingerprint,
 		Insecure:    spec.InsecureSkipVerify,
 		Padding:     spec.Padding,
+		Split:       spec.Split,
 		Token:       e.cfg.Token,
 		Timeout:     10 * time.Second,
 	})

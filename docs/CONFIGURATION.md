@@ -59,6 +59,7 @@ port = 8443                     # the port the *relay* listens on
 dial = "203.0.113.9"            # relay address — this makes it a reverse tunnel
 fingerprint = "AB:CD:…"         # pin the relay's certificate (recommended)
 # insecure_skip_verify = true   # testing only
+split = 3                       # anti-DPI: send the first n bytes alone
 enabled = true
 ```
 
@@ -89,6 +90,7 @@ either side needs no manual action.
 | `fallback` | `decoy` | `decoy` = serve the fake website, `close` = drop silently |
 | `decoy_file` | — | custom HTML file to serve to probers |
 | `padding` | `true` | pad frames so lengths are not meaningful. Only the `raw` carrier uses it, and only for the direction it sends in: a padded frame lands on the first of 128/256/512/…/16384 bytes that fits (or the next multiple of 64 above that) plus a 2-byte trailer, exactly like `simurgh/carriers.py`. Turning it off on one side is safe — the other side still removes its padding. |
+| `split` | `0` (`simurgh init` writes `3`) | how many bytes of the **first write** leave in a TCP segment of their own; the rest follows ~10 ms later, so a middlebox that reads only the first segment of a connection sees a fragment. Only the TLS handshake is split, and only on the side that dials: the relay in direct mode, the exit in reverse mode. `0` disables it; `3` is the shape of a TLS record header, so the fragment still starts with the two bytes a TLS-aware checker looks for. The 10 ms pause is paid once per tunnel connection, at setup. |
 | `enabled` | `true` | disable without deleting the block |
 | `dial` | — | **reverse mode**: dial this host instead of listening |
 | `fingerprint` | — | pinned SHA-256 of the relay certificate (reverse) |
@@ -119,6 +121,7 @@ domain = "panel.example.com"    # SNI, optional
 path = "/ws"
 fingerprint = "AB:CD:…"         # certificate pinning, optional
 insecure_skip_verify = false
+split = 3                       # anti-DPI: send the first n bytes alone
 
 [[pool]]                        # extra foreign servers for failover
 address = "198.51.100.7"
@@ -169,7 +172,8 @@ the Iranian side.
 | `chunk` | `65536` | max frame payload, in bytes |
 | `connections` | `1` | tunnel connections kept open; 2-16 spread the load |
 | `speedtest_port` | `0` | local speed endpoint (`0` = off) |
-| `[exit]` | — | the foreign endpoint (direct mode) |
+| `[exit]` | — | the foreign endpoint (direct mode); accepts `split` too |
+| `split` | `3` in files written by `simurgh init` | in `[exit]` (and in any `[[pool]]` entry): how many bytes of the first write leave in a TCP segment of their own — the anti-DPI trick described under `[[listen]]`. `simurgh install --split N` (or `init`) sets it |
 | `[tunnel]` | — | the listener (reverse mode) |
 | `[[pool]]` | `[]` | fallback foreign servers, tried when the primary is down |
 | `[[mapping]]` | `[]` | port forwardings |
@@ -291,4 +295,5 @@ journalctl -u simurgh-relay -f          # or: simurgh logs -f
 | `SIMURGH_SRC`, `SIMURGH_VENV` | source and virtualenv locations |
 | `SIMURGH_GO_BIN` | full path of the compiled `simurgh-go` binary when it lives somewhere unusual (the service finds `simurgh-go` on `PATH` by itself) |
 | `SIMURGH_ENGINE` / `--engine` | installer shortcut for `--engine go\|python\|auto` |
+| `--split N` | how many bytes of the first handshake write travel in a TCP segment of their own; written into `[exit]` (direct) or the reverse exit's `[[listen]]`. Default `3`, `0` disables it |
 | `GO_BIN`, `SIMURGH_GO_VERSION` | toolchain used by `tools/build-go.sh` (path override / version to download) |

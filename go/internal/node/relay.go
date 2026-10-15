@@ -447,6 +447,7 @@ func (r *Relay) runTunnel(ep config.Endpoint, primary bool) error {
 		Fingerprint: ep.Fingerprint,
 		Insecure:    ep.InsecureSkipVerify,
 		Padding:     ep.Padding,
+		Split:       ep.Split,
 		Token:       r.cfg.Token,
 		Timeout:     10 * time.Second,
 	})
