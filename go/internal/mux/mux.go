@@ -435,6 +435,37 @@ func (s *Stream) Attach(write func([]byte) error, onEOF func(), failed func(erro
 	s.qcond.Broadcast()
 }
 
+// Closed reports whether the stream is finished for good.
+func (s *Stream) Closed() bool { return s.closed.Load() }
+
+// WriteRaw sends one payload as a single data frame without waiting for
+// credit, and reports whether the whole payload went out.
+//
+// This is what UDP forwarding needs: datagrams keep their boundaries, and the
+// right answer to "the far side is behind" is to drop the datagram, exactly
+// like a full UDP socket would.
+func (s *Stream) WriteRaw(payload []byte) bool {
+	if len(payload) == 0 || s.closed.Load() || !s.reserveExact(len(payload)) {
+		return false
+	}
+	var hdr [proto.HeaderLen]byte
+	proto.PutHeader(hdr[:], proto.TData, s.ID)
+	return s.Mux.writeData(hdr[:], payload) == nil
+}
+
+// reserveExact takes credit for n bytes or nothing at all.
+func (s *Stream) reserveExact(n int) bool {
+	m := s.Mux
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed.Load() || s.sendCredit < int64(n) || m.globalSend < int64(n) {
+		return false
+	}
+	s.sendCredit -= int64(n)
+	m.globalSend -= int64(n)
+	return true
+}
+
 // Write sends local bytes towards the peer, waiting for credit. It blocks, so
 // call it from the goroutine that reads the local socket.
 func (s *Stream) Write(data []byte) error {
@@ -602,8 +633,7 @@ func (s *Stream) pump() {
 			return
 		}
 		// everything the peer sent is out: a half close may be passed on now
-		if s.remoteEOF && !s.eofGiven {
-			s.eofGiven = true
+		if s.remoteHalfClosed() && s.claimEOFDelivery() {
 			onEOF := s.onEOF
 			s.qmu.Unlock()
 			if onEOF != nil {
@@ -615,6 +645,27 @@ func (s *Stream) pump() {
 		s.qcond.Wait()
 		s.qmu.Unlock()
 	}
+}
+
+// remoteHalfClosed tells whether the peer finished sending. The flag is
+// written by the reader goroutine, so it goes through the same mutex
+// maybeDrop uses.
+func (s *Stream) remoteHalfClosed() bool {
+	s.eofMu.Lock()
+	defer s.eofMu.Unlock()
+	return s.remoteEOF
+}
+
+// claimEOFDelivery returns true exactly once, for the goroutine that gets to
+// pass the half close to the local socket.
+func (s *Stream) claimEOFDelivery() bool {
+	s.eofMu.Lock()
+	defer s.eofMu.Unlock()
+	if s.eofGiven {
+		return false
+	}
+	s.eofGiven = true
+	return true
 }
 
 // grant counts bytes as consumed (they will be credited back on flush).
