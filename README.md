@@ -205,9 +205,15 @@ python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
 bash tools/build-go.sh              # prebuilt release binary, else build locally
+# maintainers: cross-compile all six release targets into dist/
+bash tools/build-go.sh --release dist
 cd go && go test ./...              # carrier, mux and node tests incl. RFC 8439 vectors
 cd go && go test -race ./...        # the same under the race detector
 ```
+
+Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
+which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.1.0`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,
