@@ -495,7 +495,9 @@ elif [ -n "$TUNNEL_PORT" ]; then
 warn "--tunnel-port only applies in reverse mode (--dial exit); ignoring it."
   fi
 fi
-[ "$NO_SYSTEMD" = "1" ] && ARGS+=(--no-start --no-enable)
+# --no-units (not --no-start/--no-enable): a machine that has systemctl but no
+# root must not try to write /etc/systemd/system just to finish the install
+[ "$NO_SYSTEMD" = "1" ] && ARGS+=(--no-units)
 
 SIMURGH_BIN="$VENV_DIR/bin/simurgh"
 if [ -z "$TOKEN" ]; then

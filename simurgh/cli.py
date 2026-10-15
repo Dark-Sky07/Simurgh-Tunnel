@@ -353,13 +353,10 @@ def cmd_install(args) -> int:
                 return 2
     report = systemd.install_services(
         home, roles=roles, enable=not args.no_enable, start=not args.no_start,
-        user=args.user if args.user else None,
+        user=args.user if args.user else None, write=not args.no_units,
     )
-    if not report.get("systemd"):
-        _warn("systemd is not available; the service was not installed. Start it manually:")
-        for wanted in roles:
-            print(f"   simurgh {wanted}" + ("" if wanted != "relay" else ""))
-        return 0
+    for path, why in (report.get("errors") or {}).items():
+        _warn(f"the systemd units could not be written to {path}: {why}")
     for unit in report.get("units", []):
         _ok(f"created {unit}")
     for svc, result in report.get("actions", {}).items():
@@ -368,6 +365,14 @@ def cmd_install(args) -> int:
     _info(f"web panel: http://{_public_ip()}:{_panel_port_of(home, roles)}")
     _info("text menu: simurgh menu")
     _info("status: simurgh status")
+    if not report.get("systemd"):
+        _warn("systemd is not available here: no service was installed, start it by hand:")
+    elif not report.get("write", True):
+        _warn("no systemd unit was written (--no-units), start it by hand:")
+    else:
+        return 0
+    for wanted in roles:
+        print(f"   simurgh {wanted}")
     return 0
 
 
@@ -1239,7 +1244,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--engine", choices=ENGINES, default="",
                    help="data plane: python (default) or go (see tools/build-go.sh)")
     p.add_argument("--user", default="")
-    p.add_argument("--config-only", action="store_true")
+    # keep the long-standing behaviour, but say what it does: this skips the
+    # config and only (re)installs the services
+    p.add_argument("--config-only", action="store_true",
+                   help="keep the existing config and only install the service")
+    p.add_argument("--no-units", action="store_true",
+                   help="write the config but no systemd unit (run it by hand)")
     p.add_argument("--no-enable", action="store_true")
     p.add_argument("--no-start", action="store_true")
     p.add_argument("--force", action="store_true")

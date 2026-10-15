@@ -120,6 +120,43 @@ def test_installs_without_reaching_pypi(tmp_path):
     assert version.returncode == 0, version.stdout + version.stderr
 
 
+def test_install_survives_a_systemctl_without_root(tmp_path):
+    """A container or a CI runner has `systemctl` but nobody may write to
+    `/etc/systemd/system` — the install has to finish anyway.
+
+    The installer used to call `simurgh install --no-start --no-enable`, which
+    still writes the unit files, so it died with
+    `PermissionError: '/etc/systemd/system/simurgh-exit.service'` as soon as
+    `systemctl is-system-running` answered (the CI runner does).
+    """
+    env = _env(tmp_path)
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    fake_systemctl = fake_bin / "systemctl"
+    fake_systemctl.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        '  is-system-running) echo running ;;\n'
+        "  *) exit 0 ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", "--role", "exit",
+         "--token", "no-root", "--no-systemd"],
+        env=env, capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "PermissionError" not in output, output
+    assert "Traceback" not in output, output
+    assert (tmp_path / "etc" / "exit.toml").exists(), output
+
+
 def test_relay_without_a_token_explains_what_to_do(tmp_path):
     """A piped relay install cannot ask for the token — it must say so instead
     of failing inside the CLI with an unclear message."""

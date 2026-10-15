@@ -144,13 +144,27 @@ def service_state(service: str) -> dict:
 
 def install_services(home: Home, roles: tuple[str, ...] = ("exit", "relay"),
                      enable: bool = True, start: bool = True,
-                     user: str | None = None) -> dict:
-    """Write, enable and start the units.  Returns a human-readable report."""
-    report: dict = {"systemd": available(), "units": [], "actions": {}}
+                     user: str | None = None, write: bool = True) -> dict:
+    """Write, enable and start the units.  Returns a human-readable report.
+
+    ``write=False`` leaves ``/etc/systemd/system`` alone: an install that is
+    meant to be started by hand (a container, a non-root install, the
+    installer's ``--no-systemd``) must not need root just to finish.
+    """
+    report: dict = {"systemd": available(), "units": [], "actions": {}, "write": write}
     if not report["systemd"]:
         return report
-    for path in write_units(home, roles, user=user):
-        report["units"].append(str(path))
+    if not write:
+        return report
+    try:
+        for path in write_units(home, roles, user=user):
+            report["units"].append(str(path))
+    except OSError as exc:
+        # a read-only /etc, a container without root, a locked-down image:
+        # the config is written and the services can still be started by hand
+        report["errors"] = {"/etc/systemd/system": str(exc)}
+        report["write"] = False
+        return report
     daemon_reload()
     services = tuple(f"simurgh-{r}" for r in roles)
     if enable:
