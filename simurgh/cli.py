@@ -158,12 +158,21 @@ def _write_state(home: Home, role: str, payload: dict) -> None:
 
 
 # ------------------------------------------------------------------- install
-def _init_engine(args) -> str:
-    """The data plane named on the command line (default: python)."""
+def _init_engine(args, home: Home | None = None) -> str:
+    """The data plane for a config that is being created.
+
+    An explicit ``--engine`` wins.  Otherwise the compiled engine is the default
+    and the Python engine is the fallback: ``auto`` picks Go when this
+    installation has the binary (or a Go toolchain can provide one) and Python
+    when it does not, so a fresh install never ends up pointing at a binary that
+    is not there.
+    """
     want = str(getattr(args, "engine", "") or "").strip().lower()
-    if want in ("", "auto", "default"):
-        return "python"
-    return want if want in ENGINES else "python"
+    if want in ENGINES:
+        return want
+    if home is not None and go_binary(home):
+        return "go"
+    return "python"
 
 
 def _apply_engine_windows(cfg) -> None:
@@ -212,7 +221,7 @@ def _init_exit(home: Home, args) -> int:
         token=token, name=name, cert_auto=True, push_ports=ports,
         speedtest_port=EXIT_DEFAULT_SPEEDTEST,
         connections=max(0, int(getattr(args, "connections", 0) or 0)) or 1,
-        engine=_init_engine(args),
+        engine=_init_engine(args, home),
     )
     _apply_engine_windows(cfg)
     cfg.listen = listen or [ListenSpec(carrier="tls", port=443, path="/ws")]
@@ -272,7 +281,7 @@ def _init_relay(home: Home, args) -> int:
                               fingerprint=args.fingerprint),
         )
         cfg.connections = max(0, int(getattr(args, "connections", 0) or 0)) or 1
-    cfg.engine = _init_engine(args)
+    cfg.engine = _init_engine(args, home)
     _apply_engine_windows(cfg)
     mappings = []
     for spec in args.mapping or []:

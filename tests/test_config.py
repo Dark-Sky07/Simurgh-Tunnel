@@ -164,3 +164,28 @@ def test_engine_key_round_trips_and_defaults_to_go(home):
         assert "engine" in str(exc)
     else:                                            # pragma: no cover
         raise AssertionError("a bogus engine must be refused")
+
+
+def test_fresh_config_picks_the_engine_that_is_installed(home, tmp_path, monkeypatch):
+    """`simurgh init` without --engine: Go when the binary is there, else Python.
+
+    The resolved engine is what the config is written with, so a fresh install
+    never ends up pointing at a binary that is not on the machine.
+    """
+    from types import SimpleNamespace
+    from simurgh import cli
+
+    args = SimpleNamespace(engine="")
+    monkeypatch.setenv("SIMURGH_GO_BIN", str(tmp_path / "does-not-exist"))
+    assert cli._init_engine(args, home) == "python"
+
+    binary = tmp_path / "simurgh-go"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("SIMURGH_GO_BIN", str(binary))
+    assert cli._init_engine(args, home) == "go"
+
+    # an explicit choice always wins, even if this machine has no Go binary
+    monkeypatch.setenv("SIMURGH_GO_BIN", str(tmp_path / "does-not-exist"))
+    assert cli._init_engine(SimpleNamespace(engine="go"), home) == "go"
+    assert cli._init_engine(SimpleNamespace(engine="python"), home) == "python"
