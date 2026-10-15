@@ -110,6 +110,9 @@ if [ -n "$RELEASE_DIR" ]; then
   GO="$(find_go || install_toolchain || true)"
   [ -n "$GO" ] || die "no Go toolchain available"
   mkdir -p "$RELEASE_DIR"
+  # Resolve relative paths before changing directories, so --release dist writes
+  # to the caller's dist/ rather than go/dist/.
+  RELEASE_DIR="$(cd "$RELEASE_DIR" && pwd)"
   cd "$GO_DIR"
   for target in linux/amd64 linux/arm64 linux/arm/v7 darwin/amd64 darwin/arm64 windows/amd64; do
     os_name="${target%%/*}"; rest="${target#*/}"

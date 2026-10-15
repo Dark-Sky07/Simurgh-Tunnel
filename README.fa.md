@@ -208,9 +208,15 @@ python tools/live_smoke.py          # می‌ریس زنده روی لوپ‌ب�
 
 # موتور کامپایل‌شده (همان پروتکل، همان فایل‌های تنظیمات)
 bash tools/build-go.sh              # باینری آمادهٔ ریلیز، وگرنه بیلد محلی
+# نگه‌دارندگان پروژه: ساخت باینری‌های شش هدف ریلیز در dist/
+bash tools/build-go.sh --release dist
 cd go && go test ./...              # تست‌های carrier، mux و node + بردارهای RFC 8439
 cd go && go test -race ./...        # همان‌ها زیر race detector
 ```
+
+با انتشار GitHub Release، workflow در `.github/workflows/release-binaries.yml`
+شش باینری و `SHA256SUMS.txt` را می‌سازد و پیوست می‌کند. برای افزودن فایل‌ها به
+ریلیز موجود، اجرا کنید: `gh workflow run release-binaries.yml -f tag=v2.1.0`.
 
 ساختار: `simurgh/protocol.py` (فریم‌ها و کدگذاری آدرس)، `mux.py` (مالتی‌پلکسر و
 کنترل جریان)، `carriers.py` (چهار حامل) + `tlsio.py`/`obfs.py`/`decoy.py`،
