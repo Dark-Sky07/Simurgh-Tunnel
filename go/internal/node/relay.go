@@ -358,6 +358,7 @@ func (r *Relay) serveTunnel(conn net.Conn) {
 		return
 	}
 	srv := carrier.NewServer(t.Carrier, r.cfg.Token, cert, t.Fallback, t.DecoyFile)
+	srv.Padding = t.Padding
 	srv.Serve(conn, func(ch mux.Channel) {
 		m := mux.New(ch, true, mux.Options{
 			StreamWindow:    int64(r.cfg.StreamWindow),
@@ -445,6 +446,7 @@ func (r *Relay) runTunnel(ep config.Endpoint, primary bool) error {
 		Path:        ep.Path,
 		Fingerprint: ep.Fingerprint,
 		Insecure:    ep.InsecureSkipVerify,
+		Padding:     ep.Padding,
 		Token:       r.cfg.Token,
 		Timeout:     10 * time.Second,
 	})

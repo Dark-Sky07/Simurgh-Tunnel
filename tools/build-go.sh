@@ -13,7 +13,7 @@ set -euo pipefail
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO_DIR="$SRC_DIR/go"
 OUT="${SIMURGH_GO_BIN:-$SRC_DIR/bin/simurgh-go}"
-GO_VERSION="${SIMURGH_GO_VERSION:-1.27.1}"
+GO_VERSION="${SIMURGH_GO_VERSION:-1.27.2}"
 REPO_SLUG="${SIMURGH_REPO_SLUG:-Dark-Sky07/Simurgh-Tunnel}"
 FROM_SOURCE=0
 RELEASE_DIR=""
@@ -145,7 +145,8 @@ fi
 say "building with $("$GO" version 2>/dev/null || echo "$GO")"
 mkdir -p "$(dirname "$OUT")"
 cd "$GO_DIR"
-# standard library only: no module downloads, no network, no cgo needed
+# no module downloads, no network, no cgo: the only third-party code the engine
+# uses (ChaCha20-Poly1305, x/sys/cpu) is vendored in go/third_party/
 CGO_ENABLED=0 GOFLAGS=-mod=mod GOPROXY=off GOTOOLCHAIN=local \
   "$GO" build -trimpath -ldflags "-s -w" -o "$OUT" ./cmd/simurgh
 

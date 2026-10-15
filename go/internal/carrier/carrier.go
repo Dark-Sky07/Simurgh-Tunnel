@@ -255,6 +255,7 @@ type Server struct {
 	Token     string
 	Fallback  string // "decoy", "close" or "site:host:port"
 	DecoyFile string // optional page to serve instead of the nginx default
+	Padding   bool   // raw carrier: hide exact frame sizes
 	Cert      tls.Certificate
 	replay    *proto.ReplayCache
 }
@@ -284,6 +285,8 @@ func (s *Server) Serve(conn net.Conn, onChannel func(mux.Channel)) {
 		s.serveTLS(conn, onChannel)
 	case "wss":
 		s.serveWSS(conn, onChannel)
+	case "raw":
+		s.serveRaw(conn, onChannel)
 	default:
 		conn.Close()
 	}
@@ -410,6 +413,7 @@ type ClientOptions struct {
 	Path        string // websocket path
 	Fingerprint string // pinned SHA-256 of the certificate
 	Insecure    bool
+	Padding     bool
 	Timeout     time.Duration
 	Token       string
 }
@@ -423,6 +427,9 @@ func Dial(opt ClientOptions) (mux.Channel, error) {
 		opt.Path = "/ws"
 	}
 	switch strings.ToLower(opt.Carrier) {
+	case "raw":
+		return dialRaw(opt)
+
 	case "plain":
 		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout)
 		if err != nil {

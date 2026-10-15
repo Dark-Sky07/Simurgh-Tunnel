@@ -108,8 +108,13 @@ tunnel may run whichever one it likes:
 
 | Engine | What it is | When to use it |
 |---|---|---|
-| `python` *(default)* | the reference engine, pure standard library | everywhere; nothing to build |
-| `go` | compiled data plane: one goroutine per user connection, all cores, ~8× less CPU per gigabyte | busy relays, many simultaneous users |
+| `go` *(default)* | compiled data plane: one goroutine per user connection, all cores, ~8× less CPU per gigabyte | the default everywhere the binary is installed |
+| `python` | the reference engine, pure standard library | the automatic fallback when no binary is available, and the reference for the wire format |
+
+`simurgh init` writes `engine = "go"` when this machine has the binary and
+`engine = "python"` when it does not (`--engine go|python` forces either one,
+and the installer downloads or builds the binary first). Switching later is one
+command:
 
 ```bash
 sudo bash tools/build-go.sh     # needs a Go toolchain (the script installs one)
@@ -135,6 +140,12 @@ go/bin/simurgh-go bench -mb 256 -delay 20 -streams 64  # go engine, 64 users
 | `raw` | random bytes + X25519 + ChaCha20-Poly1305 | TLS itself is suspicious |
 | `plain` | TCP + HMAC header | two trusted/internal servers |
 
+Both engines speak all four carriers and face each other on every one of them
+(Go relay ⇄ Python exit and the other way round are part of the test run).
+`raw` on the Python engine needs the `cryptography` extra (`pip install
+'.[secure]'`, the installer adds it); the Go engine has ChaCha20-Poly1305
+vendored in `go/third_party/`, so its build needs no network and no package.
+
 ## Security
 
 * 25-byte handshake header (version, timestamp, HMAC-SHA256[:16]) with a ±180 s
@@ -150,7 +161,7 @@ go/bin/simurgh-go bench -mb 256 -delay 20 -streams 64  # go engine, 64 users
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **118 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, shared window, window autotuning) |
+| `python -m pytest -q` | **119 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -167,6 +178,8 @@ go/bin/simurgh-go bench -mb 256 -delay 20 -streams 64  # go engine, 64 users
 | Self-heal | killing the exit: the relay reconnects when it returns |
 | Reverse mode | traffic over tls/raw/plain, exit reconnects after a relay restart |
 | UDP forwarding | 4/4 replies, boundaries kept for every size 1 B – 60 KB, one stream per client address, datagrams dropped (never queued) when the far side is behind; Go ⇄ Python interop verified in both directions |
+| `raw` carrier on both engines | Go relay ⇄ Python exit and Python relay ⇄ Go exit, 3/3 requests each way; the Go side is checked against the same padding table as `simurgh/carriers.py` |
+| Go per-carrier e2e | `go test ./...` runs a real relay + exit + target over `plain`, `tls`, `wss` and `raw`: single users of 41 B / 100 KB / 3 MB and 8 users at once, byte for byte |
 
 ## Documentation
 
@@ -182,8 +195,13 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 100 tests, no test-only dependencies
+python -m pytest -q                 # 119 tests, no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
+
+# the compiled engine (same protocol, same config files)
+bash tools/build-go.sh              # prebuilt release binary, else build locally
+cd go && go test ./...              # carrier, mux and node tests incl. RFC 8439 vectors
+cd go && go test -race ./...        # the same under the race detector
 ```
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
@@ -191,6 +209,13 @@ flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,
 `bridge.py` (socket ↔ stream), `exit.py` / `relay.py` (the two roles), `udp.py`,
 `speedtest.py`, `panel.py` (web UI), `menu.py`/`cli.py`/`systemd.py`,
 `config.py`, `links.py` (setup links), `certs.py`.
+
+The Go engine mirrors that layout: `go/internal/proto`, `mux`, `carrier`,
+`node` (exit + relay + UDP), `bench`, `config`, `cmd/simurgh`. Its only
+third-party code is vendored under `go/third_party/` (ChaCha20-Poly1305 and
+`x/sys/cpu` from `golang.org/x/*`, BSD-3-Clause, see `go/third_party/README.md`)
+so `GOPROXY=off` builds keep working on a machine that cannot reach
+`proxy.golang.org`.
 
 ## License
 

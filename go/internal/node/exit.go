@@ -145,12 +145,14 @@ func (e *Exit) startListener(spec config.ListenSpec) error {
 			return err
 		}
 		srv = carrier.NewServer(spec.Carrier, e.cfg.Token, cert, spec.Fallback, decoyFileOf(spec))
+		srv.Padding = spec.Padding
 		if fp, err := carrier.Fingerprint(cert); err == nil {
 			slog.Info("listening", "carrier", spec.Carrier, "address", ln.Addr().String(),
 				"probers see", decoyMessage(spec.Fallback), "fingerprint", fp)
 		}
 	} else {
 		srv = carrier.NewServer(spec.Carrier, e.cfg.Token, tls.Certificate{}, spec.Fallback, decoyFileOf(spec))
+		srv.Padding = spec.Padding
 		slog.Info("listening", "carrier", spec.Carrier, "address", ln.Addr().String(), "probers see", "noise")
 	}
 	e.wg.Add(1)
@@ -289,6 +291,7 @@ func (e *Exit) reverseTunnel(spec config.ListenSpec) error {
 		Domain:      spec.Path, // unused for tls; the SNI stays the address
 		Fingerprint: spec.Fingerprint,
 		Insecure:    spec.InsecureSkipVerify,
+		Padding:     spec.Padding,
 		Token:       e.cfg.Token,
 		Timeout:     10 * time.Second,
 	})

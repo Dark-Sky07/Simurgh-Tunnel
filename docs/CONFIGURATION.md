@@ -83,12 +83,12 @@ either side needs no manual action.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `carrier` | `tls` | disguise used by this endpoint |
+| `carrier` | `tls` | disguise used by this endpoint: `tls`, `wss`, `raw` or `plain` — both engines speak all four and can face each other |
 | `host` / `port` | `0.0.0.0` / `8443` | listen address (direct mode) |
 | `path` | `/ws` | HTTP path for `wss` |
 | `fallback` | `decoy` | `decoy` = serve the fake website, `close` = drop silently |
 | `decoy_file` | — | custom HTML file to serve to probers |
-| `padding` | `true` | pad frames so lengths are not meaningful |
+| `padding` | `true` | pad frames so lengths are not meaningful. Only the `raw` carrier uses it, and only for the direction it sends in: a padded frame lands on the first of 128/256/512/…/16384 bytes that fits (or the next multiple of 64 above that) plus a 2-byte trailer, exactly like `simurgh/carriers.py`. Turning it off on one side is safe — the other side still removes its padding. |
 | `enabled` | `true` | disable without deleting the block |
 | `dial` | — | **reverse mode**: dial this host instead of listening |
 | `fingerprint` | — | pinned SHA-256 of the relay certificate (reverse) |
@@ -186,7 +186,7 @@ sides wins for any given stream, so setting them on the relay is enough.
 | — (shared) | `16 MiB` floor, `64 MiB` cap | The credit budget of the whole tunnel *connection*: it follows the sum of the live streams' current windows, so dozens of users on one connection never starve each other, while a peer that stops reading cannot park more than the cap per connection. Nothing to configure; it is what keeps 1000 users on one box from being limited to one user's window. |
 | `connections` | `1` | How many tunnel connections the relay keeps to the exit (1-16). Every connection is a separate TCP flow and a separate core's worth of work: on long, lossy paths 2-4 of them raise the total a lot and a single dropped connection only costs a fraction of the users. The relay hands each new user connection to the least busy tunnel. |
 | `chunk` | `64 KiB` | Largest payload per frame. Bigger frames mean less per-frame overhead and a little more latency headroom; 64 KiB is a good middle. |
-| `engine` | `python` | Which data plane runs this file: `python` (portable, no build step) or `go` (compiled, many cores, much less CPU per gigabyte). Both speak the same protocol, so one side may run Go while the other still runs Python. Switch with `simurgh engine go` after building it (`sudo bash tools/build-go.sh`). The panel, the menu and the CLI stay Python; with `engine = "go"` the live numbers you see come from `state.json`, which both engines write. |
+| `engine` | `go` | Which data plane runs this file: `go` (compiled, many cores, much less CPU per gigabyte) or `python` (portable, no build step). `simurgh init` writes `go` when this machine has the binary and `python` when it does not, so the default is whatever is actually installed; both speak the same protocol, so one side may run Go while the other still runs Python. Switch with `simurgh engine go` after building it (`sudo bash tools/build-go.sh`). The panel, the menu and the CLI stay Python; with `engine = "go"` the live numbers you see come from `state.json`, which both engines write. |
 
 Measured on a simulated long path (2 vCPU container), single user, plain
 carrier, 80 MB: **2 MB/s with a fixed 256 KiB window → 40.4 MB/s with the window
