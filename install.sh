@@ -37,6 +37,7 @@ NO_SYSTEMD=0
 UNINSTALL=0
 FORCE=0
 CARRIER=""
+SPLIT=""
 DOMAIN=""
 FINGERPRINT=""
 INSECURE=""
@@ -84,6 +85,10 @@ main options:
   --tunnel-port PORT         reverse mode: the tunnel port on THIS server
   --mapping L1:T1,L2:T2      relay port forwardings, e.g. 443:443
   --panel-port PORT          web panel port on the relay
+  --split N                  anti-DPI: let the first N bytes of the tunnel
+                             handshake travel in a TCP packet of their own, so a
+                             filter that reads only the first packet of a
+                             connection sees a fragment (0 = off, default 3)
   --connections N            tunnel connections to keep open (2-16, default 1):
                              better speed and resilience on long paths
   --engine auto|go|python    data plane: "go" is the compiled engine (many cores,
@@ -115,6 +120,7 @@ while [ $# -gt 0 ]; do
     --mapping|-m)  MAPPING="${2:-}"; shift 2 ;;
     --panel-port)  PANEL_PORT="${2:-}"; shift 2 ;;
     --connections) CONNECTIONS="${2:-}"; shift 2 ;;
+    --split)       SPLIT="${2:-}"; shift 2 ;;
     --engine)      ENGINE="${2:-auto}"; shift 2 ;;
     --no-go)       ENGINE="python"; shift ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
@@ -303,6 +309,7 @@ ARGS=(--force)
 [ -n "$LISTEN" ]      && ARGS+=(--listen "$LISTEN")
 [ -n "$PANEL_PORT" ]  && ARGS+=(--panel-port "$PANEL_PORT")
 [ -n "$CONNECTIONS" ] && ARGS+=(--connections "$CONNECTIONS")
+[ -n "$SPLIT" ]       && ARGS+=(--split "$SPLIT")
 ARGS+=(--engine "$ENGINE_CHOSEN")
 if [ -n "$MAPPING" ]; then
   IFS=',' read -ra _maps <<< "$MAPPING"

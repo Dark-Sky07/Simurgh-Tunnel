@@ -19,6 +19,7 @@ type ListenSpec struct {
 	Fallback           string
 	DecoyFile          string
 	Padding            bool
+	Split              int // tls/wss: bytes in the first TCP segment of the ClientHello
 	Enabled            bool
 	Dial               string // reverse mode: the relay address to dial
 	Fingerprint        string
@@ -48,6 +49,7 @@ type Endpoint struct {
 	Fingerprint        string
 	InsecureSkipVerify bool
 	Padding            bool
+	Split              int // tls/wss: bytes in the first TCP segment of the ClientHello
 	Enabled            bool
 }
 
@@ -154,6 +156,7 @@ func LoadExit(path string) (*Exit, error) {
 			Fallback:           str(item, "fallback", "decoy"),
 			DecoyFile:          str(item, "decoy_file", ""),
 			Padding:            boolean(item, "padding", true),
+			Split:              integer(item, "split", 0),
 			Enabled:            boolean(item, "enabled", true),
 			Dial:               str(item, "dial", ""),
 			Fingerprint:        str(item, "fingerprint", ""),
@@ -242,6 +245,7 @@ func endpoint(t map[string]any) Endpoint {
 		Fingerprint:        str(t, "fingerprint", ""),
 		InsecureSkipVerify: boolean(t, "insecure_skip_verify", false),
 		Padding:            boolean(t, "padding", true),
+		Split:              integer(t, "split", 0),
 		Enabled:            boolean(t, "enabled", true),
 	}
 }

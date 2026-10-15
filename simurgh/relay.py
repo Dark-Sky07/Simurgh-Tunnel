@@ -362,6 +362,7 @@ class RelayNode:
                     cert_fingerprint=ep.fingerprint,
                     insecure=ep.insecure_skip_verify,
                     padding=ep.padding,
+                    split=ep.split,
                     connect_timeout=12.0,
                     chunk=self.cfg.chunk,
                 )

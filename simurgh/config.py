@@ -119,6 +119,7 @@ class ListenSpec:
     fallback: str = "decoy"
     decoy_file: str | None = None
     padding: bool = True
+    split: int = 0                       # tls/wss: first TCP segment size of the hello
     enabled: bool = True
     dial: str = ""                       # reverse mode: dial this host
     fingerprint: str | None = None       # pin the relay certificate (reverse)
@@ -211,7 +212,7 @@ class ExitConfig:
                 "path": ls.path if ls.carrier in ("wss", "ws") else None,
                 "fallback": ls.fallback,
                 "decoy_file": ls.decoy_file,
-                "padding": ls.padding,
+                "padding": ls.padding, "split": ls.split,
                 "enabled": ls.enabled,
                 "dial": ls.dial or None,
                 "fingerprint": ls.fingerprint,
@@ -266,6 +267,7 @@ def load_exit(path: str | Path) -> ExitConfig:
             fallback=str(item.get("fallback", "decoy")),
             decoy_file=item.get("decoy_file"),
             padding=bool(item.get("padding", True)),
+            split=int(item.get("split", 0) or 0),
             enabled=bool(item.get("enabled", True)),
             dial=str(item.get("dial") or ""),
             fingerprint=item.get("fingerprint"),
@@ -322,6 +324,7 @@ class ExitEndpoint:
     fingerprint: str | None = None
     insecure_skip_verify: bool = False
     padding: bool = True
+    split: int = 0                       # tls/wss: first TCP segment size of the hello
     enabled: bool = True
 
     def describe(self) -> str:
@@ -397,14 +400,15 @@ class RelayConfig:
                 "port": self.exit.port, "domain": self.exit.domain,
                 "path": self.exit.path, "fingerprint": self.exit.fingerprint,
                 "insecure_skip_verify": self.exit.insecure_skip_verify,
-                "padding": self.exit.padding, "enabled": self.exit.enabled,
+                "padding": self.exit.padding, "split": self.exit.split,
+                "enabled": self.exit.enabled,
             }
         if self.pool:
             d["pool"] = [
                 {"carrier": e.carrier, "address": e.address, "port": e.port,
                  "domain": e.domain, "path": e.path, "fingerprint": e.fingerprint,
                  "insecure_skip_verify": e.insecure_skip_verify,
-                 "padding": e.padding, "enabled": e.enabled}
+                 "padding": e.padding, "split": e.split, "enabled": e.enabled}
                 for e in self.pool
             ]
         d["mapping"] = [
@@ -454,6 +458,7 @@ def _endpoint_from(data: dict) -> ExitEndpoint:
         fingerprint=data.get("fingerprint"),
         insecure_skip_verify=bool(data.get("insecure_skip_verify", False)),
         padding=bool(data.get("padding", True)),
+        split=int(data.get("split", 0) or 0),
         enabled=bool(data.get("enabled", True)),
     )
 
