@@ -92,10 +92,10 @@ fi
 %{_bindir}/simurgh-go
 %endif
 %{_prefix}/lib/simurgh
-%{_unitdir}/simurgh-relay.service
-%{_unitdir}/simurgh-exit.service
+%{_prefix}/lib/systemd/system/simurgh-relay.service
+%{_prefix}/lib/systemd/system/simurgh-exit.service
 
 %changelog
-* Thu Oct 16 2026 Simurgh Tunnel contributors - %{version}-%{release}
+* Fri Oct 16 2026 Simurgh Tunnel contributors - %{version}-%{release}
 - Initial package: CLI, menu, web panel, metrics, alerts, certificates,
   both systemd roles, and the compiled engine when it is staged.

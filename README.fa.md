@@ -68,9 +68,9 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 **[docs/PACKAGING.fa.md](docs/PACKAGING.fa.md)**.
 
 ```bash
-sudo dpkg -i simurgh_2.9.0_amd64.deb            # دبیان / اوبونتو / proxmox
-sudo dnf install ./simurgh-2.9.0-1.x86_64.rpm   # ردهت / فدورا / آلما / راکی
-sudo tar -xzf simurgh-2.9.0-noarch.tar.gz -C /  # هر سیستمی با پایتون ۳٫۹+
+sudo dpkg -i simurgh_2.9.1_amd64.deb            # دبیان / اوبونتو / proxmox
+sudo dnf install ./simurgh-2.9.1-1.x86_64.rpm   # ردهت / فدورا / آلما / راکی
+sudo tar -xzf simurgh-2.9.1-noarch.tar.gz -C /  # هر سیستمی با پایتون ۳٫۹+
 docker compose up -d                            # رله + اگزیت، یک ماشین
 ```
 
@@ -265,7 +265,7 @@ cd go && go test -race ./...        # همان‌ها زیر race detector
 
 با انتشار GitHub Release، workflow در `.github/workflows/release-binaries.yml`
 شش باینری و `SHA256SUMS.txt` را می‌سازد و پیوست می‌کند. برای افزودن فایل‌ها به
-ریلیز موجود، اجرا کنید: `gh workflow run release-binaries.yml -f tag=v2.9.0`.
+ریلیز موجود، اجرا کنید: `gh workflow run release-binaries.yml -f tag=v2.9.1`.
 
 ساختار: `simurgh/protocol.py` (فریم‌ها و کدگذاری آدرس)، `mux.py` (مالتی‌پلکسر و
 کنترل جریان)، `carriers.py` (چهار حامل) + `tlsio.py`/`obfs.py`/`decoy.py`،

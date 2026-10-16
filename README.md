@@ -69,9 +69,9 @@ units, the package never writes `/etc/simurgh` itself, and `simurgh update`
 understands all of them. Details: **[docs/PACKAGING.md](docs/PACKAGING.md)**.
 
 ```bash
-sudo dpkg -i simurgh_2.9.0_amd64.deb            # Debian / Ubuntu / Proxmox
-sudo dnf install ./simurgh-2.9.0-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
-sudo tar -xzf simurgh-2.9.0-noarch.tar.gz -C /  # any system with Python 3.9+
+sudo dpkg -i simurgh_2.9.1_amd64.deb            # Debian / Ubuntu / Proxmox
+sudo dnf install ./simurgh-2.9.1-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
+sudo tar -xzf simurgh-2.9.1-noarch.tar.gz -C /  # any system with Python 3.9+
 docker compose up -d                            # relay + exit, one machine
 ```
 
@@ -267,7 +267,7 @@ cd go && go test -race ./...        # the same under the race detector
 
 Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
 which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
-existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.9.0`.
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.9.1`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,

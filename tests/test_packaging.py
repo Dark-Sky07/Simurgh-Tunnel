@@ -11,6 +11,7 @@ checked because it is what the others are built from.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -198,6 +199,21 @@ def test_a_deb_with_the_engine_is_architecture_specific(tmp_path):
 # ------------------------------------------------------------------- the rpm
 
 
+def test_the_rpm_spec_only_uses_macros_every_rpm_defines():
+    # `%{_unitdir}` needs systemd-rpm-macros, which Ubuntu's rpm (the build host
+    # CI uses) does not install: the units are addressed through %{_prefix}
+    spec = (REPO / "packaging/rpm/simurgh.spec").read_text()
+    assert "_unitdir" not in spec
+    macros = set(re.findall(r"%\{(\??[A-Za-z_][A-Za-z0-9_]*)\}", spec))
+    allowed = {"version", "release", "?dist", "dist", "stage", "goarch", "buildroot",
+               "_prefix", "_bindir", "_sysconfdir"}
+    assert macros <= allowed, macros - allowed
+    # and the changelog date must be a real day (rpmbuild warns otherwise)
+    stamp = [line for line in spec.splitlines() if line.startswith("* ")][0]
+    day, month, date, year = stamp[2:].split()[:4]
+    assert (day, month) == ("Fri", "Oct") and date == "16" and year == "2026", stamp
+
+
 def test_the_rpm_spec_matches_the_staging_tree():
     spec = (REPO / "packaging/rpm/simurgh.spec").read_text()
     for line in ("Name:           simurgh", "License:        MIT",
@@ -206,7 +222,8 @@ def test_the_rpm_spec_matches_the_staging_tree():
     # the %files list must be exactly what the builder stages
     builder = (REPO / "packaging/build-packages.sh").read_text()
     for path in ("%{_bindir}/simurgh", "%{_prefix}/lib/simurgh",
-                 "%{_unitdir}/simurgh-relay.service", "%{_unitdir}/simurgh-exit.service"):
+                 "%{_prefix}/lib/systemd/system/simurgh-relay.service",
+                 "%{_prefix}/lib/systemd/system/simurgh-exit.service"):
         assert path in spec
     for name in ("README.md", "README.fa.md", "CONFIGURATION.md", "CONFIGURATION.fa.md",
                  "PACKAGING.md", "PACKAGING.fa.md"):
