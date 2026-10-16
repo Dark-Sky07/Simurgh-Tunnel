@@ -21,7 +21,7 @@ import json
 import time
 
 from .bridge import Bridge, proxy_v1_header
-from .carriers import ServerCarrier, client_connect
+from .carriers import ServerCarrier, client_connect, create_tcp_server
 from .config import Mapping, RelayConfig
 from .mux import Mux, StreamOpenError
 from .protocol import MODE_TCP, encode_addr
@@ -140,22 +140,40 @@ class RelayNode:
                                                      self.cfg.name or "simurgh.local")
             spec.cert_file, spec.key_file = cert_file, key_file
         loop = asyncio.get_running_loop()
+        tokens = self.cfg.token_list()
+        if not tokens:
+            self.last_error = f"{spec.endpoint()}: no token configured"
+            log.error("%s has no token to authenticate exits with", spec.endpoint())
+            return
         carrier = ServerCarrier(
-            spec.carrier, self.cfg.token,
+            spec.carrier, tokens[0].token, tokens=tokens,
             cert_file=cert_file, key_file=key_file,
             path=spec.path, fallback=spec.fallback,
             decoy_file=spec.decoy_file, padding=spec.padding,
+            chunk=self.cfg.chunk,
         )
-        factory = carrier.protocol_factory(self._accept_tunnel)
         try:
-            server = await loop.create_server(factory, spec.host, spec.port,
-                                              backlog=128)
+            if spec.carrier == "udp":
+                server, _proto = await carrier.create_udp_endpoint(
+                    loop, spec.host, spec.port, self._accept_tunnel,
+                    mtu=spec.mtu, fec=spec.fec, window=spec.window,
+                )
+            else:
+                factory = carrier.protocol_factory(self._accept_tunnel)
+                server = await create_tcp_server(
+                    loop, factory, spec.host, spec.port, backlog=128,
+                    dual_stack=self.cfg.dual_stack,
+                )
         except OSError as exc:
             self.last_error = f"{spec.endpoint()}: {exc}"
             self.bind_errors.append(self.last_error)
             log.error("cannot listen on %s: %s", spec.endpoint(), exc)
             return
         self._tunnel_servers.append(server)
+        if spec.carrier == "udp":
+            log.info("waiting for the exit on %s/udp (mtu %d, fec %s)",
+                     spec.endpoint(), spec.mtu, spec.fec)
+            return
         mode = "decoy website" if spec.carrier in ("tls", "wss") else "noise"
         log.info("waiting for the exit on %s (probers see: %s)",
                  spec.endpoint(), mode)
@@ -365,6 +383,10 @@ class RelayNode:
                     split=ep.split,
                     connect_timeout=12.0,
                     chunk=self.cfg.chunk,
+                    # the datagram carrier's knobs and the upstream dial path
+                    mtu=ep.mtu, fec=ep.fec, window=ep.window,
+                    proxy=ep.proxy or self.cfg.proxy,
+                    net=self._net_opts(ep),
                 )
             except Exception as exc:
                 self.last_error = f"{ep.describe()}: {exc}"
@@ -378,6 +400,18 @@ class RelayNode:
             await self._run_tunnel(ep, channel, slot=slot)
             if not self._stopping:
                 await asyncio.sleep(0.4)
+
+    def _net_opts(self, ep) -> dict:
+        """Socket options for the outgoing tunnel (endpoint first, node second)."""
+        return {
+            "nodelay": ep.tcp_nodelay if ep.tcp_nodelay is not None
+            else self.cfg.tcp_nodelay,
+            "keepalive": ep.tcp_keepalive if ep.tcp_keepalive is not None
+            else self.cfg.tcp_keepalive,
+            "so_mark": ep.so_mark if ep.so_mark is not None else self.cfg.so_mark,
+            "prefer": ep.prefer_ipv6 if ep.prefer_ipv6 is not None
+            else self.cfg.prefer_ipv6,
+        }
 
     def _pick(self, endpoints):
         now = time.monotonic()

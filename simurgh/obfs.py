@@ -60,10 +60,11 @@ def _exchange(priv, peer_pub: bytes) -> bytes:
 
 
 async def raw_client(host: str, port: int, token: str, timeout: float,
-                     padding: bool = True) -> BaseChannel:
-    from .carriers import auth_key, tcp_connect
+                     padding: bool = True, proxy: str = "",
+                     net: dict | None = None) -> BaseChannel:
+    from .carriers import _dial_out, auth_key
 
-    conn = await tcp_connect(host, port, timeout)
+    conn = await _dial_out(host, port, timeout, proxy, net)
     key = auth_key(token)
     priv, pub = _x25519()
     ts = int(time.time())
@@ -95,9 +96,11 @@ async def raw_client(host: str, port: int, token: str, timeout: float,
 
 
 async def raw_server(conn: RawConn, carrier, on_channel) -> None:
-    from .carriers import AeadFrameChannel
+    from .carriers import AeadFrameChannel, auth_key
 
-    key = __import__("simurgh.carriers", fromlist=["auth_key"]).auth_key(carrier.token)
+    _tokens = getattr(carrier, "token_values", None) or [carrier.token]
+    keys = [auth_key(value) for value in _tokens]
+    key = keys[0]
 
     # random-length noise prefix, then 32 byte public key, 8 byte timestamp,
     # 16 byte tag -- mirrored by the client.
@@ -121,8 +124,14 @@ async def raw_server(conn: RawConn, carrier, on_channel) -> None:
     ts_b = rest[plen + 32:plen + 40]
     tag = rest[plen + 40:plen + 56]
     (ts,) = struct.unpack(">Q", ts_b)
-    expect = hmac.new(key, b"simurgh/v2/raw" + ts_b + cpub, hashlib.sha256).digest()[:16]
-    if not hmac.compare_digest(tag, expect) or abs(time.time() - ts) > 300:
+    matched = -1
+    for index, candidate in enumerate(keys):
+        expect = hmac.new(candidate, b"simurgh/v2/raw" + ts_b + cpub,
+                          hashlib.sha256).digest()[:16]
+        if hmac.compare_digest(tag, expect):
+            matched, key = index, candidate
+            break
+    if matched < 0 or abs(time.time() - ts) > 300:
         conn.write(os.urandom(64))
         await _safe_drain(conn)
         conn.close()
@@ -136,6 +145,8 @@ async def raw_server(conn: RawConn, carrier, on_channel) -> None:
     okm = _hkdf(shared, salt=ts_b + cpub + spub, info=b"simurgh/v2/keys")
     inner = ByteFrameChannel(conn, peer=conn.peer, name="raw")
     channel = AeadFrameChannel(inner, okm[32:], okm[:32], pad=carrier.padding)
+    #: which configured token authenticated this connection (multi-tenant)
+    channel.token_value = _tokens[matched]
     await on_channel(channel)
 
 

@@ -19,7 +19,7 @@ from simurgh.relay import RelayNode
 
 pytestmark = pytest.mark.asyncio
 
-CARRIERS = ("raw", "tls", "wss", "plain")
+CARRIERS = ("raw", "tls", "wss", "plain", "udp")
 TOKEN = "e2e-token"
 
 

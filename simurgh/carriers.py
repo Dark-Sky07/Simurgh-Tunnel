@@ -85,6 +85,22 @@ def check_client_header(header: bytes, token: str, replay=None) -> int | None:
     return ts
 
 
+def check_client_header_any(header: bytes, tokens, replay=None):
+    """Try every configured token; return ``(ts, token_value)`` or ``None``.
+
+    A multi-tenant exit accepts several tokens (one per Iranian relay), so the
+    server cannot know which key to verify with -- it verifies with each of
+    them (they are few and the comparison is constant time).  The token that
+    matched travels up with the connection, which is how per-token port lists
+    and quotas are enforced.
+    """
+    for value in tokens:
+        stamp = check_client_header(header, value, replay)
+        if stamp is not None:
+            return stamp, value
+    return None
+
+
 def server_header(token: str, client_ts: int, ts: int | None = None) -> bytes:
     ts = int(time.time()) if ts is None else ts
     key = auth_key(token)
@@ -143,8 +159,15 @@ SNIFF_TIMEOUT = 5.0
 class RawConn(asyncio.Protocol):
     """A socket that hands bytes to a callback (no reader task)."""
 
-    def __init__(self, peer: str = ""):
+    def __init__(self, peer: str = "", *, nodelay: bool = True,
+                 keepalive: int = 0, so_mark: int = 0):
         self.peer = peer
+        self.nodelay = nodelay
+        self.keepalive = keepalive
+        self.so_mark = so_mark
+        #: which configured token authenticated this side (multi-tenant exits)
+        self.token_value = ""
+        self.token_name = ""
         self.transport: asyncio.Transport | None = None
         self.buf = bytearray()
         self.on_data = None          # callable(bytes)
@@ -167,10 +190,11 @@ class RawConn(asyncio.Protocol):
         try:
             sock = transport.get_extra_info("socket")
             if sock is not None:
-                import socket as _s
+                from .util import apply_socket_opts
 
-                sock.setsockopt(_s.IPPROTO_TCP, _s.TCP_NODELAY, 1)
-                self.peer = _fmt_sock(transport.get_extra_info("peername"))
+                apply_socket_opts(sock, nodelay=self.nodelay,
+                                  keepalive=self.keepalive, so_mark=self.so_mark)
+            self.peer = _fmt_sock(transport.get_extra_info("peername"))
         except Exception:
             pass
 
@@ -347,13 +371,40 @@ def _fmt_sock(info) -> str:
     return str(info)
 
 
-async def tcp_connect(host: str, port: int, timeout: float = 10.0) -> RawConn:
+async def tcp_connect(host: str, port: int, timeout: float = 10.0, *,
+                      nodelay: bool = True, keepalive: int = 0, so_mark: int = 0,
+                      prefer: str = "auto") -> RawConn:
+    """Connect, honouring the IPv6 preference and the socket options.
+
+    ``prefer`` decides the order of the addresses the resolver returned instead
+    of leaving it to the C library: ``"ipv6"`` is what a relay on a host with a
+    broken A record needs, ``"auto"`` (IPv4 first, IPv6 as the fallback) keeps
+    the common case exactly as fast as before.
+    """
+    from .util import resolve_hosts
+
     loop = asyncio.get_running_loop()
-    conn = RawConn()
-    await asyncio.wait_for(
-        loop.create_connection(lambda: conn, host, port), timeout
-    )
-    return conn
+    try:
+        infos = resolve_hosts(host, port, prefer)
+    except OSError as exc:
+        raise ConnectionError(f"cannot resolve {host}: {exc}") from exc
+    last: Exception | None = None
+    for info in infos:
+        family, sockaddr = info[0], info[4]
+        conn = RawConn(nodelay=nodelay, keepalive=keepalive, so_mark=so_mark)
+        try:
+            await asyncio.wait_for(
+                loop.create_connection(lambda: conn, sockaddr[0], sockaddr[1],
+                                       family=family),
+                timeout,
+            )
+            return conn
+        except (OSError, asyncio.TimeoutError) as exc:
+            last = exc
+            conn.close()
+    if last is None:
+        raise ConnectionError(f"no usable address for {host}")
+    raise last
 
 
 # --------------------------------------------------------------------------
@@ -722,6 +773,21 @@ class WsChannel(BaseChannel):
 # --------------------------------------------------------------------------
 
 
+async def _dial_out(host: str, port: int, timeout: float, proxy: str = "",
+                    net: dict | None = None) -> RawConn:
+    """A TCP connection to the far side, directly or through an upstream proxy."""
+    opts = net or {}
+    if proxy:
+        from .proxyout import open_through_proxy
+
+        conn = await open_through_proxy(proxy, host, port, timeout)
+        conn.nodelay = opts.get("nodelay", True)
+        conn.keepalive = opts.get("keepalive", 0)
+        conn.so_mark = opts.get("so_mark", 0)
+        return conn
+    return await tcp_connect(host, port, timeout, **opts)
+
+
 async def client_connect(carrier: str, host: str, port: int, token: str, *,
                          domain: str | None = None, path: str = "/",
                          cert_fingerprint: str | None = None,
@@ -730,13 +796,31 @@ async def client_connect(carrier: str, host: str, port: int, token: str, *,
                          padding: bool = True,
                          split: int = 0,
                          ws_headers: dict | None = None,
-                         chunk: int = DEFAULT_CHUNK) -> BaseChannel:
-    """Open a client-side tunnel channel using *carrier*."""
+                         chunk: int = DEFAULT_CHUNK,
+                         proxy: str = "",
+                         net: dict | None = None,
+                         mtu: int = 1200,
+                         fec: str = "off",
+                         window: int = 1024) -> BaseChannel:
+    """Open a client-side tunnel channel using *carrier*.
+
+    ``proxy`` sends the connection through an upstream SOCKS5/HTTP proxy;
+    ``net`` carries the socket options (nodelay/keepalive/so_mark/prefer).
+    """
     carrier = carrier.lower()
     sni = domain or host
+    opts = dict(net or {})
+
+    if carrier == "udp":
+        from .udpcarrier import connect_udp, fec_params
+
+        channel = await connect_udp(host, port, token, timeout=connect_timeout,
+                                    mtu=mtu, fec=fec_params(fec), window=window)
+        channel.token_value = token
+        return channel
 
     if carrier == "plain":
-        conn = await tcp_connect(host, port, connect_timeout)
+        conn = await _dial_out(host, port, connect_timeout, proxy, opts)
         ts = client_timestamp()
         conn.write(client_header(token, ts))
         await conn.drain()
@@ -749,11 +833,12 @@ async def client_connect(carrier: str, host: str, port: int, token: str, *,
     if carrier == "raw":
         from .obfs import raw_client  # lazy: needs `cryptography`
 
-        return await raw_client(host, port, token, connect_timeout, padding)
+        return await raw_client(host, port, token, connect_timeout, padding,
+                                proxy=proxy, net=opts)
 
     if carrier in ("tls", "wss"):
         ctx = client_context(sni, insecure or bool(cert_fingerprint))
-        conn = await tcp_connect(host, port, connect_timeout)
+        conn = await _dial_out(host, port, connect_timeout, proxy, opts)
         conn.split_first = max(0, int(split or 0))
         tls = TlsLayer(conn, ctx, server_side=False, server_hostname=sni)
         await tls.handshake(connect_timeout)
@@ -768,7 +853,9 @@ async def client_connect(carrier: str, host: str, port: int, token: str, *,
             resp = await asyncio.wait_for(read_at_least(tls, 25), connect_timeout)
             if not check_server_header(resp[:25], token, ts):
                 raise ConnectionError("server failed authentication (wrong token?)")
-            return ByteFrameChannel(tls, peer=conn.peer, name="tls")
+            channel = ByteFrameChannel(tls, peer=conn.peer, name="tls")
+            channel.token_value = token
+            return channel
         ch = await _ws_client_hello(tls, sni, path, ws_headers)
         ch.write_frame(client_header(token, ts))
         await ch.drain()
@@ -858,14 +945,33 @@ def verify_pin(tls: TlsLayer, fingerprint: str) -> None:
 
 
 class ServerCarrier:
-    """Server-side view of one configured carrier."""
+    """Server-side view of one configured carrier.
 
-    def __init__(self, carrier: str, token: str, *, cert_file: str | None = None,
+    ``tokens`` may hold several credentials (``[[token]]`` blocks): the exit
+    then serves several Iranian relays from one listener, and the connection
+    remembers *which* token authenticated it so per-token port lists, limits
+    and quotas can be enforced per relay.
+    """
+
+    def __init__(self, carrier: str, token: str = "", *,
+                 tokens: list | None = None,
+                 cert_file: str | None = None,
                  key_file: str | None = None, path: str = "/",
                  fallback: str = "decoy", decoy_file: str | None = None,
                  padding: bool = True, chunk: int = DEFAULT_CHUNK):
         self.carrier = carrier.lower()
-        self.token = token
+        if tokens:
+            self.tokens = list(tokens)
+        elif token:
+            from .config import TunnelToken
+
+            self.tokens = [TunnelToken(token=token, name="")]
+        else:
+            self.tokens = []
+        if not self.tokens:
+            raise ValueError(f"carrier {carrier!r} has no token")
+        self.token = self.tokens[0].token
+        self.token_values = [t.token for t in self.tokens]
         self.path = path or "/"
         self.fallback = fallback or "decoy"
         self.decoy_file = decoy_file
@@ -877,6 +983,14 @@ class ServerCarrier:
             if not (cert_file and key_file):
                 raise ValueError(f"carrier {carrier!r} needs cert_file and key_file")
             self.ctx = server_context(cert_file, key_file)
+        elif self.carrier == "udp":
+            from .udpcarrier import HAVE_CRYPTO
+
+            if not HAVE_CRYPTO:  # pragma: no cover
+                raise ValueError(
+                    "carrier 'udp' needs the 'cryptography' package "
+                    "(pip install cryptography)"
+                )
         elif self.carrier == "raw" and padding:
             from .certs import have_cryptography
 
@@ -897,6 +1011,28 @@ class ServerCarrier:
             return conn
 
         return factory
+
+    def create_udp_endpoint(self, loop, host: str, port: int, on_channel,
+                            mtu: int = 1200, fec: str = "off",
+                            window: int = 1024, max_sessions: int = 64):
+        """A datagram endpoint for the ``udp`` carrier (one socket, many peers)."""
+        import socket as _socket
+
+        from .udpcarrier import UdpServerProtocol, datagram_socket, fec_params
+
+        protocol = UdpServerProtocol(
+            [(t.token, t.name) for t in self.tokens],
+            mtu=mtu, fec=fec_params(fec), window=window,
+            on_channel=on_channel, max_sessions=max_sessions,
+        )
+        sock = datagram_socket(host, port)
+        sock.setblocking(False)
+        protocol.attach_socket(sock)
+        try:
+            return loop.create_datagram_endpoint(lambda: protocol, sock=sock)
+        except Exception:
+            sock.close()
+            raise
 
     async def _serve(self, conn: RawConn, on_channel) -> None:
         try:
@@ -931,13 +1067,19 @@ async def _server_plain(conn: RawConn, carrier: ServerCarrier, on_channel) -> No
     except (asyncio.IncompleteReadError, asyncio.TimeoutError):
         conn.close()
         return
-    if check_client_header(header, carrier.token, carrier.replay) is None:
+    if len(carrier.token_values) > 1:
+        match = check_client_header_any(header, carrier.token_values, carrier.replay)
+    else:
+        stamp = check_client_header(header, carrier.token, carrier.replay)
+        match = (stamp, carrier.token) if stamp is not None else None
+    if match is None:
         conn.close()
         return
-    ts = struct.unpack_from(">Q", header, 1)[0]
-    conn.write(server_header(carrier.token, ts))
+    ts, token_value = match
+    conn.write(server_header(token_value, ts))
     await conn.drain()
     channel = ByteFrameChannel(conn, peer=conn.peer, name="plain")
+    channel.token_value = token_value
     await on_channel(channel)
 
 
@@ -997,12 +1139,14 @@ async def _server_tls_like(conn: RawConn, carrier: ServerCarrier, on_channel) ->
         except (asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError):
             conn.close()
             return
-        ts = check_client_header(auth, carrier.token) if len(auth) >= 25 else None
-        if ts is None:
+        match = _match_any(auth, carrier)
+        if match is None:
             conn.close()   # spoke WebSocket but not our protocol: say nothing
             return
-        channel.write_frame(server_header(carrier.token, ts))
+        ts, token_value = match
+        channel.write_frame(server_header(token_value, ts))
         await channel.drain()
+        channel.token_value = token_value
         await on_channel(channel)
         return
 
@@ -1012,17 +1156,72 @@ async def _server_tls_like(conn: RawConn, carrier: ServerCarrier, on_channel) ->
     except (asyncio.TimeoutError, ConnectionError, OSError):
         conn.close()
         return
-    ts = check_client_header(head[:25], carrier.token) if len(head) >= 25 else None
-    if ts is None:
+    match = _match_any(head[:25], carrier)
+    if match is None:
         # Valid TLS, wrong (or missing) credentials: show the decoy website
         # over this very TLS session, exactly like a normal web server.
         await serve_decoy(tls, carrier, initial=head)
         return
+    ts, token_value = match
     if len(head) > 25:
         tls.pushback(head[25:])
-    tls.write(server_header(carrier.token, ts))
+    tls.write(server_header(token_value, ts))
     await tls.drain()
-    await on_channel(ByteFrameChannel(tls, peer=conn.peer, name="tls"))
+    channel = ByteFrameChannel(tls, peer=conn.peer, name="tls")
+    channel.token_value = token_value
+    await on_channel(channel)
+
+
+def _match_any(header: bytes, carrier: ServerCarrier):
+    """``(ts, token)`` for whichever configured token signed *header*."""
+    if len(header) < 25:
+        return None
+    if len(carrier.token_values) > 1:
+        return check_client_header_any(header, carrier.token_values, carrier.replay)
+    stamp = check_client_header(header, carrier.token, carrier.replay)
+    return (stamp, carrier.token) if stamp is not None else None
+
+
+def create_tcp_server(loop, factory, host: str, port: int, *, backlog: int = 512,
+                      dual_stack: bool = True):
+    """``loop.create_server`` with a pre-made socket.
+
+    Needed for two things the high level API cannot do: ``IPV6_V6ONLY = 0`` so
+    one ``::`` listener answers IPv4 *and* IPv6 clients, and ``SO_REUSEPORT``
+    where the kernel supports it (several workers on one port).
+    """
+    import socket as _socket
+
+    from .util import set_dual_stack
+
+    infos = _socket.getaddrinfo(host, port, _socket.AF_UNSPEC, _socket.SOCK_STREAM,
+                                0, _socket.AI_PASSIVE)
+    last: Exception | None = None
+    for family, socktype, proto, _canon, sockaddr in infos:
+        sock = _socket.socket(family, socktype, proto)
+        try:
+            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            reuseport = getattr(_socket, "SO_REUSEPORT", None)
+            if reuseport is not None:
+                try:
+                    sock.setsockopt(_socket.SOL_SOCKET, reuseport, 1)
+                except OSError:
+                    pass
+            set_dual_stack(sock, dual_stack)
+            sock.bind(sockaddr)
+            sock.listen(backlog)
+            sock.setblocking(False)
+        except OSError as exc:
+            last = exc
+            sock.close()
+            continue
+        try:
+            return loop.create_server(factory, sock=sock, backlog=backlog,
+                                      start_serving=True)
+        except Exception as exc:                      # pragma: no cover
+            last = exc
+            sock.close()
+    raise last or OSError(f"cannot listen on {host}:{port}")
 
 
 def _ws_upgrade_ok(head: bytes, carrier: ServerCarrier) -> bool:
