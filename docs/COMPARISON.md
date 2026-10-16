@@ -51,7 +51,7 @@ These are not small things — they are the reason the project exists:
   every dependency vendored under `go/third_party/` *(verified:
   `tools/build-go.sh` builds with `GOPROXY=off`)*. On a machine where pip or the
   Go proxy is blocked, this is the difference between "works" and "no install".
-* **Verified claims instead of vibes.** 161 tests pass in this checkout
+* **Verified claims instead of vibes.** 171 tests pass in this checkout
   *(verified here: `python3 -m pytest -q` → 153 passed in 138 s on Python 3.11;
   the README said 126 — corrected while writing this page)*, plus Go tests and a
   live carrier matrix.
