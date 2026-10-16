@@ -87,6 +87,7 @@ fi
 %{_prefix}/share/doc/simurgh/CONFIGURATION.md
 %{_prefix}/share/doc/simurgh/CONFIGURATION.fa.md
 %{_prefix}/share/doc/simurgh/PACKAGING.md
+%{_prefix}/share/doc/simurgh/PACKAGING.fa.md
 %{_bindir}/simurgh
 %if %{defined goarch}
 %{_bindir}/simurgh-go

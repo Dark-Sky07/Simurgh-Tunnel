@@ -225,11 +225,48 @@ def test_the_rpm_spec_matches_the_staging_tree():
                  "%{_prefix}/lib/systemd/system/simurgh-relay.service",
                  "%{_prefix}/lib/systemd/system/simurgh-exit.service"):
         assert path in spec
+    # the builder stages every one of these, so the spec has to package them
     for name in ("README.md", "README.fa.md", "CONFIGURATION.md", "CONFIGURATION.fa.md",
                  "PACKAGING.md", "PACKAGING.fa.md"):
-        if name in spec:
-            assert name in builder, f"{name} is in the spec but never staged"
+        assert name in builder, f"{name} is not staged at all"
+        assert name in spec, f"{name} is staged but not in the RPM file list"
     assert "noarch" in spec
+
+
+def test_every_staged_file_is_in_the_rpm_file_list(built):
+    """`rpmbuild` refuses a buildroot file nobody packaged ("Installed (but
+    unpackaged) file(s) found"), which is a CI-only failure no one wants twice:
+    the tarball *is* the staging tree, so check its contents against %files."""
+    spec = (REPO / "packaging/rpm/simurgh.spec").read_text()
+    section = spec.split("%files", 1)[1].split("%changelog", 1)[0]
+    packaged: list[str] = []
+    for line in section.splitlines():
+        line = line.strip()
+        if not line or line.startswith("%if") or line.startswith("%endif"):
+            continue
+        line = line.replace("%dir ", "").replace("%license ", "").replace("%doc ", "")
+        if not line.startswith(("/", "%")):
+            continue
+        packaged.append(line.replace("%{_prefix}", "/usr")
+                            .replace("%{_bindir}", "/usr/bin")
+                            .replace("%{_sysconfdir}", "/etc").lstrip("/"))
+    assert packaged, "the %files section is empty"
+
+    with tarfile.open(built / f"simurgh-{VERSION}-noarch.tar.gz") as tar:
+        names = [name.lstrip("./").rstrip("/") for name in tar.getnames()
+                 if name not in ("./", "", "/")]
+
+    unpackaged = []
+    for name in names:
+        if not name or name.endswith("simurgh-go"):
+            continue  # the engine binary only exists in the engine build
+        entries = [entry.rstrip("/") for entry in packaged]
+        if any(name == entry or name.startswith(entry + "/") for entry in entries):
+            continue
+        if any(entry.startswith(name + "/") for entry in entries):
+            continue  # a parent directory of something packaged
+        unpackaged.append(name)
+    assert not unpackaged, f"staged but not in %files: {unpackaged}"
 
 
 @pytest.mark.skipif(not HAVE_RPM, reason="rpmbuild is not installed")
