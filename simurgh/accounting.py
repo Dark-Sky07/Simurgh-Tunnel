@@ -53,7 +53,11 @@ class TrafficAccount:
         self.started = time.time()
         self._dirty = False
         self._task: asyncio.Task | None = None
-        self._lock = asyncio.Lock()
+        # NB: no asyncio primitives are created here.  On Python 3.9 an
+        # ``asyncio.Lock()``/``Event()`` built outside a running loop grabs the
+        # thread's loop, and that raises once some earlier ``asyncio.run`` has
+        # closed it -- which is exactly what happens when a test (or the panel)
+        # builds an account before the node's loop exists.
         if self.path is not None:
             self.load()
 

@@ -324,3 +324,22 @@ async def test_metrics_show_live_limit_numbers(certs, tmp_path, home):
         await relay.stop()
         await node.stop()
         web.close()
+
+
+def test_accounting_needs_no_running_loop(monkeypatch):
+    """Python 3.9 binds an ``asyncio.Lock()``/``Event()`` to the thread's loop at
+    construction, and that raises once an earlier ``asyncio.run`` has closed it.
+
+    A ``TrafficAccount`` is built from sync code too (the panel, a status
+    reader), so it must not create any asyncio primitive when it is built.
+    """
+    def no_loop(*_args, **_kwargs):
+        raise RuntimeError("There is no current event loop in thread 'MainThread'.")
+
+    monkeypatch.setattr(asyncio, "get_event_loop", no_loop)
+    account = TrafficAccount(None)
+    account.add("mapping", in_bytes=10, out_bytes=5)
+    quota = quota_from("1k", "month", "block", "mapping")
+    assert account.usage("mapping", "total") == 15
+    assert quota.state(account, "mapping")["used"] == 15
+    assert account.snapshot()["totals"]["total"] == 15

@@ -188,7 +188,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **189 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, and the cross-engine tests below) |
+| `python -m pytest -q` | **190 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, and the cross-engine tests below) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -228,7 +228,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 189 tests (Python 3.11), no test-only dependencies
+python -m pytest -q                 # 190 tests (Python 3.11), no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
@@ -241,7 +241,7 @@ cd go && go test -race ./...        # the same under the race detector
 
 Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
 which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
-existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.4.0`.
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.4.1`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,

@@ -18,7 +18,7 @@ import (
 	"github.com/Dark-Sky07/Simurgh-Tunnel/go/internal/node"
 )
 
-const version = "2.4.0-go"
+const version = "2.4.1-go"
 
 func main() {
 	if len(os.Args) < 2 {
