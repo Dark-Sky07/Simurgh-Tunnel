@@ -1,0 +1,15 @@
+#!/bin/sh
+# Simurgh Tunnel postrm: `remove` keeps /etc/simurgh (Debian policy: config
+# files outlive the package), `purge` takes it away too.
+set -e
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+if [ "$1" = "purge" ]; then
+    rm -rf /etc/simurgh
+    rm -f /etc/sysctl.d/99-simurgh.conf
+fi
+
+exit 0

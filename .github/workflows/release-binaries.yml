@@ -43,3 +43,40 @@ jobs:
           gh release upload "$RELEASE_TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
+
+  packages:
+    name: Build and attach packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache: false
+
+      - name: Build the compiled engine for this runner
+        run: bash tools/build-go.sh --release dist
+
+      - name: rpmbuild for the .rpm (dpkg-deb ships with the runner)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq rpm
+
+      - name: Build every package (pure Python and with the engine)
+        run: |
+          bash packaging/build-packages.sh --out dist
+          bash packaging/build-packages.sh --out dist \
+               --go-binary dist/simurgh-go-linux-amd64
+
+      - name: Attach the packages to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            dist/*.deb dist/*.rpm dist/*.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Say what went out
+        run: ls -l dist

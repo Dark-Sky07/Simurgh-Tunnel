@@ -1,0 +1,30 @@
+#!/bin/sh
+# Simurgh Tunnel postinst: the package never writes /etc/simurgh itself, it
+# only makes sure the directory exists and starts whichever role this machine
+# is already configured for.
+set -e
+
+mkdir -p /etc/simurgh
+chmod 700 /etc/simurgh
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    for role in relay exit; do
+        if [ -f "/etc/simurgh/$role.toml" ]; then
+            systemctl enable --now "simurgh-$role.service" >/dev/null 2>&1 || true
+        fi
+    done
+fi
+
+cat <<'BANNER'
+Simurgh Tunnel is installed.
+
+  configure this machine:  simurgh init --role relay   (or --role exit)
+  or join an existing one: simurgh join '<setup link>'
+  then:                    systemctl enable --now simurgh-relay   (or simurgh-exit)
+  the web panel:           simurgh web     (default port 8787)
+
+The package never edits /etc/simurgh; every command above is safe to re-run.
+BANNER
+
+exit 0

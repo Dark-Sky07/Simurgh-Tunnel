@@ -177,13 +177,38 @@ limits; both are done now.
 | **Alerts (Telegram + webhook)** | Both roles emit `started`/`stopped`/`connected`/`disconnected`/`quota`/`throttle`/`error`, both watch the certificates they actually serve and warn **14 days** before expiry (once a day per file), and the panel sends `login` when it locks an address out. Telegram (`telegram_token` + `telegram_chat`, `telegram_api` overridable for a local Bot API server) and a generic JSON webhook, on a queue drained by a worker thread with a 20-second per-event cooldown; the queue is flushed on shutdown, so a "stopped" message is never lost. `simurgh alert status\|test\|events` shows and edits it. | `tests/test_alerts.py`: 36 tests — the exact URL and JSON body a real alert would send (a recording `urlopen`), the event filter, the cooldown, queue drain on stop, real X.509 certificates for the expiry maths (10-day, 200-day, broken, missing), `_check_certs()` on both nodes fire once a day per file, a live relay + exit + target pair whose alerts really arrive at a local HTTP endpoint, and every `simurgh alert` subcommand |
 | **Panel hardening** | Five wrong passwords from one address lock it out for 300 s (`429`) and fire the `login` alert; the counter is per address and is cleared by a success or by the window ending. `/metrics` exposes `simurgh_panel_lockouts_total`, `simurgh_panel_failed_logins` and the alerter's `simurgh_alerts_*` series. Tokens are masked wherever they are printed. | `tests/test_panel.py` (23 tests: the lockout, that a correct password does not help while blocked, that `/healthz` stays open for monitoring, that the window expires, that `/api/join` is guarded too, and the new metric series) and `tests/test_alerts.py` (`simurgh alert status` never prints the token) |
 | **Certificate automation** | `simurgh cert issue` drives whichever ACME client is installed (`acme.sh` first — one shell script, installs where pip and snap are filtered — then `certbot`), supports the webroot and standalone flows, staging and a per-listener target, finds the files the client produced, wires them into the right config with `cert_auto` off, and installs the renewal hook (`acme.sh --install-cert --reloadcmd …`, or certbot's `--deploy-hook`). `simurgh cert` lists every certificate in use with days left and fingerprint; `simurgh cert renew` runs the client's own cron. | `tests/test_acme.py`: 24 tests against stand-in clients that are really executed — client detection (including an unreadable `/root/.acme.sh`), the exact argv for webroot/standalone/staging, a failing client reported as a message and not a traceback, a client that claims success without writing files, wiring into the exit, the relay's `[tunnel]` and one `[[listen]]`, a listener that keeps its own certificate, `renew`, and every CLI path (status, issue, renew, `--no-write`, no client installed, no domain) |
+| **Packaging (.deb / .rpm / tarball / container)** | `packaging/build-packages.sh` stages the tree and builds a `.deb` (`dpkg-deb`), an `.rpm` (`rpmbuild`, same layout through the spec's `%install`) and a portable tarball that unpacks at `/` — the compiled engine included when `--go-binary` is passed (`all`/`noarch` variants without it). The launcher carries its library path (`$SIMURGH_LIB` overrides), the units are the same two roles, the package creates `/etc/simurgh` with mode `0700` and never writes it (`remove` keeps it, `purge` drops it). `Dockerfile` is a two-stage build that compiles the engine with `GOPROXY=off`, `docker-compose.yml` runs the pair, and CI builds every artefact plus the image on each push. | `tests/test_packaging.py`: 15 tests — a real build, the tarball's contents and modes, the packaged launcher running the CLI, the build-time libdir substitution, `dpkg-deb -I/-c` (control fields, the three maintainer scripts, no `DEBIAN/` in the payload, `amd64` when the engine is inside), the RPM spec against the staging tree, the Dockerfile's `COPY` paths and offline engine build, the compose port map, and the compose recipe really run through `simurgh install` |
 | **The Go engine, supervised** | With `engine = "go"` the compiled engine runs as a child process instead of replacing the Python one, so the panel, `/metrics` and the alerts survive next to it (the engine opens no HTTP port of its own). `state.json` is followed for up/down and quota events, and a crashed engine is restarted with a growing backoff (0.5 s → 30 s) with the exit code in the alert. `simurgh relay --exec` keeps the old hand-off behaviour for the tiny VPS. | `tests/test_supervise.py`: 12 tests against a stand-in engine — start/announce, log redirection, up→down→up, quota fired once per period, crash → restart with a new pid and an `error` alert, clean SIGTERM shutdown, the panel facade, deliberate restarts not counting as crashes. Plus a live smoke run: real Go engine, real panel (25 metric series), real traffic through the tunnel, SIGKILL → restart → traffic again |
+
+### The panel (in progress)
+
+The operator surface is complete in the CLI, but the web panel is the one place
+Simurgh is still visibly behind Kariz: theirs is a real single-page app with a
+live map, per-server pages, charts, a wizard that rolls back and a one-time
+login link. **This is the next release's work**, and it is being built to the
+same standard the rest of the repo is held to: no CDN, no build step for the
+user, one self-contained page served by `simurgh/panel.py`, bilingual (EN/FA,
+RTL) like the README, and it must work with **both** engines (the Python panel
+already reads `state.json`, so a Go engine reports into it).
+
+| Kariz has | Simurgh will have | State |
+|---|---|---|
+| live map of servers and tunnels with traffic | a topology view: Iranian relay ⇄ foreign exit(s), animated with the real throughput, per-mapping spurs, quota rings — the same data `/metrics` already exposes | planned |
+| per-server pages, charts, logs in the browser | dashboard with rolling throughput charts (from the `traffic.json` ledger, which survives restarts — data Kariz keeps in memory), log tail, and a per-mapping card for limits/quota/state | planned |
+| wizard that checks both servers and rolls back | a mapping/role wizard that validates the config, applies it, and restores the previous file if the first traffic probe fails | planned |
+| one-time login link | single-use, expiring login tokens next to the current password lockout (`simurgh web --link`) | planned |
+| light/dark themes, phone layout | two themes named after the project (night/dawn), responsive down to a phone, and no JavaScript framework to fetch | planned |
+| speed test in the panel | the existing `simurgh speedtest` results (throughput, latency under load, UDP loss) rendered as a page, per run | planned |
+
+What stays Simurgh: everything is still one Python process, the panel is
+read-mostly and never in the data path, and a server with no panel
+(`simurgh relay --exec`) keeps working exactly as it does today.
 
 ### What is still open
 
-P1 left: packaging (Docker/DEB/RPM).  Tuning profiles (`simurgh tune
-gaming\|balanced\|speed`) and the socket-option keys behind them are done.  The
-operator surface is now complete
+**P1 is complete.**  Packaging (Docker/DEB/RPM/tarball), the tuning profiles
+(`simurgh tune gaming\|balanced\|speed`) and the socket-option keys behind them
+have all landed, and the operator surface is complete
 on the Python side and works *with* the Go engine (supervised child: panel,
 `/metrics`, alerts, restarts).
 
