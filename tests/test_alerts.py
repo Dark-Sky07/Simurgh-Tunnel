@@ -177,6 +177,26 @@ def test_cooldown_collapses_a_storm_into_one_message(recorder):
     assert [c["body"]["event"] for c in recorder.calls] == ["disconnected", "quota"]
 
 
+def test_the_first_alert_is_not_swallowed_on_a_freshly_booted_box(recorder,
+                                                               monkeypatch):
+    """`time.monotonic()` is uptime: 0 must not look like "just sent".
+
+    CI runners (and a server that has just booted) have an uptime smaller than
+    the cooldown, so every first alert of every event used to be dropped.
+    """
+    monkeypatch.setattr(alerts_mod.time, "monotonic", lambda: 3.0)
+    alerts = Alerts(webhook="https://example.invalid/hook", cooldown=20.0)
+    alerts.notify("disconnected", "tunnel dropped")
+    alerts.notify("connected", "tunnel is up")
+    assert [c["body"]["event"] for c in recorder.calls] == ["disconnected",
+                                                           "connected"]
+
+    # ... while a second one inside the window is still collapsed
+    alerts.notify("disconnected", "again")
+    assert [c["body"]["event"] for c in recorder.calls] == ["disconnected",
+                                                           "connected"]
+
+
 def test_no_cooldown_sends_everything(recorder):
     alerts = Alerts(webhook="https://example.invalid/hook", cooldown=0.0)
     for _ in range(3):

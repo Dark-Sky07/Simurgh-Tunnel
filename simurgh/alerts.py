@@ -122,7 +122,12 @@ class Alerts:
         if not self.enabled or not self.wants(event):
             return
         now = time.monotonic()
-        if self.cooldown and now - self._last.get(event, 0) < self.cooldown:
+        # `time.monotonic()` is the machine's uptime, not an epoch: a missing
+        # entry must mean "never sent", not "sent at 0".  With `0` as the
+        # default, every first alert was suppressed on a box whose uptime is
+        # shorter than the cooldown -- a fresh server, a container, a CI runner.
+        last = self._last.get(event)
+        if self.cooldown and last is not None and now - last < self.cooldown:
             return
         self._last[event] = now
         text = message if not self.name else f"[{self.name}] {message}"
