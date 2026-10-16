@@ -18,7 +18,9 @@ REPO_SLUG="${SIMURGH_REPO_SLUG:-Dark-Sky07/Simurgh-Tunnel}"
 FROM_SOURCE=0
 RELEASE_DIR=""
 
-say()  { printf '  %s\n' "$*"; }
+# progress goes to stderr: this script is called in $(...) substitutions whose
+# stdout must contain nothing but the path of the toolchain/binary
+say()  { printf '  %s\n' "$*" >&2; }
 die()  { printf 'build-go: %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
@@ -71,27 +73,61 @@ find_go() {
   return 1
 }
 
-install_toolchain() {
-  # 1. the distribution package (Debian/Ubuntu: golang-go, RHEL: golang)
-  if command -v apt-get >/dev/null 2>&1; then
-    say "installing golang-go (apt)…"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends golang-go >/dev/null 2>&1 || true
-  elif command -v dnf >/dev/null 2>&1; then
-    say "installing golang (dnf)…"
-    dnf install -y golang >/dev/null 2>&1 || true
-  elif command -v yum >/dev/null 2>&1; then
-    say "installing golang (yum)…"
-    yum install -y golang >/dev/null 2>&1 || true
-  fi
-  find_go && return 0
+# the engine cannot be built with just any Go: an Ubuntu 22.04 `apt install
+# golang-go` gives Go 1.18 and the engine needs what go/go.mod asks for, so the
+# version of every candidate toolchain is checked.
+required_go() {
+  sed -n 's/^go[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' "$GO_DIR/go.mod" 2>/dev/null | head -1
+}
 
-  # 2. the official tarball (needs a working outbound HTTPS)
+go_version_of() {  # 1.27.2 for "go version go1.27.2 linux/amd64"
+  "$1" version 2>/dev/null | sed -n 's/.*go\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1
+}
+
+version_at_least() {  # version_at_least HAVE WANT (e.g. 1.18 1.27)
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  awk -v have="$1" -v want="$2" 'BEGIN {
+        n = split(have, h, "."); m = split(want, w, ".")
+        if (h[1] + 0 > w[1] + 0) exit 0
+        if (h[1] + 0 < w[1] + 0) exit 1
+        exit((h[2] + 0 >= w[2] + 0) ? 0 : 1)
+      }'
+}
+
+go_is_new_enough() {  # go_is_new_enough BINARY [REQUIRED]
+  local want="${2:-$REQ_GO}"
+  [ -n "$want" ] || return 0                 # no go.mod requirement to meet
+  version_at_least "$(go_version_of "$1")" "$want"
+}
+
+install_toolchain() {
+  # 1. the distribution package (Debian/Ubuntu: golang-go, RHEL: golang) --
+  #    only when it is actually new enough for this source
+  local found
+  found="$(find_go || true)"
+  if [ -z "$found" ] || ! go_is_new_enough "$found"; then
+    if command -v apt-get >/dev/null 2>&1; then
+      say "installing golang-go (apt)…"
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends golang-go >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+      say "installing golang (dnf)…"
+      dnf install -y golang >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+      say "installing golang (yum)…"
+      yum install -y golang >/dev/null 2>&1 || true
+    fi
+  fi
+  found="$(find_go || true)"
+  if [ -n "$found" ] && go_is_new_enough "$found"; then echo "$found"; return 0; fi
+
+  # 2. the official tarball (needs a working outbound HTTPS; often blocked
+  #    where Simurgh is used, which is why it is only the second choice)
   local arch url tmp
   arch="$(arch_name)"
   [ -n "$arch" ] || return 1
   url="https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz"
   tmp="$(mktemp -d)"
-  say "downloading the Go toolchain (${GO_VERSION})…"
+  say "downloading the Go toolchain (${GO_VERSION}) from go.dev…"
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$url" -o "$tmp/go.tgz" || { rm -rf "$tmp"; return 1; }
   elif command -v wget >/dev/null 2>&1; then
@@ -102,7 +138,9 @@ install_toolchain() {
   mkdir -p "$HOME/.cache/goroot"
   tar -xzf "$tmp/go.tgz" -C "$HOME/.cache/goroot" --strip-components=1 || { rm -rf "$tmp"; return 1; }
   rm -rf "$tmp"
-  find_go
+  found="$(find_go || true)"
+  [ -n "$found" ] && go_is_new_enough "$found" && { echo "$found"; return 0; }
+  return 1
 }
 
 # ------------------------------------------------------------------ release mode
@@ -123,7 +161,8 @@ if [ -n "$RELEASE_DIR" ]; then
     [ "$os_name$goarch" = "windowsamd64" ] && ext=".exe" || ext=""
     out="$RELEASE_DIR/simurgh-go-${os_name}-${asset_arch}${ext}"
     say "building $out"
-    CGO_ENABLED=0 GOOS="$os_name" GOARCH="$goarch" GOARM=7 GOFLAGS= GOPROXY=off GOTOOLCHAIN=local \
+    # GOFLAGS is cleared on purpose: an inherited -mod=vendor would break the build
+    CGO_ENABLED=0 GOOS="$os_name" GOARCH="$goarch" GOARM=7 GOFLAGS="" GOPROXY=off GOTOOLCHAIN=local \
       "$GO" build -trimpath -ldflags "-s -w" -o "$out" ./cmd/simurgh
   done
   ls -1 "$RELEASE_DIR"
@@ -139,11 +178,25 @@ if [ "$FROM_SOURCE" = "0" ]; then
   say "no prebuilt binary for this platform; building from source"
 fi
 
-GO="$(find_go || true)"
+REQ_GO="$(required_go)"
+GO=""
+GO_CANDIDATE="$(find_go || true)"
+if [ -n "$GO_CANDIDATE" ]; then
+  if go_is_new_enough "$GO_CANDIDATE"; then
+    GO="$GO_CANDIDATE"
+  else
+    say "the Go toolchain on this machine is $(go_version_of "$GO_CANDIDATE") and the engine needs Go ${REQ_GO:-1.27} or newer"
+  fi
+fi
 if [ -z "$GO" ]; then
   GO="$(install_toolchain || true)"
 fi
-[ -n "$GO" ] || die "no Go toolchain available (install golang-go, or run with --engine python)"
+if [ -z "$GO" ]; then
+  if [ -n "$GO_CANDIDATE" ]; then
+    die "this machine only has Go $(go_version_of "$GO_CANDIDATE") and the engine needs Go ${REQ_GO:-1.27}+; install a newer toolchain (https://go.dev/dl/) or keep the portable python engine"
+  fi
+  die "no Go toolchain found; install one (https://go.dev/dl/) or keep the portable python engine"
+fi
 
 say "building with $("$GO" version 2>/dev/null || echo "$GO")"
 mkdir -p "$(dirname "$OUT")"

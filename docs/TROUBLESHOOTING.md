@@ -119,6 +119,38 @@ ss -ltnp | grep -E ':(443|8787)\b'
 systemctl stop simurgh-relay    # then start it again
 ```
 
+## The installer stops at “writing the config…”
+
+An older `install.sh` aborted there with `CONNECTIONS: unbound variable`, and
+when the script was piped into `bash` it also printed
+`BASH_SOURCE[0]: unbound variable`. Update it and run it again — a second run
+refreshes the configuration in place, nothing has to be removed first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
+  | sudo bash /dev/stdin --role exit
+```
+
+A traceback ending in `ModuleNotFoundError: No module named 'tomllib'` is the
+same story on Python 3.9/3.10 (Debian 11, Ubuntu 20.04/22.04): that module only
+exists from Python 3.11 on. Current versions carry their own TOML reader
+(`simurgh/_tomli`), so no PyPI access is needed there.
+
+## “no compiled engine here; the portable python engine will be used”
+
+That is not an error — both engines speak the same protocol and either role may
+run either one. The compiled engine needs **Go 1.27+** (see `go/go.mod`), which
+is newer than what `apt install golang-go` gives on Ubuntu 22.04 (Go 1.18), so
+the installer keeps the Python engine. For the Go engine:
+
+```bash
+sudo bash /opt/simurgh-src/tools/build-go.sh    # downloads Go from go.dev if it can
+sudo simurgh engine go
+```
+
+`tools/build-go.sh` prints the reason when it cannot build (missing toolchain,
+a toolchain that is too old, or no route to `go.dev`).
+
 ## Nothing works and I want a clean start
 
 ```bash

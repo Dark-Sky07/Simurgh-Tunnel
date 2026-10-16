@@ -148,3 +148,47 @@ def test_a_reverse_exit_dials_with_the_anti_dpi_split(tmp_path):
     args.split = 0
     assert cli._join_exit(home, payload, args) == 0
     assert load_exit(home.exit_cfg).listen[0].split == 0
+
+
+def test_link_prefers_the_reverse_relay_even_with_both_configs(tmp_path, capsys):
+    """``--role both`` on one server leaves both configs on disk. In reverse
+    mode the link the *other* side needs is still the exit's one, so `simurgh
+    link` must not fall back to the "import me on the Iranian server" text."""
+    from types import SimpleNamespace
+    from simurgh import cli
+
+    home = cli.Home(tmp_path).ensure()
+    exit_cfg = ExitConfig(token="t0k", name="dual")
+    exit_cfg.listen = [ListenSpec(carrier="tls", port=443, path="/ws")]
+    save_exit(exit_cfg, home.exit_cfg)
+    relay_cfg = RelayConfig(token="t0k", name="dual")
+    relay_cfg.dial = "exit"
+    save_relay(relay_cfg, home.relay_cfg)
+
+    assert cli.cmd_link(SimpleNamespace(home=str(tmp_path), host="127.0.0.1",
+                                        panel_port=0, show=False)) == 0
+    out = capsys.readouterr().out
+    assert "exit setup link" in out
+    assert "FOREIGN (exit) server" in out
+    assert "Iranian server" not in out
+
+
+def test_link_still_hands_the_relay_link_to_a_direct_exit(tmp_path, capsys):
+    """The opposite case: a direct exit (no reverse relay next to it) keeps
+    printing the link for the Iranian server."""
+    from types import SimpleNamespace
+    from simurgh import cli
+
+    home = cli.Home(tmp_path).ensure()
+    exit_cfg = ExitConfig(token="t0k", name="de-1")
+    exit_cfg.listen = [ListenSpec(carrier="tls", port=443, path="/ws")]
+    save_exit(exit_cfg, home.exit_cfg)
+    relay_cfg = RelayConfig(token="t0k", name="de-1")      # dial = "relay"
+    relay_cfg.dial = "relay"
+    save_relay(relay_cfg, home.relay_cfg)
+
+    assert cli.cmd_link(SimpleNamespace(home=str(tmp_path), host="127.0.0.1",
+                                        panel_port=0, show=False)) == 0
+    out = capsys.readouterr().out
+    assert "relay setup link" in out
+    assert "Iranian server" in out

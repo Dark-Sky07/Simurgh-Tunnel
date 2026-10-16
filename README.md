@@ -23,7 +23,7 @@ customer ──same config, Iran IP──► [Iran relay] ══one disguised tu
 | DPI must not detect the tunnel | A real TLS connection to a real domain: valid certificate, SNI, and a **decoy website** (nginx page) for anything without the token. |
 | Speed and stability | One multiplexed connection (`mux`) serves every user and every port; no re-encryption of user traffic, credit-based flow control instead of buffering. The per-stream window **grows itself** on long paths (bandwidth-delay product), and `connections = 2..16` keeps a pool of tunnels so one TCP flow — or one dropped tunnel — is never the ceiling for everyone. |
 | Easy install | One command per server, one link to move the config across. |
-| Minimal resources | Pure Python 3 + asyncio, no Node/Go/database. Idle memory ≈ 25–40 MB per role. |
+| Minimal resources | Pure Python 3.9+ + asyncio, no Node/Go/database (on 3.9/3.10 the TOML reader is bundled, so installing needs no PyPI access). Idle memory ≈ 25–40 MB per role. |
 | Text menu + web panel | Full-featured **English text menu** (`simurgh menu`) and a **bilingual (EN/FA) web panel** with live graphs. |
 
 ## Two directions
@@ -70,6 +70,26 @@ sudo simurgh restart
 
 Change only the address in their config: from the foreign IP/domain to the
 **Iranian IP**. Ports, credentials, TLS, SNI, everything else stays identical.
+
+### Both roles on one server
+
+`--role both` installs the relay and the exit together; the relay dials the
+local exit on `127.0.0.1:443` — the first of `--listen`, so with
+`--role both --tunnel-port 8443` the exit is made to listen on `8443` as well
+(one shared token is generated for the two services):
+
+```bash
+sudo bash install.sh --role both --name my-server
+sudo bash install.sh --role both --tunnel-port 8443    # tunnel on 8443
+```
+
+In reverse (`--dial exit`) the installer points the local exit back at the
+relay by itself; if the panel is not up yet it prints the two commands that do.
+
+
+The installer is safe to run again: it refreshes the configuration and can be
+re-run after an upgrade or a network change (`--uninstall --purge` removes
+everything again).
 
 ## Everyday commands
 
@@ -230,4 +250,6 @@ so `GOPROXY=off` builds keep working on a machine that cannot reach
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The bundled TOML reader (`simurgh/_tomli/`, a copy
+of [tomli](https://github.com/hukkin/tomli) 2.5.0 used on Python 3.9/3.10) is
+MIT as well; its licence ships next to it.

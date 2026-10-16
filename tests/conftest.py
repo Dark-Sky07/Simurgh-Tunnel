@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import socket
 import sys
 from pathlib import Path
@@ -13,6 +14,20 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Python 3.9 and 3.10 (Debian 11/12, Ubuntu 20.04/22.04) have no `tomllib`, and
+# that is what the installer hit on a stock Ubuntu 22.04. `SIMURGH_TEST_NO_TOMLLIB=1`
+# hides it so the whole suite runs the way it does there — the bundled
+# `simurgh._tomli` has to take over. It must be installed before anything
+# imports `simurgh.config`.
+if os.environ.get("SIMURGH_TEST_NO_TOMLLIB") == "1":  # pragma: no cover
+    class _NoTomllib:
+        def find_spec(self, name, path=None, target=None):
+            if name == "tomllib":
+                raise ModuleNotFoundError("No module named 'tomllib' (hidden by the test suite)")
+            return None
+
+    sys.meta_path.insert(0, _NoTomllib())
 
 from simurgh.certs import ensure_certificate  # noqa: E402
 from simurgh.util import Home  # noqa: E402

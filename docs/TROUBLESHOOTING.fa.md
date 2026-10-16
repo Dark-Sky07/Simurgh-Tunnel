@@ -114,6 +114,38 @@ ss -ltnp | grep -E ':(443|8787)\b'
 systemctl stop simurgh-relay    # و دوباره start
 ```
 
+## نصاب در «writing the config…» می‌ماند
+
+نسخه‌های قدیمی `install.sh` همان‌جا با `CONNECTIONS: unbound variable` می‌مردند و
+در حالت پایپ (`curl … | bash`) خطای `BASH_SOURCE[0]: unbound variable` هم می‌داد.
+اسکریپت را به‌روز کنید و دوباره اجرا کنید — اجرای دوم کانفیگ را درجای خود تازه
+می‌کند و لازم نیست چیزی را پاک کنید:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
+  | sudo bash /dev/stdin --role exit
+```
+
+اگر ردیابی خطا به `ModuleNotFoundError: No module named 'tomllib'` می‌رسد، حکایت
+همین است روی پایتون ۳.۹/۳.۱۰ (دبیان ۱۱، اوبونتو ۲۰.۰۴/۲۲.۰۴): آن ماژول فقط از
+پایتون ۳.۱۱ هست. نسخه‌های جدید خوانندهٔ TOML خودشان را همراه دارند
+(`simurgh/_tomli`) و به PyPI نیازی نیست.
+
+## «no compiled engine here; the portable python engine will be used»
+
+این خطا نیست — هر دو موتور یک پروتکل دارند و هر نقش با هرکدام کار می‌کند. موتور
+کامپایل‌شده به **Go 1.27 یا بالاتر** نیاز دارد (در `go/go.mod`)، و این از
+`apt install golang-go` روی اوبونتو ۲۲.۰۴ (که Go 1.18 می‌دهد) جدیدتر است؛ پس نصاب
+روی موتور پایتون می‌ماند. برای گرفتن موتور Go:
+
+```bash
+sudo bash /opt/simurgh-src/tools/build-go.sh    # اگر بتواند، Go را از go.dev می‌گیرد
+sudo simurgh engine go
+```
+
+`tools/build-go.sh` وقتی نتواند بسازد دلیلش را چاپ می‌کند (نبود ابزار، ابزارِ
+قدیمی‌تر از حد نیاز، یا بسته بودن مسیر `go.dev`).
+
 ## هیچ‌چیز کار نمی‌کند و می‌خواهم از صفر شروع کنم
 
 ```bash

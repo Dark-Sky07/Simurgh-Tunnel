@@ -271,10 +271,16 @@ def _init_relay(home: Home, args) -> int:
                           dial="exit", tunnel=tunnel_cfg)
         cfg.connections = max(0, int(getattr(args, "connections", 0) or 0)) or 1
     else:
-        exit_host = args.exit_host or _ask("foreign server address (IP or domain)")
+        both = bool(getattr(args, "both", False))
+        # `--both` means the exit runs on this machine too, so its address needs
+        # no question: it is the loopback address (the tunnel port stays the
+        # first of --listen / the default 443)
+        exit_host = args.exit_host or ("127.0.0.1" if both else
+                                       _ask("foreign server address (IP or domain)"))
         if not exit_host:
             return _fail("foreign server address is required: --exit-host 203.0.113.9")
-        exit_port = args.exit_port or int(_ask("tunnel port on the foreign server", "443"))
+        exit_port = args.exit_port or (443 if both else
+                                       int(_ask("tunnel port on the foreign server", "443")))
         domain = args.domain or None
         if carrier in ("tls", "wss") and not domain and _interactive():
             if _ask_yes("do you have a domain name for the SNI?", False):
@@ -332,6 +338,55 @@ def _parse_mapping(spec: str, udp: bool = False) -> Mapping:
                    target_host=host, udp=udp)
 
 
+def _relay_dials_loopback(cfg: RelayConfig) -> bool:
+    """True when every exit endpoint of this relay is on this very machine."""
+    hosts = {cfg.exit.address} | {item.address for item in cfg.pool}
+    hosts = {host for host in hosts if host}
+    return bool(hosts) and hosts <= {"127.0.0.1", "localhost", "::1"}
+
+
+def _finalize_single_box(home: Home) -> None:
+    """Both roles on one machine (`--role both`): two things differ from the
+    two-server setup.
+
+    * the exit's certificate is self-signed and the setup link -- which normally
+      carries its fingerprint to the relay -- does not exist here, so the relay
+      has to pin it directly (otherwise every handshake fails);
+    * the exit listens on the tunnel port *and* on this same machine, so its
+      pushed port list must not be mirrored onto the relay: those ports belong
+      to the tunnel itself.  User ports are added with `simurgh mapping add`,
+      which forwards to a service on this box.
+    """
+    if not (home.exit_cfg.exists() and home.relay_cfg.exists()):
+        return
+    try:
+        exit_cfg = load_exit(home.exit_cfg)
+        relay_cfg = load_relay(home.relay_cfg)
+    except (ConfigError, OSError):
+        return
+    if relay_cfg.reverse or not _relay_dials_loopback(relay_cfg):
+        return
+    changed = []
+    if relay_cfg.accept_push:
+        relay_cfg.accept_push = False
+        changed.append("the exit's port list is not mirrored")
+    if exit_cfg.cert_file and Path(exit_cfg.cert_file).exists():
+        try:
+            from .certs import fingerprint_of
+
+            pin = fingerprint_of(exit_cfg.cert_file)
+        except Exception as exc:  # pragma: no cover - depends on the install
+            _warn(f"could not read the exit certificate: {exc}")
+            pin = ""
+        if pin and relay_cfg.exit.fingerprint != pin:
+            relay_cfg.exit.fingerprint = pin
+            changed.append("the exit certificate is pinned")
+    if changed:
+        save_relay(relay_cfg, home.relay_cfg)
+        _ok(f"both roles on one server: {', '.join(changed)} "
+            "(add user ports with: simurgh mapping add 443 2087)")
+
+
 def cmd_install(args) -> int:
     """Create the config, install systemd units, start everything."""
     from . import systemd
@@ -351,15 +406,14 @@ def cmd_install(args) -> int:
             if code != 0 and not cfg_path.exists():
                 _err(f"could not build the {wanted} config; installation stopped.")
                 return 2
+        if args.both:
+            _finalize_single_box(home)
     report = systemd.install_services(
         home, roles=roles, enable=not args.no_enable, start=not args.no_start,
-        user=args.user if args.user else None,
+        user=args.user if args.user else None, write=not args.no_units,
     )
-    if not report.get("systemd"):
-        _warn("systemd is not available; the service was not installed. Start it manually:")
-        for wanted in roles:
-            print(f"   simurgh {wanted}" + ("" if wanted != "relay" else ""))
-        return 0
+    for path, why in (report.get("errors") or {}).items():
+        _warn(f"the systemd units could not be written to {path}: {why}")
     for unit in report.get("units", []):
         _ok(f"created {unit}")
     for svc, result in report.get("actions", {}).items():
@@ -368,6 +422,14 @@ def cmd_install(args) -> int:
     _info(f"web panel: http://{_public_ip()}:{_panel_port_of(home, roles)}")
     _info("text menu: simurgh menu")
     _info("status: simurgh status")
+    if not report.get("systemd"):
+        _warn("systemd is not available here: no service was installed, start it by hand:")
+    elif not report.get("write", True):
+        _warn("no systemd unit was written (--no-units), start it by hand:")
+    else:
+        return 0
+    for wanted in roles:
+        print(f"   simurgh {wanted}")
     return 0
 
 
@@ -919,10 +981,18 @@ def cmd_link(args) -> int:
     home = _home_or_fail(args)
     from .links import build_join_link
 
+    # A reverse relay waits for the exit, so the link the *other* server needs
+    # is the exit's one. That holds whether or not this server also runs an
+    # exit itself (`--role both`), which is why exit.toml is not decisive here:
+    # with both configs present, the "import me on the Iranian server" link
+    # would be useless.
     reverse_cfg = None
-    if home.relay_cfg.exists() and not home.exit_cfg.exists():
-        relay_cfg = load_relay(home.relay_cfg)
-        if relay_cfg.reverse:
+    if home.relay_cfg.exists():
+        try:
+            relay_cfg = load_relay(home.relay_cfg)
+        except (ConfigError, OSError):
+            relay_cfg = None
+        if relay_cfg is not None and relay_cfg.reverse:
             reverse_cfg = relay_cfg
     cfg = reverse_cfg or _load_exit_or_fail(home)
     host = args.host or _public_ip()
@@ -1239,7 +1309,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--engine", choices=ENGINES, default="",
                    help="data plane: python (default) or go (see tools/build-go.sh)")
     p.add_argument("--user", default="")
-    p.add_argument("--config-only", action="store_true")
+    # keep the long-standing behaviour, but say what it does: this skips the
+    # config and only (re)installs the services
+    p.add_argument("--config-only", action="store_true",
+                   help="keep the existing config and only install the service")
+    p.add_argument("--no-units", action="store_true",
+                   help="write the config but no systemd unit (run it by hand)")
     p.add_argument("--no-enable", action="store_true")
     p.add_argument("--no-start", action="store_true")
     p.add_argument("--force", action="store_true")
