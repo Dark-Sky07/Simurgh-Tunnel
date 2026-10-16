@@ -51,7 +51,7 @@ These are not small things — they are the reason the project exists:
   every dependency vendored under `go/third_party/` *(verified:
   `tools/build-go.sh` builds with `GOPROXY=off`)*. On a machine where pip or the
   Go proxy is blocked, this is the difference between "works" and "no install".
-* **Verified claims instead of vibes.** 153 tests pass in this checkout
+* **Verified claims instead of vibes.** 161 tests pass in this checkout
   *(verified here: `python3 -m pytest -q` → 153 passed in 138 s on Python 3.11;
   the README said 126 — corrected while writing this page)*, plus Go tests and a
   live carrier matrix.
@@ -65,6 +65,9 @@ Effort is a rough estimate for someone who knows this codebase:
 **S** = hours, **M** = a few days, **L** = a week or more.
 
 ### P0 — touches the core job
+
+**Status: all five landed** (see *What has been done* at the end of this file).
+The table stays as the record of what was missing and why.
 
 | Gap | Who has it | Why it matters here | Effort |
 |---|---|---|---|
@@ -135,3 +138,28 @@ Effort is a rough estimate for someone who knows this codebase:
    small) — daily operator pain, hours of work.
 3. **`/metrics` + token API + per-mapping limits** (P1/P0) — turns the panel
    from a display into something a business can bill on.
+
+---
+
+## What has been done since this comparison
+
+Work lands on `arena/a9b6a860-simurgh-tunnel` (PR #5).  Only what a test or a
+measurement proves is called done.
+
+### P0 — complete
+
+| Item | How it works now | Proof |
+|---|---|---|
+| **UDP-native carrier** | `carrier = "udp"`: a reliable, ordered byte stream over datagrams with ChaCha20-Poly1305, selective acks, congestion control and optional XOR-FEC (`fec = "8:2"`). Configurable per listener/endpoint (`mtu`, `fec`, `window`). The advertised window is capped by the socket queue the kernel actually granted, sends are reported (`BlockingIOError`) instead of swallowed, loss is detected from SACK gaps, Karn keeps retransmits out of the RTT estimate, FEC parity is assembled from what was *sent*. | 4 MiB in 0.21 s per direction on loopback (≈20 MB/s per stream, **zero** retransmits, **zero** drops); a lossy middlebox at 0/5/10 % loss recovers at 6:1 and 8:2 FEC; e2e tests parametrised over `udp` |
+| **Port ranges and bulk mapping** | `ports = ["443", "8080-8090", "9000:9100"]` expands into one mapping per port that keeps the block's name, group and limits; the panel shows one row per port | `tests/test_config.py` (ranges, `range=target` forms, lists) |
+| **Upstream SOCKS5 / HTTP dial** | `proxy = "socks5://user:pass@host:port"` (relay-wide, per-exit and per reverse-mode listener) for the outgoing tunnel; `mode = "socks5"` / `"http"` gives the *users* a proxy on the Iranian side | `tests/test_proxyout.py` (a real SOCKS5 and a real HTTP CONNECT server in the test, plus a whole `plain` handshake through the proxy) |
+| **Real multi-exit** | `[[pool]]` now dials **every** endpoint (one tunnel each, extras round robin); streams go to the least-loaded tunnel; a mapping can pin itself with `exit = "kharej-2"`; an active health loop pings every tunnel, records RTT and takes an endpoint out of the candidate list after three misses | `tests/test_pool.py` + `tests/test_e2e.py` |
+| **Per-mapping bandwidth and quota** | `rate_limit = "20M"` or `{rate = "10M", burst = "1M"}` is one shared token bucket per mapping, applied by *pausing the socket* (never dropping); `quota = "200G"` with `quota_action = block|throttle|warn` is enforced from a persistent ledger (`traffic.json`, day/month buckets, survives restarts) | `tests/test_limits.py` (limit is honoured, raising it in the config speeds the next connection up, an exhausted quota turns the next user away, `throttle` keeps them online, the ledger reloads after a restart) |
+
+### What is still open
+
+P1 (metrics/API, `simurgh update`, alerts, packaging, ACME, panel hardening,
+richer speedtest, tune profiles) and P2 (SOCKS5 listener, TUN/TAP, vhost reuse,
+SSH gateway, plugins, multi-server panel, packaging, first-class IPv6, socket
+knobs, Windows/macOS services) — plus the Go counterpart of the UDP carrier,
+which the next iteration of this branch adds.

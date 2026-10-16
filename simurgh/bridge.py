@@ -34,8 +34,14 @@ class Bridge(asyncio.Protocol):
 
     def __init__(self, *, stream=None, opener=None, proxy_header: bytes | None = None,
                  chunk: int = CHUNK, on_open_error=None, on_open=None,
-                 on_close=None, counter=None):
+                 on_close=None, counter=None, limiter=None, on_bytes=None):
         self.stream = stream
+        #: bandwidth bucket shared by every connection of a mapping/token
+        self.limiter = limiter
+        #: callable(direction, nbytes) -- per-mapping traffic accounting
+        self.on_bytes = on_bytes
+        self._limit_timer = None
+        self.blocked = 0
         self.opener = opener
         self.proxy_header = proxy_header
         self.chunk = chunk
@@ -48,6 +54,8 @@ class Bridge(asyncio.Protocol):
         self.out = bytearray()          # stream -> socket (socket congested)
         self.sock_paused = False
         self.closed = False
+        #: the far side sent EOF while bytes were still parked in ``out``
+        self.eof_pending = False
         self._opening = False
         self.peer = ""
 
@@ -118,6 +126,7 @@ class Bridge(asyncio.Protocol):
 
     # --------------------------------------------------------- socket -> tun
     def data_received(self, data: bytes) -> None:
+        self._count("up", len(data))
         if self.stream is None:
             self.buf += data
             if len(self.buf) > MAX_PREOPEN:
@@ -132,11 +141,55 @@ class Bridge(asyncio.Protocol):
             self.buf = bytearray(data)
         self._flush_into_stream()
 
+    def _allowance(self, nbytes: int) -> tuple[int, float]:
+        """-> (bytes the bucket allows now, seconds until the rest may pass)."""
+        if self.limiter is None or not self.limiter.enabled:
+            return nbytes, 0.0
+        allowed, delay = self.limiter.allowance(nbytes)
+        if delay > 0:
+            self._after(delay)
+        return allowed, delay
+
+    def _after(self, delay: float) -> None:
+        """Wake up again when the bucket has refilled."""
+        if self.closed:
+            return
+        old = self._limit_timer
+        if old is not None and not old.cancelled():
+            return
+        try:
+            self._limit_timer = asyncio.get_event_loop().call_later(
+                max(0.001, min(delay, 0.25)), self._limit_wake)
+        except Exception:                                  # pragma: no cover
+            self._limit_timer = None
+
+    def _limit_wake(self) -> None:
+        self._limit_timer = None
+        if self.closed:
+            return
+        self._flush_into_stream()
+        self._flush_out()
+
+    def _count(self, direction: str, nbytes: int) -> None:
+        if self.on_bytes is not None and nbytes:
+            try:
+                self.on_bytes(direction, nbytes)
+            except Exception:                              # pragma: no cover
+                pass
+
     def _flush_into_stream(self) -> None:
         s = self.stream
         if s is None or self.closed:
             return
         while self.buf:
+            allowed, delay = self._allowance(min(len(self.buf), self.chunk))
+            if allowed <= 0:
+                try:
+                    if self.transport is not None:
+                        self.transport.pause_reading()
+                except Exception:
+                    pass
+                return
             n = s.can_send(self.chunk if len(self.buf) > self.chunk else len(self.buf))
             if n <= 0:
                 try:
@@ -145,6 +198,7 @@ class Bridge(asyncio.Protocol):
                 except Exception:
                     pass
                 return
+            n = min(n, allowed)
             if n >= len(self.buf):
                 chunk = bytes(self.buf)     # whole buffer: no memmove needed
                 self.buf.clear()
@@ -152,6 +206,9 @@ class Bridge(asyncio.Protocol):
                 chunk = bytes(memoryview(self.buf)[:n])
                 del self.buf[:n]
             s.write_now(chunk)
+            self._count("up", len(chunk))
+            if delay > 0:
+                return
         try:
             if self.transport is not None:
                 self.transport.resume_reading()
@@ -167,7 +224,16 @@ class Bridge(asyncio.Protocol):
             # peer's flow-control window) and credit them once they are out.
             self.out += data
             return
+        allowed, _delay = self._allowance(len(data))
+        if allowed < len(data):
+            # over the mapping's bandwidth: hold the rest (no credit for it
+            # yet, so the far side stops) and write it as the bucket refills
+            self.out += data[allowed:]
+            data = data[:allowed]
+        if not data:
+            return
         self.transport.write(data)
+        self._count("down", len(data))
         self.stream.grant(len(data))
         self.stream.flush_credit()
 
@@ -176,12 +242,27 @@ class Bridge(asyncio.Protocol):
 
     def resume_writing(self) -> None:
         self.sock_paused = False
-        if self.out and self.transport is not None:
+        self._flush_out()
+
+    def _flush_out(self) -> None:
+        if not self.out or self.transport is None or self.closed:
+            return
+        allowed, _delay = self._allowance(len(self.out))
+        if allowed <= 0:
+            return
+        if allowed >= len(self.out):
             pending = bytes(self.out)
             self.out.clear()
-            self.transport.write(pending)
+        else:
+            pending = bytes(memoryview(self.out)[:allowed])
+            del self.out[:allowed]
+        self.transport.write(pending)
+        self._count("down", len(pending))
+        if self.stream is not None:
             self.stream.grant(len(pending))
             self.stream.flush_credit()
+        if self.eof_pending and not self.out:
+            self._finish_eof()
 
     def eof_received(self) -> bool:
         # the local socket is done sending: tell the peer, keep receiving
@@ -192,6 +273,21 @@ class Bridge(asyncio.Protocol):
     def _stream_eof(self) -> None:
         if self.closed:
             return
+        if self.out:
+            # bytes that belong to the socket are still parked here (the socket
+            # was congested, or the mapping's bandwidth bucket was empty): the
+            # end of the stream must wait for them, they are part of the answer
+            self.eof_pending = True
+            self._flush_out()
+            return
+        self._finish_eof()
+
+    def _finish_eof(self) -> None:
+        if self.closed or not self.eof_pending and self.out:
+            return
+        if self.out:
+            return
+        self.eof_pending = False
         if self.second_half_done():
             self.close_socket()
             return
@@ -210,6 +306,12 @@ class Bridge(asyncio.Protocol):
         if self.counter is not None:
             self.counter.active = max(0, self.counter.active - 1)
         s, self.stream = self.stream, None
+        if self._limit_timer is not None:
+            try:
+                self._limit_timer.cancel()
+            except Exception:                              # pragma: no cover
+                pass
+            self._limit_timer = None
         if s is not None:
             try:
                 s.on_data = None

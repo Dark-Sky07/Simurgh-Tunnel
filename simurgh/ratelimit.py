@@ -30,9 +30,9 @@ class RateLimiter:
 
     def __init__(self, rate: int, burst: int = 0, name: str = ""):
         self.rate = max(0, int(rate))
-        #: a burst of one second by default, but never less than one max frame,
-        #: otherwise a single 64 KiB frame could never be sent at low rates
-        self.burst = max(int(burst or 0), self.rate, 64 * 1024) if self.rate else 0
+        #: one second of burst by default (a rate limit should not punish a
+        #: short idle gap); an explicit burst is honoured as given
+        self.burst = max(int(burst or 0) or self.rate, 1024) if self.rate else 0
         self.name = name
         self._tokens = float(self.burst)
         self._last = time.monotonic()
@@ -72,6 +72,30 @@ class RateLimiter:
         delay = need / self.rate
         self.waited += delay
         return min(delay, MAX_STALL)
+
+    def allowance(self, nbytes: int) -> tuple[int, float]:
+        """-> (bytes that may pass right now, seconds until the rest may).
+
+        This is what a data path wants: the caller writes what fits between
+        the socket and the bucket instead of parking a whole frame and hoping
+        the next refill covers it -- which, for a frame bigger than the burst,
+        would never happen.
+        """
+        if not self.rate or nbytes <= 0:
+            return nbytes, 0.0
+        self._refill()
+        if self._tokens >= nbytes:
+            self._tokens -= nbytes
+            return nbytes, 0.0
+        allowed = int(self._tokens)
+        if allowed < 0:
+            allowed = 0
+        if allowed:
+            self._tokens -= allowed
+        missing = nbytes - allowed
+        delay = min(missing / self.rate, MAX_STALL)
+        self.waited += delay
+        return allowed, delay
 
     def take_now(self, nbytes: int) -> bool:
         """Force-consume (the debt is paid by the next refill)."""

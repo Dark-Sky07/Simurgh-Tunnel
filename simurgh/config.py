@@ -538,6 +538,8 @@ class Mapping:
     #: group name of the rule this mapping came from (a range expands into
     #: one mapping per port, all sharing the group name)
     group: str = ""
+    #: pin this mapping to one exit: the endpoint's ``label`` (or its address)
+    exit: str = ""
     #: limits
     rate_limit: str | int = 0            # bytes/s or "20M"
     quota: str | int = 0
@@ -1015,6 +1017,7 @@ def _mappings_from(item) -> list[Mapping]:
         raise ConfigError(f"mapping fallback must be one of {FALLBACKS} "
                           "or 'site:host:port'")
     group = str(base.get("group", "") or name)
+    pinned_exit = str(base.get("exit", base.get("via", "")) or "")
     out: list[Mapping] = []
     for index, (listen, target) in enumerate(pairs):
         one = Mapping(
@@ -1029,6 +1032,7 @@ def _mappings_from(item) -> list[Mapping]:
             proxy_protocol=proxy_protocol,
             fallback=fallback,
             group=group,
+            exit=pinned_exit,
             sni=(str(base["sni"]) if base.get("sni") else None),
             rate_limit=base.get("rate_limit", 0) or 0,
             quota=base.get("quota", 0) or 0,
