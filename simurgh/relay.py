@@ -127,7 +127,11 @@ class RelayNode:
         #: never steal the user-facing ports from the running service.
         self.listen_enabled = listen
         self.stats = Stats()
-        self.connected = asyncio.Event()
+        # `connected` is created on first use: on Python 3.9 an asyncio.Event
+        # built outside a running loop binds the thread's loop at construction
+        # and raises once an earlier asyncio.run() has closed it (a sync caller
+        # -- a test, a tool -- must be able to build a node).
+        self._connected: asyncio.Event | None = None
         #: every live tunnel connection (a pool: ``connections`` in the config)
         self._tunnels: list[Mux] = []
         self._mux_endpoint: dict[int, ExitEndpoint] = {}
@@ -167,6 +171,13 @@ class RelayNode:
         self.connect_count = 0
 
     # ------------------------------------------------------------- lifecycle
+    @property
+    def connected(self) -> asyncio.Event:
+        """Set while a tunnel to the exit is up (created inside the loop)."""
+        if self._connected is None:
+            self._connected = asyncio.Event()
+        return self._connected
+
     @property
     def muxes(self) -> list[Mux]:
         """Live tunnel connections, oldest first."""

@@ -648,3 +648,36 @@ def test_alert_without_a_config_is_an_error(tmp_path, capsys):
     home.mkdir()
     assert _alert_cli(home, "status") == 2
     assert "cannot read" in _printed(capsys)
+
+
+def test_a_node_can_be_built_without_a_running_loop(tmp_path):
+    """Python 3.9 binds `asyncio.Event()` to the thread's loop at construction.
+
+    The alert tests build nodes from sync code, so the tunnel-up event has to be
+    created on first use instead of in ``__init__`` — CI on 3.9 caught exactly
+    that, one release after the same trap in ``TrafficAccount``.
+    """
+    from simurgh.exit import ExitNode
+    from simurgh.relay import RelayNode
+
+    asyncio.run(asyncio.sleep(0))          # close a loop, as a real run does
+
+    def boom():
+        raise RuntimeError("no current event loop in thread 'MainThread'")
+
+    import simurgh.relay as relay_mod
+
+    original = relay_mod.asyncio.get_event_loop
+    relay_mod.asyncio.get_event_loop = boom
+    try:
+        relay = RelayNode(RelayConfig(token="tok", name="ir-1"), listen=False)
+        assert relay._connected is None          # nothing built yet
+        relay._watch_certificate("tunnel", str(tmp_path / "nope.pem"))
+        assert relay._check_certs() == []
+        exit_node = ExitNode(ExitConfig(token="tok", name="kharej",
+                                        listen=[ListenSpec(carrier="raw",
+                                                           port=8080)]))
+        exit_node._collect_certificates()
+        assert exit_node._watched_certs == {}
+    finally:
+        relay_mod.asyncio.get_event_loop = original
