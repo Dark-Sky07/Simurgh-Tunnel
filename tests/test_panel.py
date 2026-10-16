@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 
 import pytest
 
@@ -443,5 +444,134 @@ async def test_metrics_from_a_go_engine_state_file(home, tmp_path):
         assert "simurgh_bytes_out_total" in text and "200" in text
         assert "simurgh_mapping_up" in text and 'listen="8080"' in text
         assert "simurgh_traffic_bytes_total" in text
+    finally:
+        await panel.stop()
+
+
+# ------------------------------------------------- brute force protection
+class RecordingAlerts:
+    """Stands in for ``node.alerts`` and remembers what was announced."""
+
+    def __init__(self):
+        self.events = []
+        self.sent = 0
+        self.failed = 0
+
+    def notify(self, event, message, level="info", **fields):
+        self.events.append({"event": event, "text": message, "level": level,
+                            **fields})
+
+    def snapshot(self):
+        return {"enabled": True, "channels": "webhook", "events": ["all"],
+                "sent": self.sent, "failed": self.failed, "last_error": ""}
+
+
+async def test_the_panel_blocks_an_address_that_keeps_guessing(home, tmp_path,
+                                                              relay_cfg):
+    node = FakeRelayNode(relay_cfg)
+    node.alerts = RecordingAlerts()
+    panel, port = await _panel(home, tmp_path, node=node)
+    try:
+        for _ in range(Panel.MAX_FAILURES):
+            status, _ = await _request(port, "/api/status", auth="admin:wrong")
+            assert status == 401
+        status, data = await _request(port, "/api/status", auth="admin:wrong")
+        assert status == 429 and "too many failed logins" in data["error"]
+
+        # knowing the password does not help while the address is blocked
+        status, _ = await _request(port, "/api/status", auth=f"{USER}:{PASSWORD}")
+        assert status == 429
+        assert panel.lockouts == 1
+        assert node.alerts.events[0]["event"] == "login"
+        assert node.alerts.events[0]["level"] == "warning"
+        assert "failed logins" in node.alerts.events[0]["text"]
+
+        # monitoring must keep working: /healthz is unauthenticated on purpose
+        assert (await _request(port, "/healthz"))[0] == 200
+
+        # four wrong passwords later on are not yet a lockout...
+        panel.locked = {ip: 0.0 for ip in panel.locked}
+        panel.failed.clear()
+        for _ in range(Panel.MAX_FAILURES - 1):
+            status, _ = await _request(port, "/api/status", auth="admin:wrong")
+            assert status == 401
+        # ...and a good password still works, because the window has passed
+        status, _ = await _request(port, "/api/status", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+    finally:
+        await panel.stop()
+
+
+async def test_a_lockout_expires_and_is_forgotten(home, tmp_path, relay_cfg):
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(relay_cfg))
+    try:
+        for _ in range(Panel.MAX_FAILURES):
+            await _request(port, "/api/status", auth="admin:wrong")
+        assert (await _request(port, "/api/status"))[0] == 429
+
+        # pretend the lockout window is over
+        panel.locked = {ip: time.monotonic() - 1 for ip in panel.locked}
+        status, _ = await _request(port, "/api/status", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+        assert panel.locked == {} and panel.failed == {}
+    finally:
+        await panel.stop()
+
+
+async def test_join_credentials_are_guarded_too(home, tmp_path):
+    home.exit_cfg.write_text(
+        'token = "tok"\nname = "kharej"\npanel_port = 8788\n'
+        "[[listen]]\ncarrier = \"raw\"\nport = 8080\n")
+    panel, port = await _panel(home, tmp_path, role="exit")
+    try:
+        for _ in range(Panel.MAX_FAILURES):
+            status, _ = await _request(port, "/api/join", method="POST",
+                                       body={"user": "x", "password": "no"})
+            assert status == 401
+        status, data = await _request(port, "/api/join", method="POST",
+                                      body={"user": "x", "password": "no"})
+        assert status == 429 and panel.lockouts == 1
+        # a GET (the human view) is not counted, so it does not extend a lockout
+        status, _ = await _request(port, "/api/join")
+        assert status == 429
+    finally:
+        await panel.stop()
+
+
+async def test_status_reports_the_alert_state_and_the_guard(home, tmp_path,
+                                                            relay_cfg):
+    node = FakeRelayNode(relay_cfg)
+    node.alerts = RecordingAlerts()
+    panel, port = await _panel(home, tmp_path, node=node)
+    try:
+        status, data = await _request(port, "/api/status", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+        assert data["panel"]["alerts"]["channels"] == "webhook"
+        assert data["panel"]["lockouts"] == 0
+        assert data["panel"]["failed_logins"] == 0
+    finally:
+        await panel.stop()
+
+
+async def test_metrics_count_the_guard_and_the_alerts(home, tmp_path, relay_cfg):
+    node = FakeRelayNode(relay_cfg)
+    node.alerts = RecordingAlerts()
+    panel, port = await _panel(home, tmp_path, node=node)
+    try:
+        for _ in range(Panel.MAX_FAILURES):
+            await _request(port, "/api/status", auth="admin:wrong")
+        # an operator whose address is blocked cannot scrape either; the
+        # counter has already been bumped, so end the lockout and look
+        panel.locked = {ip: 0.0 for ip in panel.locked}
+        status, body = await _request(port, "/metrics", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+        text = body.decode()
+        assert "simurgh_panel_lockouts_total{" in text
+        assert "simurgh_alerts_enabled{" in text
+        assert any(line.startswith("simurgh_panel_lockouts_total{")
+                   and line.endswith(" 1") for line in text.splitlines())
+        assert any(line.startswith("simurgh_alerts_sent_total{") for line in text.splitlines())
+        assert any(line.startswith("simurgh_alerts_enabled{")
+                   and line.endswith(" 1") for line in text.splitlines())
     finally:
         await panel.stop()

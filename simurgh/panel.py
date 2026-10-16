@@ -148,6 +148,11 @@ class Panel:
         self.last_error = ""
         self._server: asyncio.AbstractServer | None = None
         self._tasks: set[asyncio.Task] = set()
+        #: brute-force protection: failed logins per peer, and when they are
+        #: blocked until (see _register_failure / _locked_out)
+        self.failed: dict[str, int] = {}
+        self.locked: dict[str, float] = {}
+        self.lockouts = 0
 
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -215,11 +220,22 @@ class Panel:
                                            "(or by a relay that listens: dial = \"exit\")"},
                     400)
             # the other server presents the credentials from its link (POST body)
+            if self._locked_out(peer_ip):
+                return json_response(
+                    {"ok": False, "error": "too many failed logins; try again later"},
+                    429)
             body = req.json() if req.method == "POST" else {}
             if not self._credentials_ok(body.get("user"), body.get("password"), req):
+                if req.method == "POST":
+                    self._register_failure(peer_ip, req)
                 return json_response({"ok": False, "error": "bad credentials"}, 401)
             return self.join_payload(req)
+        if self._locked_out(peer_ip):
+            return json_response(
+                {"ok": False, "error": "too many failed logins; try again later"},
+                429)
         if not self._authorised(req):
+            self._register_failure(peer_ip, req)
             return http_response(
                 b"<html><body><h3>Simurgh Tunnel</h3><p>Login required.</p></body></html>",
                 401, extra={"WWW-Authenticate": 'Basic realm="simurgh"'})
@@ -247,6 +263,44 @@ class Panel:
         if req.method == "GET" and path == "/api/logs":
             return json_response(self.logs(req.query.get("lines", "120")))
         return json_response({"ok": False, "error": "not found"}, 404)
+
+    # brute-force protection: a handful of wrong passwords from one address
+    # earns that address a quiet few minutes, and the operator gets told
+    MAX_FAILURES = 5
+    LOCKOUT_SECONDS = 300.0
+
+    def _locked_out(self, peer_ip: str) -> bool:
+        until = self.locked.get(peer_ip, 0.0)
+        if not until:
+            return False
+        if time.monotonic() < until:
+            return True
+        self.locked.pop(peer_ip, None)
+        self.failed.pop(peer_ip, None)
+        return False
+
+    def _register_failure(self, peer_ip: str, req: Request | None = None) -> None:
+        """Count a failed login; lock the address and alert after too many."""
+        count = self.failed.get(peer_ip, 0) + 1
+        self.failed[peer_ip] = count
+        if count < self.MAX_FAILURES:
+            return
+        self.locked[peer_ip] = time.monotonic() + self.LOCKOUT_SECONDS
+        self.failed.pop(peer_ip, None)
+        self.lockouts += 1
+        log.warning("panel: %d failed logins from %s; blocked for %.0f s",
+                    count, peer_ip, self.LOCKOUT_SECONDS)
+        alerts = getattr(self.node, "alerts", None)
+        if alerts is not None:
+            try:
+                alerts.notify(
+                    "login",
+                    f"panel: {count} failed logins from {peer_ip}; "
+                    f"address blocked for {int(self.LOCKOUT_SECONDS / 60)} minutes",
+                    level="warning", peer=peer_ip,
+                    path=getattr(req, "path", "") if req is not None else "")
+            except Exception:                                  # pragma: no cover
+                pass
 
     def _allowed(self, peer_ip: str) -> bool:
         if not self.allow_ips:
@@ -306,6 +360,7 @@ class Panel:
                 node_status = json.loads(self.state_path.read_text()).get(self.role, {})
             except (OSError, ValueError):
                 node_status = {}
+        alerts = getattr(self.node, "alerts", None)
         panel = {
             "role": self.role,
             "uptime": time.time() - self.started_at,
@@ -313,6 +368,9 @@ class Panel:
             "port": self.port,
             "user": self.user,
             "error": self.last_error,
+            "lockouts": self.lockouts,
+            "failed_logins": sum(self.failed.values()),
+            "alerts": alerts.snapshot() if alerts is not None else None,
         }
         return {
             "ok": True, "product": __product__, "version": __version__,
@@ -371,6 +429,28 @@ class Panel:
         emit("simurgh_panel_requests_total", "Panel requests served.", "counter")
         lines.append(f"simurgh_panel_requests_total{meta} "
                      f"{number(panel.get('requests', 0))}")
+
+        emit("simurgh_panel_lockouts_total",
+             "Addresses blocked after too many failed logins.", "counter")
+        lines.append(f"simurgh_panel_lockouts_total{meta} "
+                     f"{number(panel.get('lockouts', 0))}")
+        emit("simurgh_panel_failed_logins",
+             "Wrong passwords currently counted against an address.")
+        lines.append(f"simurgh_panel_failed_logins{meta} "
+                     f"{number(panel.get('failed_logins', 0))}")
+
+        alerts = panel.get("alerts") or {}
+        emit("simurgh_alerts_sent_total", "Alerts delivered.", "counter")
+        lines.append(f"simurgh_alerts_sent_total{meta} "
+                     f"{number(alerts.get('sent', 0))}")
+        emit("simurgh_alerts_failed_total", "Alerts that could not be delivered.",
+             "counter")
+        lines.append(f"simurgh_alerts_failed_total{meta} "
+                     f"{number(alerts.get('failed', 0))}")
+        emit("simurgh_alerts_enabled",
+             "1 when a telegram/webhook alert channel is configured.")
+        lines.append(f"simurgh_alerts_enabled{meta} "
+                     f"{number(bool(alerts.get('enabled')))}")
 
         emit("simurgh_tunnel_connected", "1 when a tunnel to the other side is up.")
         lines.append(f"simurgh_tunnel_connected{meta} "

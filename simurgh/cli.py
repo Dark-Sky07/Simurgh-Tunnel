@@ -667,15 +667,23 @@ def cmd_run(args) -> int:
     engine = _configured_engine(home, args.role)
     if engine == "go":
         binary = go_binary(home)
-        if binary:
-            _ok(f"engine: go ({binary})")
+        if binary and getattr(args, "exec_engine", False):
+            # the old, hand-off behaviour: the engine replaces this process and
+            # the panel/metrics/alerts go with it
+            _ok(f"engine: go ({binary}), exec")
             argv = [str(binary), args.role, "--home", str(home.path)]
             if args.verbose:
                 argv.append("--verbose")
             try:
-                os.execv(str(binary), argv)      # the go engine takes over
-            except OSError as exc:  # pragma: no cover - depends on the install
+                os.execv(str(binary), argv)
+            except OSError as exc:              # pragma: no cover - install
                 _warn(f"cannot start the go engine ({exc}); using python")
+        elif binary:
+            _ok(f"engine: go ({binary}), supervised")
+            try:
+                return asyncio.run(_run_go(home, args, binary))
+            except KeyboardInterrupt:
+                return 0
         else:
             _warn("engine is 'go' but no simurgh-go binary was found; "
                   "run tools/build-go.sh (or set SIMURGH_GO_BIN). Using python.")
@@ -685,6 +693,49 @@ def cmd_run(args) -> int:
         return asyncio.run(_run_relay(home, args))
     except KeyboardInterrupt:
         return 0
+
+
+async def _run_go(home: Home, args, binary: str) -> int:
+    """Supervise the compiled engine: it does the packets, we do the operator.
+
+    The Go engine has no HTTP listener of its own, so this keeps the panel,
+    `/metrics` and the alert channels alive next to it, follows the state file
+    it writes every three seconds and restarts it if it falls over.
+    """
+    from .panel import Panel
+    from .supervise import EngineSupervisor
+
+    role = args.role
+    cfg = _load_exit_or_fail(home) if role == "exit" else _load_relay_or_fail(home)
+    logfile = home.exit_log if role == "exit" else home.relay_log
+    setup_logging(args.verbose, logfile=str(logfile))
+    supervisor = EngineSupervisor(home, role, binary, cfg, verbose=args.verbose)
+    try:
+        await supervisor.start()
+    except OSError:
+        return 1
+    panel = None
+    if not args.no_panel:
+        port = args.panel_port or (RELAY_DEFAULT_PANEL if role == "exit"
+                                   else cfg.panel_port or RELAY_DEFAULT_PANEL)
+        panel = Panel(home, role, node=supervisor.node, host=args.panel_host,
+                      port=port, user=_load_panel_user(home),
+                      password=_load_panel_password(home),
+                      allow_ips=tuple(getattr(cfg, "allow_ips", ()) or ()),
+                      on_action=lambda name: _service_action(name, role))
+        try:
+            await panel.start()
+        except OSError as exc:
+            _warn(f"the panel did not start ({exc}); the tunnel keeps running.")
+            panel = None
+    stop = asyncio.Event()
+    _install_signal_handlers(stop)
+    _ok(f"{role} \"{cfg.name or role}\" is up (engine: go, pid {supervisor.pid}).")
+    await stop.wait()
+    if panel is not None:
+        await panel.stop()
+    await supervisor.stop()
+    return 0
 
 
 def go_binary(home: Home) -> str | None:
@@ -1253,6 +1304,77 @@ def cmd_uninstall(args) -> int:
     return 0
 
 
+def cmd_alert(args) -> int:
+    """`simurgh alert [status|test|events]` -- does the operator's phone ring?"""
+    from .alerts import EVENTS, alerts_from_config
+
+    home = _home_or_fail(args)
+    role = args.role or "relay"
+    path = home.exit_cfg if role == "exit" else home.relay_cfg
+    try:
+        cfg = load_exit(path) if role == "exit" else load_relay(path)
+    except (ConfigError, OSError) as exc:
+        _err(f"cannot read {path}: {exc}")
+        return 2
+    alerts = alerts_from_config(cfg, name=cfg.name or role)
+
+    if args.action == "test":
+        if not alerts.enabled:
+            _warn("no alert channel is configured (telegram_token/telegram_chat "
+                  "or alert_webhook) -- nothing was sent")
+            return 1
+        ok = alerts.test()
+        if ok:
+            _ok(f"test alert sent through {alerts.describe()}")
+            return 0
+        _err(f"the alert channel did not accept the message "
+             f"({alerts.last_error or 'no answer'})")
+        return 1
+
+    if args.action == "events":
+        if args.extra:
+            wanted = [str(x) for x in args.extra]
+            unknown = [x for x in wanted if x not in EVENTS and x != "all"]
+            if unknown:
+                _err(f"unknown event(s): {', '.join(unknown)}")
+                print("known events: " + ", ".join(EVENTS) + ", all")
+                return 2
+            if role == "exit":
+                cfg.alert_events = wanted
+                save_exit(cfg, path)
+            else:
+                cfg.alert_events = wanted
+                save_relay(cfg, path)
+            _ok(f"alert events for the {role}: {', '.join(wanted)}")
+            print("restart the service to apply: simurgh restart")
+            return 0
+        current = alerts.events
+        print(f"alert events for the {role}: {', '.join(current) or '(none)'}")
+        print("known events: " + ", ".join(EVENTS) + ", all")
+        return 0
+
+    # status
+    print(f"{__product__} v{__version__}   role={role}   name={cfg.name or '-'}")
+    print(f"  channels: {alerts.describe()}")
+    if alerts.telegram_token and alerts.telegram_chat:
+        print(f"  telegram: chat {alerts.telegram_chat} "
+              f"(api {alerts.telegram_api}, token {_mask_token(alerts.telegram_token)})")
+    if alerts.webhook:
+        print(f"  webhook:  {alerts.webhook}")
+    print(f"  events:   {', '.join(alerts.events) or '(none)'}")
+    if not alerts.enabled:
+        print("  add telegram_token + telegram_chat, or alert_webhook, to "
+              f"{path.name} and restart")
+    return 0
+
+
+def _mask_token(value: str) -> str:
+    value = str(value or "")
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}…{value[-4:]}"
+
+
 def cmd_update(args) -> int:
     """Bring this install to the newest release (see simurgh/update.py)."""
     from . import update as updater
@@ -1396,6 +1518,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--panel-host", default="0.0.0.0")
         p.add_argument("--panel-port", type=int, default=0)
         p.add_argument("--verbose", action="store_true")
+        p.add_argument("--exec", dest="exec_engine", action="store_true",
+                       help="hand the process over to the go engine (no panel, "
+                            "no /metrics, no alerts)")
         p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("up", help="start the service")
@@ -1403,7 +1528,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fg", action="store_true", help="run in the terminal (no systemd)")
     p.set_defaults(func=lambda a: cmd_run(argparse.Namespace(
         role=a.role, home=a.home, verbose=False, no_panel=False,
-        panel_host="0.0.0.0", panel_port=0)) if a.fg else cmd_service(
+        panel_host="0.0.0.0", panel_port=0, exec_engine=False)) if a.fg else cmd_service(
         argparse.Namespace(role=a.role, service_action="start", home=a.home, json=False)))
 
     for action, helptext in (("start", "start the service (systemd)"),
@@ -1468,6 +1593,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=0)
     p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser("alert", aliases=["alerts"], help="telegram / webhook alerts")
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["status", "test", "events"])
+    p.add_argument("extra", nargs="*", help="events to enable (with `events`)")
+    p.add_argument("--role", choices=["relay", "exit"], default="relay")
+    p.set_defaults(func=cmd_alert)
 
     p = sub.add_parser("update", help="install the newest release")
     p.add_argument("--check", action="store_true",

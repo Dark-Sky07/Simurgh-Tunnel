@@ -27,6 +27,8 @@ EVENTS = ("connected", "disconnected", "quota", "throttle", "cert", "login",
           "started", "stopped", "error", "test")
 DEFAULT_EVENTS = ("connected", "disconnected", "quota", "cert", "error")
 MAX_QUEUE = 200
+#: Telegram Bot API root (a local Bot API server can be configured instead)
+TELEGRAM_API = "https://api.telegram.org"
 
 
 class Alerts:
@@ -34,7 +36,8 @@ class Alerts:
 
     def __init__(self, *, telegram_token: str = "", telegram_chat: str = "",
                  webhook: str = "", events=None, name: str = "",
-                 cooldown: float = 20.0, timeout: float = 10.0):
+                 cooldown: float = 20.0, timeout: float = 10.0,
+                 telegram_api: str = TELEGRAM_API):
         self.telegram_token = (telegram_token or "").strip()
         self.telegram_chat = str(telegram_chat or "").strip()
         self.webhook = (webhook or "").strip()
@@ -42,6 +45,9 @@ class Alerts:
         self.name = name
         self.cooldown = max(0.0, cooldown)
         self.timeout = timeout
+        #: https://api.telegram.org by default; overridable so a test (or an
+        #: operator behind a local Bot API server) can point somewhere else
+        self.telegram_api = (telegram_api or TELEGRAM_API).rstrip("/")
         self.queue: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
         self._last: dict[str, float] = {}
@@ -56,6 +62,22 @@ class Alerts:
 
     def wants(self, event: str) -> bool:
         return event in self.events or "all" in self.events
+
+    @property
+    def sent_ok(self) -> int:
+        return self.sent
+
+    def snapshot(self) -> dict:
+        """What `simurgh alert` and the panel show."""
+        return {
+            "enabled": self.enabled,
+            "channels": self.describe(),
+            "events": list(self.events),
+            "sent": self.sent,
+            "failed": self.failed,
+            "last_error": self.last_error,
+            "name": self.name,
+        }
 
     def describe(self) -> str:
         bits = []
@@ -73,11 +95,26 @@ class Alerts:
         self._task = asyncio.ensure_future(self._worker())
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            self._task = None
+        # Drain what is still queued -- a "stopped" alert must not be lost just
+        # because the worker is going away.  A ``None`` sentinel ends the
+        # worker *after* everything before it has been delivered.
+        task, queue = self._task, self.queue
+        if task is None:
+            self.queue = None
+            return
+        if queue is not None:
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:                  # nothing will fit anyway
+                task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            task.cancel()
+        except Exception:                              # pragma: no cover
+            task.cancel()
+        self._task = None
         self.queue = None
-        # make sure the last messages are out
         await asyncio.sleep(0)
 
     def notify(self, event: str, message: str, level: str = "info", **fields) -> None:
@@ -105,6 +142,8 @@ class Alerts:
         assert self.queue is not None
         while True:
             payload = await self.queue.get()
+            if payload is None:                        # sentinel from stop()
+                return
             try:
                 await asyncio.get_running_loop().run_in_executor(
                     None, self._send_one, payload)
@@ -117,7 +156,7 @@ class Alerts:
         text = payload.get("text", "")
         if self.telegram_token and self.telegram_chat:
             ok |= self._post_json(
-                f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
+                f"{self.telegram_api}/bot{self.telegram_token}/sendMessage",
                 {"chat_id": self.telegram_chat, "text": text,
                  "disable_web_page_preview": True},
             )
@@ -166,4 +205,5 @@ def alerts_from_config(cfg, name: str = "") -> Alerts:
         webhook=getattr(cfg, "alert_webhook", "") or "",
         events=getattr(cfg, "alert_events", None) or DEFAULT_EVENTS,
         name=name or getattr(cfg, "name", "") or "",
+        telegram_api=getattr(cfg, "telegram_api", "") or TELEGRAM_API,
     )

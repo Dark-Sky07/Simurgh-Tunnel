@@ -174,13 +174,21 @@ limits; both are done now.
 | **`/metrics`** | The panel port serves Prometheus text: node and tunnel state, per-mapping bytes/connections/errors, the persistent ledger (`today`/`month`/`total`), quota limit + used + exhausted, and pool health with RTT. Authentication is the panel's (Basic auth, session cookie or the `?k=` link). It reads the same status the panel shows, so it works with the Python engine *and* with the Go one (from `state.json`). | `tests/test_panel.py` (the exposition is parsed line by line, label values are checked, an unauthenticated scrape is refused, and a Go-engine `state.json` produces the same series); `tests/test_limits.py` (a live relay's own counters: the mapping that just moved 32 KiB shows it, and the quota gauges are there) |
 | **`simurgh update`** | Works out the install shape: a git checkout fetches and checks out the newest tag (and rebuilds the engine), a packaged install downloads this machine's asset, verifies its SHA-256 against `SHA256SUMS.txt` and swaps it in atomically (old binary kept as `.bak`), a pip install upgrades through pip. `--check [--json]` reports only (exit code 3 when an update exists), `--force` reinstalls, and with no network nothing is touched. | `tests/test_update.py`: version ordering, asset choice per OS/arch, an unavailable network, "up to date", a real git repository that really moves to a newer tag, and a verified binary swap that keeps the old one as `.bak` — plus a corrupted download that must leave the install alone |
 | **Loud numbers in the panel** | `count_bytes()` now feeds the live per-mapping counters as well as the ledger, so the panel's mapping table and `/metrics` agree with `simurgh traffic` instead of only the latter being right. | the same two test files |
+| **Alerts (Telegram + webhook)** | Both roles emit `started`/`stopped`/`connected`/`disconnected`/`quota`/`throttle`/`error`, both watch the certificates they actually serve and warn **14 days** before expiry (once a day per file), and the panel sends `login` when it locks an address out. Telegram (`telegram_token` + `telegram_chat`, `telegram_api` overridable for a local Bot API server) and a generic JSON webhook, on a queue drained by a worker thread with a 20-second per-event cooldown; the queue is flushed on shutdown, so a "stopped" message is never lost. `simurgh alert status\|test\|events` shows and edits it. | `tests/test_alerts.py`: 36 tests — the exact URL and JSON body a real alert would send (a recording `urlopen`), the event filter, the cooldown, queue drain on stop, real X.509 certificates for the expiry maths (10-day, 200-day, broken, missing), `_check_certs()` on both nodes fire once a day per file, a live relay + exit + target pair whose alerts really arrive at a local HTTP endpoint, and every `simurgh alert` subcommand |
+| **Panel hardening** | Five wrong passwords from one address lock it out for 300 s (`429`) and fire the `login` alert; the counter is per address and is cleared by a success or by the window ending. `/metrics` exposes `simurgh_panel_lockouts_total`, `simurgh_panel_failed_logins` and the alerter's `simurgh_alerts_*` series. Tokens are masked wherever they are printed. | `tests/test_panel.py` (23 tests: the lockout, that a correct password does not help while blocked, that `/healthz` stays open for monitoring, that the window expires, that `/api/join` is guarded too, and the new metric series) and `tests/test_alerts.py` (`simurgh alert status` never prints the token) |
+| **The Go engine, supervised** | With `engine = "go"` the compiled engine runs as a child process instead of replacing the Python one, so the panel, `/metrics` and the alerts survive next to it (the engine opens no HTTP port of its own). `state.json` is followed for up/down and quota events, and a crashed engine is restarted with a growing backoff (0.5 s → 30 s) with the exit code in the alert. `simurgh relay --exec` keeps the old hand-off behaviour for the tiny VPS. | `tests/test_supervise.py`: 12 tests against a stand-in engine — start/announce, log redirection, up→down→up, quota fired once per period, crash → restart with a new pid and an `error` alert, clean SIGTERM shutdown, the panel facade, deliberate restarts not counting as crashes. Plus a live smoke run: real Go engine, real panel (25 metric series), real traffic through the tunnel, SIGKILL → restart → traffic again |
 
 ### What is still open
 
-P1 (metrics/API, `simurgh update`, alerts, packaging, ACME, panel hardening,
-richer speedtest, tune profiles) and P2 (SOCKS5 listener, TUN/TAP, vhost reuse,
-SSH gateway, plugins, multi-server panel, packaging, first-class IPv6, socket
-knobs, Windows/macOS services).  On the Go side the remaining parity work is the
-per-token data-path policy (port/target allowlists, per-token buckets and quotas)
-and the operator surface (panel, `/metrics`, alerts, proxy-out), which the next
-iterations of this branch add.
+P1 left: packaging (Docker/DEB/RPM), ACME/`acme.sh` certificate automation,
+a richer `simurgh speedtest` (latency under load, UDP loss) and tuning profiles
+(`simurgh tune gaming\|balanced\|speed`).  The operator surface is now complete
+on the Python side and works *with* the Go engine (supervised child: panel,
+`/metrics`, alerts, restarts).
+
+P2 (SOCKS5 listener, TUN/TAP, vhost reuse, SSH gateway, plugins, multi-server
+panel, first-class IPv6, socket knobs, Windows/macOS services).  On the Go side
+the remaining parity work is the per-token data-path policy (port/target
+allowlists, per-token buckets and quotas) and native proxy-out — the rest of the
+config is already read identically by both engines (the per-listener
+`cert_file`/`key_file` keys included).

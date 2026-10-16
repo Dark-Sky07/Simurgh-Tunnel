@@ -40,6 +40,36 @@ def test_exit_roundtrip(home):
     assert back.proxy_protocol == "v1"
 
 
+def test_a_listener_can_carry_its_own_certificate(home):
+    """The Go engine has always read `cert_file` inside [[listen]]; now both do."""
+    cfg = ExitConfig(
+        token="tok", name="omega-de", cert_auto=False,
+        cert_file="/tmp/shared.pem", key_file="/tmp/shared.key",
+        listen=[ListenSpec(carrier="tls", port=443),
+                ListenSpec(carrier="wss", port=8443, cert_file="/tmp/wss.pem",
+                           key_file="/tmp/wss.key")],
+    )
+    save_exit(cfg, home.exit_cfg)
+    back = load_exit(home.exit_cfg)
+    assert [s.cert_file for s in back.listen] == [None, "/tmp/wss.pem"]
+    assert [s.key_file for s in back.listen] == [None, "/tmp/wss.key"]
+    assert back.cert_file == "/tmp/shared.pem"
+
+    # half a certificate is a configuration mistake, not a silent fallback
+    with pytest.raises(ConfigError, match="cert_file needs key_file"):
+        load_exit(_write(home, "cert_file = \"/tmp/wss.pem\"\n"))
+    with pytest.raises(ConfigError, match="key_file needs cert_file"):
+        load_exit(_write(home, "key_file = \"/tmp/wss.key\"\n"))
+
+
+def _write(home, extra: str):
+    home.exit_cfg.write_text(
+        'token = "tok"\nname = "x"\ncert_auto = false\n'
+        'cert_file = "/tmp/c.pem"\nkey_file = "/tmp/k.pem"\n'
+        "[[listen]]\ncarrier = \"tls\"\nport = 443\n" + extra)
+    return home.exit_cfg
+
+
 def test_relay_roundtrip(home):
     cfg = RelayConfig(
         token="tok-abc", name="ir-tehran", panel_port=8787,

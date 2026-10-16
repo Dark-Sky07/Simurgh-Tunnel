@@ -95,6 +95,7 @@ either side needs no manual action.
 | `dial` | — | **reverse mode**: dial this host instead of listening |
 | `fingerprint` | — | pinned SHA-256 of the relay certificate (reverse) |
 | `insecure_skip_verify` | `false` | accept any certificate (testing only) |
+| `cert_file` / `key_file` | — | `tls`/`wss` only: a certificate **for this listener alone**, overriding the one at the top of the file — one VPS, several domains, one certificate each. Both engines read it, and the exit watches it for expiry like any other |
 
 ---
 
@@ -190,7 +191,7 @@ sides wins for any given stream, so setting them on the relay is enough.
 | — (shared) | `16 MiB` floor, `64 MiB` cap | The credit budget of the whole tunnel *connection*: it follows the sum of the live streams' current windows, so dozens of users on one connection never starve each other, while a peer that stops reading cannot park more than the cap per connection. Nothing to configure; it is what keeps 1000 users on one box from being limited to one user's window. |
 | `connections` | `1` | How many tunnel connections the relay keeps to the exit (1-16). Every connection is a separate TCP flow and a separate core's worth of work: on long, lossy paths 2-4 of them raise the total a lot and a single dropped connection only costs a fraction of the users. The relay hands each new user connection to the least busy tunnel. |
 | `chunk` | `64 KiB` | Largest payload per frame. Bigger frames mean less per-frame overhead and a little more latency headroom; 64 KiB is a good middle. |
-| `engine` | `go` | Which data plane runs this file: `go` (compiled, many cores, much less CPU per gigabyte) or `python` (portable, no build step). `simurgh init` writes `go` when this machine has the binary and `python` when it does not, so the default is whatever is actually installed; both speak the same protocol, so one side may run Go while the other still runs Python. Switch with `simurgh engine go` after building it (`sudo bash tools/build-go.sh`). The panel, the menu and the CLI stay Python; with `engine = "go"` the live numbers you see come from `state.json`, which both engines write. |
+| `engine` | `go` | Which data plane runs this file: `go` (compiled, many cores, much less CPU per gigabyte) or `python` (portable, no build step). `simurgh init` writes `go` when this machine has the binary and `python` when it does not, so the default is whatever is actually installed; both speak the same protocol, so one side may run Go while the other still runs Python. Switch with `simurgh engine go` after building it (`sudo bash tools/build-go.sh`). The panel, the menu and the CLI stay Python. With `engine = "go"` the compiled engine runs as a **supervised child** of the Python process: the panel, `/metrics` and the alerts keep working next to it (the engine itself opens no HTTP port), `state.json` is followed so tunnel-up/down and quota events are announced, and an engine that dies is restarted with a growing backoff (0.5 s → 30 s) and reported. `simurgh relay --exec` hands the process over to the engine instead — lower overhead, but no panel and no alerts. |
 
 Measured on a simulated long path (2 vCPU container), single user, plain
 carrier, 80 MB: **2 MB/s with a fixed 256 KiB window → 40.4 MB/s with the window
@@ -304,6 +305,8 @@ curl -u admin:password http://127.0.0.1:8787/metrics
 | `simurgh_traffic_bytes_total{key,period}` | the persistent ledger (`today` / `month` / `total`) |
 | `simurgh_quota_*{key,period}` | quota limit, used bytes and whether it is exhausted |
 | `simurgh_exit_*{endpoint}` | pool health: is the endpoint answering, and its RTT |
+| `simurgh_panel_requests_total`, `simurgh_panel_lockouts_total`, `simurgh_panel_failed_logins` | panel traffic, addresses locked out after repeated bad logins, wrong passwords counted right now |
+| `simurgh_alerts_sent_total`, `simurgh_alerts_failed_total`, `simurgh_alerts_enabled` | what the alerter delivered, what it could not, and whether a channel is configured at all |
 
 Authentication is the same as the panel (Basic auth, the session cookie or the
 one-click `?k=` link), so a scraper's credentials are the panel's. Everything is
@@ -338,6 +341,71 @@ The command works out what kind of install it is looking at:
 
 With no network it says so and changes nothing. After an update, `simurgh
 restart` runs the new version.
+
+## Alerts
+
+The operator should hear about a dead tunnel from the tunnel, not from a
+customer. Both roles take the same keys, in `relay.toml` and in `exit.toml`:
+
+```toml
+telegram_token = "8123456:AAH…"        # from @BotFather
+telegram_chat  = "-1001234567890"      # the chat/group the bot posts to
+# telegram_api = "http://127.0.0.1:8081"   # a local Bot API server (optional)
+alert_webhook  = "https://hooks.example.com/simurgh"   # anything that takes JSON
+alert_events   = ["connected", "disconnected", "quota", "cert", "error"]
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `telegram_token` | — | bot token; needs `telegram_chat` as well |
+| `telegram_chat` | — | chat id (a group id starts with `-`) |
+| `telegram_api` | `https://api.telegram.org` | root of the Bot API; point it at your own Bot API server if the public one is blocked |
+| `alert_webhook` | — | URL that receives a JSON `POST` per alert (Slack, Discord, ntfy, an internal endpoint) |
+| `alert_events` | `connected, disconnected, quota, cert, error` | which events are sent; `["all"]` means everything |
+
+The webhook receives one object per alert:
+
+```json
+{"event": "quota", "level": "warning", "text": "[ir-tehran] mapping tcp:0.0.0.0:443/… reached its 10.0 MB/month quota (block)",
+ "host": "ir-tehran", "time": 1792163305.35, "mapping": "tcp:…", "used": 10485760, "limit": 10485760}
+```
+
+| Event | Fired when | Extra fields |
+|---|---|---|
+| `started` / `stopped` | the service comes up or is shut down | `pid` (Go engine) |
+| `connected` / `disconnected` | the tunnel to the other side comes up or drops | `rtt_ms`, endpoint |
+| `quota` | a mapping reaches its quota (`block`, `throttle` or `warn`) | `mapping`, `used`, `limit` |
+| `throttle` | a mapping is being slowed to 128 KiB/s because of its quota | `mapping` |
+| `cert` | a certificate this node serves expires within **14 days** (once a day per file) | `cert`, `days` |
+| `login` | the panel locked an address out after repeated failed logins | `peer` |
+| `error` | a node error, or the Go engine exited and is being restarted | `exit_code`, `restarts` |
+| `test` | `simurgh alert test` | — |
+
+Alerts are queued and sent from a worker thread, so a slow (or dead) endpoint
+never blocks the data plane; identical events are collapsed with a 20-second
+cooldown so a flapping tunnel cannot flood the chat. A node that has just been
+shut down still delivers what is in the queue before it exits.
+
+```bash
+simurgh alert status                  # which channels and events are live
+simurgh alert test                    # sends one message now (exit 1 if it fails)
+simurgh alert events                  # show the list
+simurgh alert events quota cert error # write a new list (then: simurgh restart)
+simurgh alert status --role exit
+```
+
+### Panel hardening
+
+* **Failed logins** are counted per source address. The fifth wrong password
+  blocks that address for **300 seconds** (requests get `429`), which is enough
+  to make guessing pointless, and the `login` alert tells the operator where it
+  came from. A successful login clears the counter, and `simurgh_panel_lockouts_total`
+  counts how often it happened.
+* The panel **never prints the token or the bot token**; `simurgh alert status`
+  masks it (`1234…ew11`).
+* `?k=<password>` links still work for one-click access, but the password ends up
+  in the browser history — prefer the `Set-Cookie` session the same link creates,
+  or Basic auth.
 
 ## Environment variables
 

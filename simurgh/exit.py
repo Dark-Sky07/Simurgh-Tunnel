@@ -15,7 +15,9 @@ import asyncio
 import json
 import time
 
+from .alerts import alerts_from_config
 from .bridge import Bridge
+from .certs import expiry_days
 from .carriers import ServerCarrier, client_connect, create_tcp_server
 from .config import ExitConfig
 from .mux import Mux, StreamOpenError
@@ -36,6 +38,8 @@ from .util import dial_stream, get_logger
 
 log = get_logger("simurgh.exit")
 
+#: warn when a served certificate has this little life left
+CERT_ALERT_DAYS = 14
 DIAL_TIMEOUT = 12.0
 RECONNECT_BACKOFF_MAX = 15.0
 
@@ -58,6 +62,12 @@ class ExitNode:
         self.speed_port = cfg.speedtest_port
         self._speed_server: asyncio.AbstractServer | None = None
         self.connected_at: float | None = None
+        #: telegram / webhook notifications (see simurgh/alerts.py)
+        self.alerts = alerts_from_config(cfg, name=cfg.name or "exit")
+        #: certificates this node serves, for the "expiring soon" alert
+        self._watched_certs: dict[str, str] = {}
+        self._cert_warned: dict[str, float] = {}
+        self._cert_task: asyncio.Task | None = None
         self.last_error = ""
         #: reverse mode (relay dial = "exit"): we connect out instead of listening
         self.reach_out: list[str] = []
@@ -67,6 +77,12 @@ class ExitNode:
     # ------------------------------------------------------------------ start
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
+        await self.alerts.start()
+        self.alerts.notify("started", f"exit {self.cfg.name or ''} started "
+                           f"(engine: {self.cfg.engine})".strip(),
+                           listeners=len([s for s in self.cfg.listen if s.enabled]))
+        self._collect_certificates()
+        self._cert_task = asyncio.ensure_future(self.cert_loop())
         for spec in self.cfg.listen:
             if not spec.enabled:
                 continue
@@ -91,7 +107,8 @@ class ExitNode:
                 continue
             carrier = ServerCarrier(
                 spec.carrier, tokens[0].token, tokens=tokens,
-                cert_file=self.cfg.cert_file, key_file=self.cfg.key_file,
+                cert_file=spec.cert_file or self.cfg.cert_file,
+                key_file=spec.key_file or self.cfg.key_file,
                 path=spec.path, fallback=spec.fallback,
                 decoy_file=spec.decoy_file, padding=spec.padding,
                 chunk=self.cfg.chunk,
@@ -140,8 +157,64 @@ class ExitNode:
         self.servers.append(server)
         return ("tcp", server)
 
+    async def cert_loop(self, interval: float = 6 * 3600) -> None:
+        """Warn before a served certificate dies (see RelayNode.cert_loop)."""
+        self._check_certs()
+        while not self._stopping:
+            await asyncio.sleep(interval if self._cert_warned else 5)
+            self._check_certs()
+
+    def _collect_certificates(self) -> None:
+        """Watch the certificate of every tls/wss listener we did not generate.
+
+        ``cert_auto`` certificates are made by this process and renewed by it,
+        so there is nothing for the operator to do about them; a certificate
+        that was copied in by hand (acme.sh, certbot, a CA) is exactly the one
+        that quietly expires on a Sunday.
+        """
+        if self.cfg.cert_auto:
+            return
+        for spec in self.cfg.listen:
+            if not spec.enabled or spec.carrier not in ("tls", "wss"):
+                continue
+            cert_file = spec.cert_file or self.cfg.cert_file
+            if cert_file:
+                self._watch_certificate(f"{spec.carrier}:{spec.port}", cert_file)
+
+    def _watch_certificate(self, label: str, cert_file: str) -> None:
+        """Remember a certificate this exit serves (see ``cert_loop``)."""
+        if cert_file:
+            self._watched_certs[label] = cert_file
+
+    def _check_certs(self) -> list[str]:
+        """Alert for every served certificate that is close to expiry.
+
+        See ``RelayNode._check_certs``; the label this exit uses is the
+        listener name from its own configuration.
+        """
+        alerted: list[str] = []
+        for label, cert_file in list(self._watched_certs.items()):
+            days = expiry_days(cert_file)
+            if days is None or days > CERT_ALERT_DAYS:
+                continue
+            last = self._cert_warned.get(label)
+            if last is not None and time.monotonic() - last <= 86400:
+                continue
+            self._cert_warned[label] = time.monotonic()
+            alerted.append(label)
+            self.alerts.notify(
+                "cert", f"certificate {cert_file} expires in "
+                f"{days:.0f} day(s)", level="warning",
+                cert=cert_file, days=round(days, 1))
+        return alerted
+
     async def stop(self) -> None:
         self._stopping = True
+        if self._cert_task is not None:
+            self._cert_task.cancel()
+            self._cert_task = None
+        self.alerts.notify("stopped", f"exit {self.cfg.name or ''} stopped".strip())
+        await self.alerts.stop()
         for task in list(self._dial_tasks):
             task.cancel()
         for s in self.servers:
@@ -231,6 +304,10 @@ class ExitNode:
         if self.connected_at is None:
             self.connected_at = time.time()
         log.info("tunnel established with %s (carrier: %s)", peer or "?", channel.name)
+        self.alerts.notify("connected", f"relay connected from {peer or '?'} "
+                           f"(carrier: {channel.name}); "
+                           f"{len(self.tunnels)} tunnel(s) live",
+                           peer=peer, carrier=channel.name)
         ping = asyncio.ensure_future(mux.keepalive(25))
         try:
             await mux.run()
@@ -242,6 +319,11 @@ class ExitNode:
             if not self.tunnels:
                 self.connected_at = None
             log.warning("tunnel from %s closed", peer or "?")
+            if not self._stopping:
+                self.alerts.notify("disconnected",
+                                   f"relay {peer or '?'} disconnected; "
+                                   f"{len(self.tunnels)} tunnel(s) left",
+                                   level="warning", peer=peer)
 
     async def _on_open(self, stream) -> None:
         try:

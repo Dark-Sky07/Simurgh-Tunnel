@@ -147,6 +147,10 @@ class ListenSpec:
     dial: str = ""                       # reverse mode: dial this host
     fingerprint: str | None = None       # pin the relay certificate (reverse)
     insecure_skip_verify: bool = False
+    #: tls/wss only: a certificate just for this listener (the Go engine has
+    #: always accepted this; the Python engine now does too)
+    cert_file: str | None = None
+    key_file: str | None = None
     #: reverse mode: reach the relay through this upstream proxy
     proxy: str = ""
     prefer_ipv6: str = "auto"            # auto | ipv4 | ipv6
@@ -322,6 +326,9 @@ class ExitConfig:
     telegram_chat: str = ""
     alert_webhook: str = ""
     alert_events: list[str] = field(default_factory=list)
+    #: Telegram Bot API root (default https://api.telegram.org; point it at a
+    #: local Bot API server when one runs next to this node)
+    telegram_api: str = ""
 
     def token_list(self) -> list[TunnelToken]:
         """Every credential this exit accepts (never empty)."""
@@ -369,7 +376,8 @@ class ExitConfig:
         for key in ("tcp_nodelay", "tcp_keepalive", "so_mark", "prefer_ipv6",
                     "dual_stack", "rate_limit", "quota", "quota_period",
                     "quota_action", "max_conns", "telegram_token",
-                    "telegram_chat", "alert_webhook", "alert_events"):
+                    "telegram_chat", "alert_webhook", "alert_events",
+                    "telegram_api"):
             value = getattr(self, key)
             if value not in (0, "", None, [], True, "auto", "month", "block"):
                 d[key] = value
@@ -405,6 +413,8 @@ class ExitConfig:
                 "prefer_ipv6": ls.prefer_ipv6 if ls.prefer_ipv6 != "auto" else None,
                 "fingerprint": ls.fingerprint,
                 "insecure_skip_verify": ls.insecure_skip_verify or None,
+                "cert_file": ls.cert_file,
+                "key_file": ls.key_file,
                 "mtu": ls.mtu if ls.carrier == "udp" else None,
                 "fec": ls.fec if ls.carrier == "udp" and ls.fec != "off" else None,
                 "window": ls.window if ls.carrier == "udp" else None,
@@ -451,6 +461,7 @@ def load_exit(path: str | Path) -> ExitConfig:
     cfg.telegram_chat = str(data.get("telegram_chat") or "")
     cfg.alert_webhook = str(data.get("alert_webhook") or data.get("webhook") or "")
     cfg.alert_events = [str(x) for x in _as_list(data.get("alert_events"))]
+    cfg.telegram_api = str(data.get("telegram_api") or "")
     cfg.stream_window = max(16 * 1024,
                             int(data.get("stream_window", _default_start_window(cfg.engine))))
     cfg.max_stream_window = max(cfg.stream_window,
@@ -481,6 +492,8 @@ def load_exit(path: str | Path) -> ExitConfig:
             dial=str(item.get("dial") or ""),
             fingerprint=item.get("fingerprint"),
             insecure_skip_verify=bool(item.get("insecure_skip_verify", False)),
+            cert_file=item.get("cert_file"),
+            key_file=item.get("key_file"),
             proxy=str(item.get("proxy") or ""),
             prefer_ipv6=_prefer_from(item.get("prefer_ipv6")),
             mtu=max(512, min(65000, int(item.get("mtu", 1200) or 1200))),
@@ -490,8 +503,16 @@ def load_exit(path: str | Path) -> ExitConfig:
     if not cfg.listen:
         raise ConfigError("exit config: at least one [[listen]] block is required")
     listeners = [ls for ls in cfg.listen if not ls.reverse]
+    for ls in listeners:
+        if ls.cert_file and not ls.key_file:
+            raise ConfigError(f"[listen] port {ls.port}: cert_file needs key_file")
+        if ls.key_file and not ls.cert_file:
+            raise ConfigError(f"[listen] port {ls.port}: key_file needs cert_file")
     if any(ls.carrier in ("tls", "wss") for ls in listeners):
-        if not (cfg.cert_file and cfg.key_file) and not cfg.cert_auto:
+        have = [(cfg.cert_file and cfg.key_file)
+                or (ls.cert_file and ls.key_file) for ls in listeners
+                if ls.carrier in ("tls", "wss")]
+        if not all(have) and not cfg.cert_auto:
             raise ConfigError("carrier tls/wss needs a certificate (or cert_auto = true)")
     if cfg.proxy_protocol not in PROXY_PROTOCOLS:
         raise ConfigError(f"proxy_protocol must be one of {PROXY_PROTOCOLS}")
@@ -653,6 +674,7 @@ class RelayConfig:
     telegram_chat: str = ""
     alert_webhook: str = ""
     alert_events: list[str] = field(default_factory=list)
+    telegram_api: str = ""
     #: panel
     panel_tls: bool = False
     panel_host: str = "0.0.0.0"
@@ -688,7 +710,7 @@ class RelayConfig:
         }
         for key in ("tcp_keepalive", "so_mark", "rate_limit", "quota",
                     "proxy", "max_conns", "telegram_token", "telegram_chat",
-                    "alert_webhook", "alert_events", "panel_host"):
+                    "alert_webhook", "alert_events", "telegram_api", "panel_host"):
             value = getattr(self, key)
             if value not in (0, "", None, [], "0.0.0.0"):
                 d[key] = value
@@ -933,6 +955,7 @@ def load_relay(path: str | Path) -> RelayConfig:
     cfg.telegram_chat = str(data.get("telegram_chat") or "")
     cfg.alert_webhook = str(data.get("alert_webhook") or data.get("webhook") or "")
     cfg.alert_events = [str(x) for x in _as_list(data.get("alert_events"))]
+    cfg.telegram_api = str(data.get("telegram_api") or "")
 
     cfg.dial = str(data.get("dial", "relay")).lower()
     if cfg.dial not in ("relay", "exit"):

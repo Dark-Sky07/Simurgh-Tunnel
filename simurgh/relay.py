@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from .accounting import TrafficAccount, quota_from
+from .alerts import alerts_from_config
 from .bridge import Bridge, proxy_v1_header
 from .carriers import ServerCarrier, client_connect, create_tcp_server
 from .config import Mapping, RelayConfig
@@ -30,7 +31,8 @@ from .protocol import MODE_TCP, encode_addr
 from .ratelimit import limiter_from
 from .stats import Stats
 from .udp import UdpRelayListener
-from .util import free_port, get_logger, is_ip
+from .certs import expiry_days
+from .util import free_port, get_logger, human_rate, is_ip
 
 log = get_logger("simurgh.relay")
 
@@ -39,6 +41,8 @@ FAIL_COOLDOWN = 30.0
 #: when a mapping is over quota and its action is "throttle", the crawl it drops
 #: to until the period rolls over
 THROTTLE_RATE = 128 * 1024
+#: warn when a served certificate has this little life left
+CERT_ALERT_DAYS = 14
 STATS_INTERVAL = 5.0
 PING_INTERVAL = 10.0
 
@@ -82,10 +86,21 @@ class UserBridge(Bridge):
             if action == "throttle":
                 # keep the user online, but at a crawl until the window resets
                 self.limiter = limiter_from(THROTTLE_RATE, self.mapping.key())
+                self.node.alerts.notify(
+                    "throttle", f"mapping {self.mapping.name or self.mapping.key()} "
+                    f"is over its quota; throttled to "
+                    f"{human_rate(THROTTLE_RATE)}", level="warning",
+                    mapping=self.mapping.name or self.mapping.key())
             else:
                 self.node.blocked += 1
                 self.node.stats.mapping(self.mapping.key()).errors += 1
                 self.node.stats.mapping(self.mapping.key()).last_error = "quota exceeded"
+                self.node.alerts.notify(
+                    "quota", f"mapping {self.mapping.name or self.mapping.key()} "
+                    f"is over its quota; refusing users",
+                    level="warning", mapping=self.mapping.name or self.mapping.key(),
+                    used=self.node.account.usage(self.mapping.key(), quota.period)
+                    if self.node.account else 0, limit=quota.limit)
                 log.warning("mapping %s is over its quota; refusing %s",
                             self.mapping.name or self.mapping.key(), transport)
                 try:
@@ -126,12 +141,17 @@ class RelayNode:
         self._active: dict[str, int] = {}
         self._warned: dict[str, float] = {}
         self.blocked = 0
+        #: telegram / webhook notifications (see simurgh/alerts.py)
+        self.alerts = alerts_from_config(cfg, name=cfg.name or "relay")
+        #: certificates this node serves, for the "expiring soon" alert
+        self._watched_certs: dict[str, str] = {}
+        self._cert_warned: dict[str, float] = {}
         self.account: TrafficAccount | None = None
         if home is not None:
-            try:
-                self.account = TrafficAccount(Path(home) / "traffic.json")
-            except Exception as exc:                        # pragma: no cover
-                log.warning("traffic accounting disabled: %s", exc)
+            # `home` is a util.Home in every real caller and a plain path in a
+            # few tools; both have to reach <home>/traffic.json
+            base = getattr(home, "path", home)
+            self.account = TrafficAccount(Path(base) / "traffic.json")
         self.rtt_ms: float | None = None
         self.exit_info: dict = {}
         self.last_error = ""
@@ -168,6 +188,11 @@ class RelayNode:
         await self.rebind()
         if self.account is not None:
             self.account.start()
+        await self.alerts.start()
+        self.alerts.notify("started", f"relay {self.cfg.name or ''} started "
+                           f"(engine: {self.cfg.engine})".strip(),
+                           mappings=len(self.cfg.mappings),
+                           exit=self.cfg.exit.describe() if self.cfg.exit.address else "")
         if self.cfg.reverse:
             await self._start_tunnel_listener()
             return
@@ -192,6 +217,9 @@ class RelayNode:
             health = asyncio.ensure_future(self.health_loop())
             self._tasks.add(health)
             health.add_done_callback(self._tasks.discard)
+        certs = asyncio.ensure_future(self.cert_loop())
+        self._tasks.add(certs)
+        certs.add_done_callback(self._tasks.discard)
 
     async def _start_tunnel_listener(self) -> None:
         """Reverse mode: wait for the foreign exit to connect to us."""
@@ -291,6 +319,8 @@ class RelayNode:
         self.connected.clear()
         if self.account is not None:
             await self.account.stop()
+        self.alerts.notify("stopped", f"relay {self.cfg.name or ''} stopped".strip())
+        await self.alerts.stop()
         await asyncio.sleep(0)
 
     def reconnect(self) -> None:
@@ -529,6 +559,51 @@ class RelayNode:
             if not self._stopping:
                 await asyncio.sleep(0.4)
 
+    async def cert_loop(self, interval: float = 6 * 3600) -> None:
+        """Warn before a certificate dies (the certificate the exit pins).
+
+        Runs on the relay in reverse mode and on the exit otherwise; it only
+        looks at the files this node actually serves.  One alert a day per
+        certificate, because the operator cannot do anything faster than that.
+        """
+        if self.cfg.reverse:
+            cert_file = self.cfg.tunnel.cert_file
+            if cert_file and not self.cfg.tunnel.cert_auto:
+                self._watch_certificate("tunnel", cert_file)
+        self._check_certs()
+        while not self._stopping:
+            await asyncio.sleep(interval)
+            self._check_certs()
+
+    def _check_certs(self) -> list[str]:
+        """Alert for every served certificate that is close to expiry.
+
+        Returns the labels that were just alerted for, which keeps the loop
+        testable without waiting six hours for the first pass.
+        """
+        alerted: list[str] = []
+        for label, cert_file in list(self._watched_certs.items()):
+            days = expiry_days(cert_file)
+            if days is None:
+                continue
+            if days > CERT_ALERT_DAYS:
+                self._cert_warned.pop(label, None)
+                continue
+            last = self._cert_warned.get(label)
+            if last is not None and time.monotonic() - last <= 86400:
+                continue
+            self._cert_warned[label] = time.monotonic()
+            alerted.append(label)
+            self.alerts.notify(
+                "cert", f"certificate {cert_file} expires in "
+                f"{days:.0f} day(s)", level="warning",
+                cert=cert_file, days=round(days, 1))
+        return alerted
+
+    def _watch_certificate(self, label: str, cert_file: str) -> None:
+        if cert_file:
+            self._watched_certs[label] = cert_file
+
     async def health_loop(self, interval: float = 10.0) -> None:
         """Measure each tunnel's round trip and skip exits that stop answering.
 
@@ -710,6 +785,9 @@ class RelayNode:
         self.connect_count += 1
         self._refresh_connected()
         self.last_error = ""
+        self.alerts.notify("connected", f"tunnel up via {label} "
+                           f"({len(self.muxes)} live)", endpoint=label,
+                           carrier=getattr(channel, "name", ""))
         log.info("tunnel up via %s%s", label,
                  f" [{len(self.muxes)}/{max(1, self.cfg.connections)}]" if self.cfg.connections > 1 else "")
         tasks = [asyncio.ensure_future(mux.keepalive(self.cfg.keepalive))]
@@ -734,6 +812,11 @@ class RelayNode:
             if not remaining:
                 self.connected.clear()
                 self.current = ""
+                if not self._stopping:
+                    self.alerts.notify("disconnected",
+                                       f"tunnel to {label} is down "
+                                       f"({self.last_error or 'connection closed'})",
+                                       level="warning", endpoint=label)
             elif self.current == label:
                 # the primary left; promote whatever is still up
                 self.current = label
