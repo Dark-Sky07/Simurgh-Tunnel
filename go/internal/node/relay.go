@@ -238,9 +238,7 @@ func (r *Relay) acceptLoop(ln net.Listener, m config.Mapping) {
 }
 
 func (r *Relay) handleUser(counter *mapCounter, conn net.Conn, m config.Mapping) {
-	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)
-	}
+	carrier.ApplySocketOptions(conn, r.cfg.TCPNoDelay, r.cfg.TCPKeepalive)
 	key := m.Key()
 	// a mapping over its quota either stops accepting or crawls
 	bucket := r.limiterFor(m)
@@ -723,7 +721,7 @@ func (r *Relay) supervisor(slot int) {
 }
 
 func (r *Relay) runTunnel(ep config.Endpoint, primary bool) error {
-	ch, err := endpointTarget(ep, r.cfg.Token).dial()
+	ch, err := endpointTarget(ep, r.cfg.Token, r.cfg.Exit).dial()
 	if err != nil {
 		return err
 	}

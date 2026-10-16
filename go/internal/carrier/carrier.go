@@ -428,6 +428,8 @@ type ClientOptions struct {
 	Split       int // tls/wss: bytes in the first TCP segment of the ClientHello
 	Timeout     time.Duration
 	Token       string
+	NoDelay     bool // Nagle off (config `tcp_nodelay`, default true)
+	Keepalive   int  // keepalive idle time in seconds, 0 = off
 }
 
 // Dial opens an authenticated channel to the other side.
@@ -443,7 +445,7 @@ func Dial(opt ClientOptions) (mux.Channel, error) {
 		return dialRaw(opt)
 
 	case "plain":
-		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout)
+		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout, opt)
 		if err != nil {
 			return nil, err
 		}
@@ -489,7 +491,7 @@ func Dial(opt ClientOptions) (mux.Channel, error) {
 				return nil
 			}
 		}
-		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout)
+		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout, opt)
 		if err != nil {
 			return nil, err
 		}
@@ -586,14 +588,35 @@ func splitFirst(conn net.Conn, first int) net.Conn {
 	return &splitConn{Conn: conn, first: first}
 }
 
-func dialTCP(host string, port int, timeout time.Duration) (net.Conn, error) {
+// ApplySocketOptions is the one place the config's socket-option keys
+// (`tcp_nodelay`, `tcp_keepalive`) reach a socket, for the tunnel dials and for
+// the user/service connections a node accepts or opens.  It matches the Python
+// engine's simurgh.util.apply_socket_opts: Nagle is off unless asked otherwise,
+// and a keepalive of 0 means "off" rather than the runtime's default.
+func ApplySocketOptions(conn net.Conn, noDelay bool, keepalive int) {
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tc.SetNoDelay(noDelay)
+	if keepalive > 0 {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(time.Duration(keepalive) * time.Second)
+		return
+	}
+	_ = tc.SetKeepAlive(false)
+}
+
+func dialTCP(host string, port int, timeout time.Duration, opt ...ClientOptions) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprint(port)), timeout)
 	if err != nil {
 		return nil, err
 	}
-	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)
+	noDelay, keepalive := true, 0
+	if len(opt) > 0 {
+		noDelay, keepalive = opt[0].NoDelay, opt[0].Keepalive
 	}
+	ApplySocketOptions(conn, noDelay, keepalive)
 	return conn, nil
 }
 

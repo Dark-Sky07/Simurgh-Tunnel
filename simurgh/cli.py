@@ -991,6 +991,95 @@ def cmd_speedtest(args) -> int:
         return 0
 
 
+def cmd_tune(args) -> int:
+    """`simurgh tune [gaming|balanced|speed]` -- the behaviour in one word."""
+    from . import tune
+
+    if args.show or not args.profile:
+        # listing the profiles needs no installation: it is documentation
+        rows = tune.describe(args.profile or None)
+        if args.json:
+            print(json.dumps({"profiles": rows}, indent=2))
+            return 0
+        for row in rows:
+            print(f"  {row['name']}  --  {row['title']}")
+            print(f"    {row['summary']}")
+            shared = [(key, value) for key, value in row["relay"].items()
+                      if row["exit"].get(key) == value]
+            print("    both files: " + ", ".join(
+                f"{key}={_tune_value(value)}" for key, value in shared))
+            relay_only = [(key, value) for key, value in row["relay"].items()
+                          if row["exit"].get(key) != value]
+            if relay_only:
+                print("    relay only: " + ", ".join(
+                    f"{key}={_tune_value(value)}" for key, value in relay_only))
+        if not args.profile:
+            print()
+            print("  use it: simurgh tune gaming      (add --dry-run to look first)")
+        return 0
+
+    home = _home_or_fail(args)
+
+    try:
+        profile = tune.get(args.profile)
+    except KeyError as exc:
+        _err(str(exc.args[0] if exc.args else exc))
+        return 2
+
+    role = _detect_role(home, args.role)
+    if role == "relay":
+        cfg = _load_relay_or_fail(home)
+        path = home.relay_cfg
+    else:
+        cfg = _load_exit_or_fail(home)
+        path = home.exit_cfg
+
+    changes = tune.apply(cfg, role, profile.name)
+    # `wrote` must only turn true once the file is really on disk, so the JSON
+    # is printed once, on the way out
+    payload = {"profile": profile.name, "role": role, "config": str(path),
+               "changes": changes, "wrote": False}
+    if not args.json:
+        print(f"  profile: {profile.name} -- {profile.title}")
+        for change in changes:
+            print(f"  {path.name}: {change['key']} "
+                  f"{_tune_value(change['old'])} -> {_tune_value(change['new'])}")
+    if not changes:
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            _ok(f"{path.name} already matches the {profile.name} profile")
+        return 0
+    if args.dry_run:
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            _warn("nothing was written (--dry-run)")
+        return 0
+    try:
+        save_exit(cfg, path) if role == "exit" else save_relay(cfg, path)
+    except OSError as exc:
+        _err(f"cannot write {path}: {exc}")
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        return 1
+    payload["wrote"] = True
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        _ok(f"{path.name}: {len(changes)} key(s) written")
+        print("apply it now: simurgh restart")
+    return 0
+
+
+def _tune_value(value) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
 def _print_speedtest(result: dict) -> None:
     """Human output: throughput first, then what users actually feel."""
     print(f"  download: \033[32m{result['download_mbps']:.1f} Mbps\033[0m "
@@ -1740,6 +1829,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="skip the latency probe (idle and under load)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_speedtest)
+
+    p = sub.add_parser("tune", help="pick a behaviour profile for this server")
+    p.add_argument("profile", nargs="?",
+                   help="gaming | balanced | speed (omit to list them)")
+    p.add_argument("--role", choices=("exit", "relay"), default=None,
+                   help="exit | relay (auto-detected by default)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print what would change, write nothing")
+    p.add_argument("--show", action="store_true", help="list the profiles")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_tune)
 
     p = sub.add_parser("link", help="build the setup link for the other server")
     p.add_argument("--host", default="")

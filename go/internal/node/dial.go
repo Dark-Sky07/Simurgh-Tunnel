@@ -26,6 +26,8 @@ type dialTarget struct {
 	FEC         string
 	Window      int
 	Token       string
+	NoDelay     bool
+	Keepalive   int
 }
 
 // dial opens one tunnel transport.
@@ -43,6 +45,8 @@ func (d dialTarget) dial() (mux.Channel, error) {
 			Split:       d.Split,
 			Token:       d.Token,
 			Timeout:     10 * time.Second,
+			NoDelay:     d.NoDelay,
+			Keepalive:   d.Keepalive,
 		}, carrier.UDPOptions{MTU: d.MTU, FEC: d.FEC, Window: d.Window})
 	}
 	return carrier.Dial(carrier.ClientOptions{
@@ -57,11 +61,27 @@ func (d dialTarget) dial() (mux.Channel, error) {
 		Split:       d.Split,
 		Token:       d.Token,
 		Timeout:     10 * time.Second,
+		NoDelay:     d.NoDelay,
+		Keepalive:   d.Keepalive,
 	})
 }
 
 // endpointTarget maps a relay-side [exit] / [[pool]] block onto a dial.
-func endpointTarget(ep config.Endpoint, token string) dialTarget {
+func endpointTarget(ep config.Endpoint, token string, fallback ...config.Endpoint) dialTarget {
+	// the file-level values arrive as the fallback endpoint's own fields, so a
+	// `[exit]`/`[[pool]]` block can override tcp_nodelay/tcp_keepalive exactly
+	// like it can in the Python engine
+	noDelay, keepalive := true, 0
+	if len(fallback) > 0 {
+		// the file's values, never the [exit] block's own overrides
+		noDelay, keepalive = fallback[0].FileNoDelayValue(), fallback[0].FileKeepaliveValue()
+	}
+	if ep.TCPNoDelay != nil {
+		noDelay = *ep.TCPNoDelay
+	}
+	if ep.TCPKeepalive != nil {
+		keepalive = *ep.TCPKeepalive
+	}
 	return dialTarget{
 		Carrier:     ep.Carrier,
 		Address:     ep.Address,
@@ -76,11 +96,13 @@ func endpointTarget(ep config.Endpoint, token string) dialTarget {
 		FEC:         ep.FEC,
 		Window:      ep.Window,
 		Token:       token,
+		NoDelay:     noDelay,
+		Keepalive:   keepalive,
 	}
 }
 
 // listenTarget maps an exit-side [[listen]] block (reverse mode) onto a dial.
-func listenTarget(spec config.ListenSpec, token string) dialTarget {
+func listenTarget(spec config.ListenSpec, token string, noDelay bool, keepalive int) dialTarget {
 	return dialTarget{
 		Carrier:     spec.Carrier,
 		Address:     spec.Dial,
@@ -94,5 +116,7 @@ func listenTarget(spec config.ListenSpec, token string) dialTarget {
 		FEC:         spec.FEC,
 		Window:      spec.Window,
 		Token:       token,
+		NoDelay:     noDelay,
+		Keepalive:   keepalive,
 	}
 }

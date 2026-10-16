@@ -275,9 +275,7 @@ func (e *Exit) handleOpen(s *mux.Stream) {
 		_ = s.Mux.OpenErr(s, code, "cannot reach "+net.JoinHostPort(host, fmt.Sprint(port)))
 		return
 	}
-	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)
-	}
+	carrier.ApplySocketOptions(conn, e.cfg.TCPNoDelay, e.cfg.TCPKeepalive)
 	if err := s.Mux.OpenOK(s); err != nil {
 		conn.Close()
 		return
@@ -324,7 +322,7 @@ func (e *Exit) reverseSupervisor(spec config.ListenSpec, slot int) {
 }
 
 func (e *Exit) reverseTunnel(spec config.ListenSpec) error {
-	ch, err := listenTarget(spec, e.cfg.Token).dial()
+	ch, err := listenTarget(spec, e.cfg.Token, e.cfg.TCPNoDelay, e.cfg.TCPKeepalive).dial()
 	if err != nil {
 		return err
 	}

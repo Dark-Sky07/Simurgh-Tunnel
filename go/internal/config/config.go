@@ -70,9 +70,15 @@ type Endpoint struct {
 	Padding            bool
 	Split              int // tls/wss: bytes in the first TCP segment of the ClientHello
 	Enabled            bool
+	TCPNoDelay         *bool  // nil = inherit the file's value
+	TCPKeepalive       *int   // nil = inherit; seconds, 0 = off
 	MTU                int    // udp carrier
 	FEC                string // udp carrier
 	Window             int    // udp carrier
+	// filled in by the parsers with the file-level values, so a dial can
+	// resolve an endpoint's overrides without carrying the whole config
+	FileNoDelay   bool
+	FileKeepalive int
 }
 
 // Tunnel is the relay's own listener in reverse mode.
@@ -129,6 +135,8 @@ type Exit struct {
 	Chunk           int
 	Connections     int
 	Keepalive       int
+	TCPNoDelay      bool // Nagle off (the Python engine's tcp_nodelay)
+	TCPKeepalive    int  // keepalive idle time in seconds, 0 = off
 	Tokens          []Token
 }
 
@@ -146,6 +154,8 @@ type Relay struct {
 	Connections     int
 	SpeedtestPort   int
 	LogLevel        string
+	TCPNoDelay      bool // Nagle off (the Python engine's tcp_nodelay)
+	TCPKeepalive    int  // keepalive idle time in seconds, 0 = off
 	Tokens          []Token
 	RateLimit       any // node-wide fallback for a mapping without its own
 	Quota           any
@@ -191,6 +201,8 @@ func LoadExit(path string) (*Exit, error) {
 		Chunk:           clampInt(integer(tree, "chunk", DefaultChunk), 4096, 1<<20),
 		Connections:     clampInt(integer(tree, "connections", 1), 1, 16),
 		Keepalive:       clampInt(integer(tree, "keepalive", DefaultKeepalive), 5, 3600),
+		TCPNoDelay:      boolean(tree, "tcp_nodelay", true),
+		TCPKeepalive:    maxInt(0, integer(tree, "tcp_keepalive", 0)),
 		Tokens:          tokenList(tree, str(tree, "token", "")),
 	}
 	if cfg.MaxStreamWindow < cfg.StreamWindow {
@@ -242,6 +254,8 @@ func LoadRelay(path string) (*Relay, error) {
 		Connections:     clampInt(integer(tree, "connections", 1), 1, 16),
 		SpeedtestPort:   integer(tree, "speedtest_port", 0),
 		LogLevel:        str(tree, "log_level", "info"),
+		TCPNoDelay:      boolean(tree, "tcp_nodelay", true),
+		TCPKeepalive:    maxInt(0, integer(tree, "tcp_keepalive", 0)),
 		Tokens:          tokenList(tree, str(tree, "token", "")),
 		RateLimit:       tree["rate_limit"],
 		Quota:           tree["quota"],
@@ -258,8 +272,12 @@ func LoadRelay(path string) (*Relay, error) {
 	if t := table(tree, "exit"); t != nil {
 		cfg.Exit = endpoint(t)
 	}
+	// the endpoints inherit the file's socket options unless they set their own
+	cfg.Exit.FileNoDelay, cfg.Exit.FileKeepalive = cfg.TCPNoDelay, cfg.TCPKeepalive
 	for _, t := range tables(tree, "pool") {
-		cfg.Pool = append(cfg.Pool, endpoint(t))
+		ep := endpoint(t)
+		ep.FileNoDelay, ep.FileKeepalive = cfg.TCPNoDelay, cfg.TCPKeepalive
+		cfg.Pool = append(cfg.Pool, ep)
 	}
 	if t := table(tree, "tunnel"); t != nil {
 		cfg.Tunnel = Tunnel{
@@ -304,6 +322,31 @@ func LoadRelay(path string) (*Relay, error) {
 	return cfg, nil
 }
 
+// NoDelayValue is the endpoint's effective `tcp_nodelay`: its own key when it
+// sets one, the file's value otherwise -- the same None means inherit rule the
+// Python engine applies to [exit] and [[pool]].
+func (e Endpoint) NoDelayValue() bool {
+	if e.TCPNoDelay != nil {
+		return *e.TCPNoDelay
+	}
+	return e.FileNoDelay
+}
+
+// KeepaliveValue is the effective `tcp_keepalive` in seconds (0 = off).
+func (e Endpoint) KeepaliveValue() int {
+	if e.TCPKeepalive != nil {
+		return *e.TCPKeepalive
+	}
+	return e.FileKeepalive
+}
+
+// FileNoDelayValue is only the file-level value, ignoring the endpoint's own
+// key: that is what a sibling endpoint inherits from the file.
+func (e Endpoint) FileNoDelayValue() bool { return e.FileNoDelay }
+
+// FileKeepaliveValue is only the file-level `tcp_keepalive` in seconds.
+func (e Endpoint) FileKeepaliveValue() int { return e.FileKeepalive }
+
 func endpoint(t map[string]any) Endpoint {
 	return Endpoint{
 		Carrier:            str(t, "carrier", "tls"),
@@ -319,7 +362,40 @@ func endpoint(t map[string]any) Endpoint {
 		MTU:                clampInt(integer(t, "mtu", DefaultMTU), 512, 65000),
 		FEC:                fecSpec(str(t, "fec", "off")),
 		Window:             clampInt(integer(t, "window", DefaultUDPWindow), 32, 65536),
+		TCPNoDelay:         boolPtr(t, "tcp_nodelay"),
+		TCPKeepalive:       intPtr(t, "tcp_keepalive"),
 	}
+}
+
+// boolPtr and intPtr keep "not configured" apart from "configured as false/0",
+// which is what the Python engine's `None` does for the same keys.
+func boolPtr(t map[string]any, key string) *bool {
+	raw, ok := t[key]
+	if !ok {
+		return nil
+	}
+	switch value := raw.(type) {
+	case bool:
+		return &value
+	case string:
+		parsed := value == "true" || value == "1"
+		return &parsed
+	case int64:
+		parsed := value != 0
+		return &parsed
+	case float64:
+		parsed := value != 0
+		return &parsed
+	}
+	return nil
+}
+
+func intPtr(t map[string]any, key string) *int {
+	if _, ok := t[key]; !ok {
+		return nil
+	}
+	value := integer(t, key, 0)
+	return &value
 }
 
 // tokenList reads the exit's credentials: the plain `token` plus any
@@ -552,6 +628,13 @@ func tables(t map[string]any, key string) []map[string]any {
 		}
 	}
 	return out
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func clampInt(v, lo, hi int) int {

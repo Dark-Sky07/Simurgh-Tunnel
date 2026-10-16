@@ -191,6 +191,9 @@ sides wins for any given stream, so setting them on the relay is enough.
 | — (shared) | `16 MiB` floor, `64 MiB` cap | The credit budget of the whole tunnel *connection*: it follows the sum of the live streams' current windows, so dozens of users on one connection never starve each other, while a peer that stops reading cannot park more than the cap per connection. Nothing to configure; it is what keeps 1000 users on one box from being limited to one user's window. |
 | `connections` | `1` | How many tunnel connections the relay keeps to the exit (1-16). Every connection is a separate TCP flow and a separate core's worth of work: on long, lossy paths 2-4 of them raise the total a lot and a single dropped connection only costs a fraction of the users. The relay hands each new user connection to the least busy tunnel. |
 | `chunk` | `64 KiB` | Largest payload per frame. Bigger frames mean less per-frame overhead and a little more latency headroom; 64 KiB is a good middle. |
+| `tcp_nodelay` | `true` | Nagle off on every socket this node opens: the tunnel dial, the exit's dial to a service, and the user connections the relay accepts. A small write (a keystroke in SSH, a request header) leaves immediately instead of waiting for the peer's ACK. `false` trades one round trip per small write for a little less overhead on bulk transfers. Both engines honour it, including the compiled one. |
+| `tcp_keepalive` | `0` (off) | Seconds of silence before the kernel starts probing a peer on those same sockets. `0` is off, and the tunnel's own ping (`keepalive`) is what notices a dead peer; a value of 15-30 s only reaps half-open user/service sockets sooner, which is worth it when a middlebox silently drops idle flows. |
+| — in `[exit]` / `[[pool]]` | inherits the file | A foreign endpoint may set its own `tcp_nodelay` / `tcp_keepalive`; leaving them out means "use the file's value". That is per-hop, so a lossy detour can be tuned without touching the others. |
 | `engine` | `go` | Which data plane runs this file: `go` (compiled, many cores, much less CPU per gigabyte) or `python` (portable, no build step). `simurgh init` writes `go` when this machine has the binary and `python` when it does not, so the default is whatever is actually installed; both speak the same protocol, so one side may run Go while the other still runs Python. Switch with `simurgh engine go` after building it (`sudo bash tools/build-go.sh`). The panel, the menu and the CLI stay Python. With `engine = "go"` the compiled engine runs as a **supervised child** of the Python process: the panel, `/metrics` and the alerts keep working next to it (the engine itself opens no HTTP port), `state.json` is followed so tunnel-up/down and quota events are announced, and an engine that dies is restarted with a growing backoff (0.5 s → 30 s) and reported. `simurgh relay --exec` hands the process over to the engine instead — lower overhead, but no panel and no alerts. |
 
 Measured on a simulated long path (2 vCPU container), single user, plain
@@ -295,6 +298,45 @@ instead of inventing numbers.
           "rtt_ms": 0.3, "jitter_ms": 0.1}
 }
 ```
+
+---
+
+## Performance profiles (`simurgh tune`)
+
+The keys above are a trade-off, not a setting, so the combinations that are
+worth having have names:
+
+```bash
+simurgh tune                     # list the profiles and their values
+simurgh tune gaming              # lowest latency, steadiest under load
+simurgh tune speed               # highest aggregate throughput
+simurgh tune balanced            # back to the shipped defaults
+simurgh tune speed --role relay  # which file (default: whichever exists)
+simurgh tune speed --dry-run     # print the difference, write nothing
+simurgh tune speed --json        # {profile, role, config, changes[], wrote}
+```
+
+| | `stream_window` | `max_stream_window` | `chunk` | `connections` | `keepalive` (ping) | `tcp_keepalive` |
+|---|---|---|---|---|---|---|
+| `gaming` | 128 KiB | 2 MiB | 16 KiB | 1 | 10 s | 15 s |
+| `balanced` (shipped) | 256 KiB | 8 MiB | 64 KiB | 1 | 25 s | 0 |
+| `speed` | 512 KiB | 32 MiB | 64 KiB | 4 | 25 s | 0 |
+
+A smaller window keeps less data in flight: shorter queues when the link is
+busy, steadier latency, less memory — and a single flow is capped lower on a
+long path. `gaming` goes that way, `speed` goes the other way (and raises
+`connections` to 4, the one key that wants both ends reachable), and `balanced`
+is exactly what `simurgh init` writes, so it doubles as the undo. Everything
+the profiles touch is a key both engines already read; the carrier, the token,
+the certificates and the mappings are never touched.
+
+Only keys that actually differ are reported and written, only the config file
+that exists is edited (on a one-box install, run it for each role), and the
+running process keeps the old values until `simurgh restart` — the command
+prints that reminder. `simurgh tune` with no profile, or `--show`, needs no
+installation at all: it is the documentation of the three choices. The menu has
+the same page as **[16] Performance profile**, and with no argument it prints
+the current value of every key next to the profile it belongs to.
 
 ---
 

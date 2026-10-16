@@ -188,7 +188,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **288 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, and the cross-engine tests below) |
+| `python -m pytest -q` | **302 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, tuning profiles, and the cross-engine tests below) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -206,6 +206,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 | Go engine, supervised | with `engine = "go"` the compiled engine runs as a child of the Python process, so the panel, `/metrics` and the alerts stay up next to it, `state.json` is followed for up/down/quota events, and an engine that dies is restarted with a growing backoff (0.5 s → 30 s) and reported. `simurgh relay --exec` keeps the old hand-off behaviour |
 | Certificates | `simurgh cert issue panel.example.com --webroot /var/www/html` drives `acme.sh` (preferred: one shell script, installs on a filtered server) or `certbot`, finds what it produced, writes `cert_file`/`key_file` into the right config (the exit's, the relay's `[tunnel]`, or one `[[listen]]` with `--port`), switches `cert_auto` off so a real certificate is never replaced by a self-signed one, and installs the client's renewal hook (`--reloadcmd "systemctl restart simurgh-exit"`, or `--apply` to run it at once). `simurgh cert` shows every certificate in use with days left, fingerprint and a `(self-signed)` mark, `simurgh cert status --json` is the same for a script (exit 1 when something is missing or inside 14 days), `simurgh cert renew` runs the client's own cron, and `--staging`/`--no-write` are there for dry runs |
 | Speed test | `simurgh speedtest` measures download/upload through the tunnel **and** the two numbers users actually feel: the round trip while the link is saturated (idle → under load, jitter, a bufferbloat grade A–F) and, with `--udp`, datagram loss/jitter through the same tunnel. `--streams N` sums several tunnel streams, `--json` is for scripts, and the exit's localhost-only endpoint now exists in **both** engines, so a Go exit answers it too |
+| Tuning profiles | `simurgh tune gaming|balanced|speed` sets the whole data path in one word — stream windows, frame size, tunnel connections, ping interval and the socket options — and writes only the keys that really differ, so `balanced` also means "undo". `--dry-run` prints the difference, `--json` is for scripts, bare `simurgh tune` documents the three choices without needing an installation, and the menu shows the same page as **[16] Performance profile**. Every key is one both engines read, so a mixed Python/Go pair stays in step |
 | Panel hardening | five wrong passwords from one address lock that address out for 300 s (`429`, counted in `simurgh_panel_lockouts_total`) and fire the `login` alert; tokens are masked everywhere they are printed |
 | `simurgh update` | works out what kind of install it is: a git checkout moves to the newest tag (and rebuilds the engine), a packaged install downloads this machine's asset, verifies its SHA-256 against `SHA256SUMS.txt` and swaps it in (old one kept as `.bak`), a pip install upgrades through pip. `--check [--json]` reports without touching anything, and with no network nothing changes |
 | Pool | 8 user connections over 4 tunnels: 13.0 MB/s vs 3.6 MB/s on one tunnel with the same per-flow cap, load spread 1/1/1/1 |
@@ -233,7 +234,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 288 tests (Python 3.11), no test-only dependencies
+python -m pytest -q                 # 302 tests (Python 3.11), no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
@@ -246,12 +247,13 @@ cd go && go test -race ./...        # the same under the race detector
 
 Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
 which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
-existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.7.1`.
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.8.0`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,
 `bridge.py` (socket ↔ stream), `exit.py` / `relay.py` (the two roles), `udp.py`,
-`speedtest.py`, `panel.py` (web UI), `menu.py`/`cli.py`/`systemd.py`,
+`speedtest.py`, `tune.py` (the performance profiles), `panel.py` (web UI),
+`menu.py`/`cli.py`/`systemd.py`,
 `config.py`, `links.py` (setup links), `certs.py`.
 
 The Go engine mirrors that layout: `go/internal/proto`, `mux`, `carrier`,

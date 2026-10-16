@@ -105,8 +105,11 @@ simurgh speedtest        # measures through the tunnel itself
 
 * If the tunnel is fast, the bottleneck is the foreign server, the panel, or the
   customer's link.
-* On very fast links (1 Gbit/s+) raise `stream_window` (e.g. `524288`) and keep
-  `chunk = 65536`.
+* Start from a profile instead of single keys: `simurgh tune speed` raises the
+  windows and the number of tunnel connections, `simurgh tune balanced` puts the
+  shipped values back (see [CONFIGURATION](CONFIGURATION.md#performance-profiles-simurgh-tune)).
+  On very fast links (1 Gbit/s+) it is `stream_window` (e.g. `524288`) that
+  matters, with `chunk = 65536` left alone.
 * Check `simurgh status` for CPU and for reconnect counters: frequent
   reconnects hurt throughput more than any tuning.
 

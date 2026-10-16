@@ -89,7 +89,7 @@ The table stays as the record of what was missing and why.
 | **Certificate automation** | chisel (`--tls-domain` → Let's Encrypt), FRPulse (certbot) | Simurgh *uses* an existing Let's Encrypt file fine (`cert_file`/`key_file`) and `certs.py` mentions acme.sh, but nothing obtains or renews a certificate for you *(verified)*. | **M** |
 | **Panel hardening** | Kariz (one-time login link) | The panel is plain HTTP with a shared password, has a `?k=<password>` URL form (password ends up in logs/history), and has an IP allow-list but no failed-attempt lockout and no 2FA *(verified: `panel.py`)*. Options: TLS, rate-limit login, one-time links. | **S–M** |
 | **Fuller speed test** | Kariz (download/upload, latency under load, jitter, UDP loss) | **Done in 2.7.0.** `simurgh speedtest` measures throughput (one or more streams), the idle *and* under-load round trip with jitter and a bufferbloat grade A–F, and — with `--udp` — datagram loss, RTT and jitter through the tunnel. The exit's localhost-only endpoint answers all three probes and now exists in **both** engines, and the exit announces its port in the connection hello so moving `speedtest_port` does not break the measurement. *(verified: `tests/test_speedtest.py` through a real relay+exit pair, and a live Python client against a Go exit)* | **done** |
-| **Preset tuning profiles** | Kariz (`balanced` / `ultraspeed` / `gaming`) | `stream_window`, `max_stream_window`, `chunk`, `connections`, `split` are all manual; a `simurgh tune gaming\|balanced\|speed` that writes sensible combinations would help most users. | **S** |
+| **Preset tuning profiles** | Kariz (`balanced` / `ultraspeed` / `gaming`) | **Done in 2.8.0.** `simurgh tune gaming\|balanced\|speed` writes a whole combination at once — `stream_window`, `max_stream_window`, `chunk`, `connections`, the tunnel ping interval and the socket options (`tcp_nodelay`, `tcp_keepalive`) — reporting only the keys that really differ, so `balanced` is also the undo. `--dry-run` prints the difference, `--json` is for scripts, `--role` picks the file, a bare `simurgh tune` documents the three choices without needing an installation, and the menu has the same page as **[16] Performance profile**. The compiled engine now reads `tcp_nodelay`/`tcp_keepalive` everywhere the Python engine does, including on the connections it accepts, so a mixed pair is tuned by one file. *(verified: `tests/test_tune.py` — 14 tests, incl. gaming < balanced < speed for every key, that `balanced` equals the shipped defaults, that relay-only keys never touch `exit.toml`, and every CLI path)* | **done** |
 
 ### P2 — worth having, out of the critical path
 
@@ -181,8 +181,9 @@ limits; both are done now.
 
 ### What is still open
 
-P1 left: packaging (Docker/DEB/RPM) and tuning profiles (`simurgh tune
-gaming\|balanced\|speed`).  The operator surface is now complete
+P1 left: packaging (Docker/DEB/RPM).  Tuning profiles (`simurgh tune
+gaming\|balanced\|speed`) and the socket-option keys behind them are done.  The
+operator surface is now complete
 on the Python side and works *with* the Go engine (supervised child: panel,
 `/metrics`, alerts, restarts).
 

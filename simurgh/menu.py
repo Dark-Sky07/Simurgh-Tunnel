@@ -478,6 +478,7 @@ MENU_RELAY = {
     "13": "Enable start on boot",
     "14": "Alerts (Telegram / webhook)",
     "15": "Certificates (Let's Encrypt)",
+    "16": "Performance profile (gaming / balanced / speed)",
 }
 
 
@@ -546,6 +547,8 @@ def menu_loop(home: Home, role: str) -> int:
             show_alerts(home, role)
         elif choice == "15":
             show_certificates(home, role)
+        elif choice == "16":
+            show_tuning(home, role)
         else:
             time.sleep(0.3)
 
@@ -579,6 +582,34 @@ def show_certificates(home: Home, role: str) -> None:
     print("    simurgh cert issue panel.example.com --webroot /var/www/html")
     print("    simurgh cert issue panel.example.com --standalone")
     print("    simurgh cert renew          # what the client's own cron runs")
+    pause()
+
+
+def show_tuning(home: Home, role: str) -> None:
+    """The three profiles, and what this server currently uses."""
+    from . import tune
+    from .cli import cmd_tune
+
+    cmd_tune(type("A", (), {"home": str(home.path), "role": role,
+                            "profile": None, "show": True, "json": False,
+                            "dry_run": False})())
+    print()
+    print(c("  Loaded keys:", "cyan"))
+    try:
+        cfg = (load_relay(home.relay_cfg) if role == "relay"
+               else load_exit(home.exit_cfg))
+    except Exception as exc:                       # pragma: no cover - unreadable
+        print(f"    {exc}")
+        pause()
+        return
+    for key in tune.STREAM_KEYS + tune.SOCKET_KEYS:
+        value = getattr(cfg, key, None)
+        match = ""
+        for profile in tune.describe():
+            if profile[role].get(key) == value:
+                match = profile["name"]
+                break
+        print(f"    {key} = {value}" + (f"   ({match})" if match else ""))
     pause()
 
 
