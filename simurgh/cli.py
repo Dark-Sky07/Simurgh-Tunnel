@@ -1393,6 +1393,7 @@ def cmd_web(args) -> int:
     port = args.port or (cfg.panel_port if role == "relay" else RELAY_DEFAULT_PANEL)
     host = args.host
     user, password = _panel_credentials(home)
+    link_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
     from .panel import Panel
 
     async def go():
@@ -1401,7 +1402,14 @@ def cmd_web(args) -> int:
         stop = asyncio.Event()
         _install_signal_handlers(stop)
         await panel.start()
-        print(f"  panel: http://{host}:{port}   user: {user}   pass: {password}")
+        print(f"  panel: http://{link_host}:{port}   user: {user}   pass: {password}")
+        if args.link:
+            # one link, one login: hand it to the operator instead of a password
+            ttl = float(args.link_ttl or 600)
+            made = panel.login_tokens.create("cli", ttl)
+            _ok(f"one-time link (valid {int(ttl)}s, single use): "
+                f"http://{link_host}:{port}/?t={made['token']}")
+            _info("open it in the browser; the password prompt is skipped")
         _info("Ctrl+C to quit")
         await stop.wait()
         await panel.stop()
@@ -1868,6 +1876,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--role", choices=("exit", "relay"), default=None, help="exit | relay (auto-detected by default)")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=0)
+    p.add_argument("--link", action="store_true",
+                   help="print a one-time login link instead of a password")
+    p.add_argument("--link-ttl", dest="link_ttl", type=int, default=600,
+                   help="how long that link stays valid, in seconds (default: 600)")
     p.set_defaults(func=cmd_web)
 
     p = sub.add_parser("cert", help="Let's Encrypt certificates (acme.sh / certbot)")

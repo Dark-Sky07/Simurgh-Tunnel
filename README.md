@@ -1,6 +1,6 @@
 # 🕊️ Simurgh Tunnel
 
-**English** · [فارسی](README.fa.md) &nbsp;|&nbsp; [Install](#install) · [Packages](docs/PACKAGING.md) · [Configuration](docs/CONFIGURATION.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Security](#security)
+**English** · [فارسی](README.fa.md) &nbsp;|&nbsp; [Install](#install) · [Packages](docs/PACKAGING.md) · [Panel](docs/PANEL.md) · [Configuration](docs/CONFIGURATION.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Security](#security)
 
 A transparent, multiplexed **TCP/UDP port-forwarding tunnel** between one or more
 Iranian servers (relay) and one or more foreign servers (exit) — the same class
@@ -24,7 +24,7 @@ customer ──same config, Iran IP──► [Iran relay] ══one disguised tu
 | Speed and stability | One multiplexed connection (`mux`) serves every user and every port; no re-encryption of user traffic, credit-based flow control instead of buffering. The per-stream window **grows itself** on long paths (bandwidth-delay product), and `connections = 2..16` keeps a pool of tunnels so one TCP flow — or one dropped tunnel — is never the ceiling for everyone. |
 | Easy install | One command per server, one link to move the config across. |
 | Minimal resources | Pure Python 3.9+ + asyncio, no Node/Go/database (on 3.9/3.10 the TOML reader is bundled, so installing needs no PyPI access). Idle memory ≈ 25–40 MB per role. |
-| Text menu + web panel | Full-featured **English text menu** (`simurgh menu`) and a **bilingual (EN/FA) web panel** with live graphs. |
+| Text menu + web panel | Full-featured **English text menu** (`simurgh menu`) and a **bilingual (EN/FA) web panel** with a live map of the tunnel, per-port charts, a wizard with rollback and one-time login links. |
 
 ## Two directions
 
@@ -69,9 +69,9 @@ units, the package never writes `/etc/simurgh` itself, and `simurgh update`
 understands all of them. Details: **[docs/PACKAGING.md](docs/PACKAGING.md)**.
 
 ```bash
-sudo dpkg -i simurgh_2.9.1_amd64.deb            # Debian / Ubuntu / Proxmox
-sudo dnf install ./simurgh-2.9.1-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
-sudo tar -xzf simurgh-2.9.1-noarch.tar.gz -C /  # any system with Python 3.9+
+sudo dpkg -i simurgh_3.0.0_amd64.deb            # Debian / Ubuntu / Proxmox
+sudo dnf install ./simurgh-3.0.0-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
+sudo tar -xzf simurgh-3.0.0-noarch.tar.gz -C /  # any system with Python 3.9+
 docker compose up -d                            # relay + exit, one machine
 ```
 
@@ -134,12 +134,35 @@ Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Web panel (bilingual)
 
-`http://<iran-ip>:8787` — English **and** Persian (`EN / فا` switch, choice
-remembered per browser, RTL/LTR automatic). Live tunnel state, throughput
-graphs, add/remove/toggle port mappings **without restarting**, speed test, log
-tail, service restart, and the setup link. One-click login:
-`http://<iran-ip>:8787/?k=<panel-password>`. Everything is served locally — no
-CDN, no external fonts.
+`http://<iran-ip>:8787` — the panel is a **map of the bird**: the Iranian relay
+is its left wing, the foreign exit its right wing, the tunnel body between them,
+and every user port a tail feather whose ring shows its quota and whose glow
+shows its live traffic. English **and** Persian (`EN / فا` switch, remembered
+per browser, RTL/LTR automatic), a half-hour throughput chart, per-port
+sparklines, and a `night`/`dawn` theme switch.
+
+Nine views, all of them served from the panel itself (no CDN, no external
+fonts, strict CSP):
+
+| View | What it does |
+|---|---|
+| **Dashboard** | the Simurgh map, the state cards, the live chart and the exit pool with its failover state |
+| **Ports** | add, remove, enable, disable and re-point mappings **without a restart**, with quota rings, byte totals and per-port sparklines |
+| **Wizard** | a **plan** for a tunnel you have not built yet: carrier, port, path, split and the first mapping — previewed as a diff, applied with a backup, undoable with one click |
+| **Speed test** | the same engine as `simurgh speedtest`, with this session's runs kept in the browser |
+| **Certificates** | every certificate in use: days left, fingerprint, `(self-signed)` marker, renewal hint |
+| **Logs** | the last lines of the node's log, filterable, auto-refreshing |
+| **Security** | the panel's own state: sessions, lockouts, failed logins, the one-time links you have minted |
+| **Settings** | the node's editable settings, the data plane in use, and the tunnel token |
+| **Tools** | restart / stop / start / reconnect, config export, log download, `/metrics` and `/healthz` links, `--check` for updates |
+
+Signing in: the password prompt (or `?k=<panel-password>`), a real login form at
+`/login`, or a **one-time link** — `simurgh web --link` prints one, and the
+Security page can mint one for a phone. A link is single-use and dies after
+10 minutes; a session cookie is `HttpOnly`, five wrong passwords from one
+address lock it out for 300 s.
+
+Full reference: [docs/PANEL.md](docs/PANEL.md).
 
 > Everything a server operator sees outside the panel — text menu, CLI,
 > installer output — is **English only**.
@@ -208,7 +231,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **317 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, tuning profiles, the packages (a real .deb/.rpm/tarball build, the container image files), and the cross-engine tests below) |
+| `python -m pytest -q` | **351 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, tuning profiles, the web panel (the map, the wizard, one-time links, the assets), the packages (a real .deb/.rpm/tarball build, the container image files), and the cross-engine tests below) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -241,6 +264,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 ## Documentation
 
+* [docs/PANEL.md](docs/PANEL.md) — the web panel: the map, the nine views, the wizard, themes, hardening and the whole API
 * [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — every key of `exit.toml` / `relay.toml`, carriers, mappings, pool, systemd units
 * [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — symptoms, causes, fixes
 * [docs/COMPARISON.md](docs/COMPARISON.md) — how Simurgh compares with rathole, frp, wstunnel, chisel, gost, Kariz, FRPulse and the Azumi67 recipes, and what it is still missing
@@ -254,7 +278,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 317 tests (Python 3.11), no test-only dependencies
+python -m pytest -q                 # 351 tests (Python 3.11), no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
@@ -267,12 +291,12 @@ cd go && go test -race ./...        # the same under the race detector
 
 Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
 which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
-existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.9.1`.
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v3.0.0`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,
 `bridge.py` (socket ↔ stream), `exit.py` / `relay.py` (the two roles), `udp.py`,
-`speedtest.py`, `tune.py` (the performance profiles), `panel.py` (web UI),
+`speedtest.py`, `tune.py` (the performance profiles), `panel.py` + `panel_ui.py` + `panel_i18n.py` + `layout.py` + `assets/` (the web panel),
 `menu.py`/`cli.py`/`systemd.py`,
 `config.py`, `links.py` (setup links), `certs.py`.
 

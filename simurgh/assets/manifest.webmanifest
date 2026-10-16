@@ -1,0 +1,15 @@
+{
+  "name": "Simurgh Tunnel",
+  "short_name": "Simurgh",
+  "description": "Control panel for the Simurgh Tunnel relay and exit.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#070a14",
+  "theme_color": "#0c1020",
+  "dir": "auto",
+  "icons": [
+    { "src": "/assets/simurgh.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/favicon.ico", "sizes": "64x64", "type": "image/png" }
+  ]
+}

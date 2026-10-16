@@ -117,6 +117,27 @@ def test_the_tarball_carries_both_engines_and_the_units(built):
                 if n.rsplit("/", 1)[-1].startswith("test_") or n.endswith("_test.py")]
 
 
+def test_the_panel_ships_inside_the_package(built, tmp_path):
+    """The web panel is a page; a package without its CSS/JS is a broken page."""
+    root = extract_tarball(next(built.glob("*.tar.gz")), tmp_path / "panel")
+    assets = root / "usr" / "lib" / "simurgh" / "simurgh" / "assets"
+    expected = {"index.html", "app.css", "app.js", "login.js", "simurgh.png",
+                "favicon.png", "manifest.webmanifest"}
+    found = {path.name for path in assets.iterdir()}
+    assert expected <= found, sorted(expected - found)
+    assert (assets / "app.js").stat().st_size > 10_000
+    assert (assets / "simurgh.png").stat().st_size > 10_000
+    # and the panel can actually read them from where the package put them
+    proc = run([sys.executable, "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]);"
+                "from simurgh import panel_ui;"
+                "print(panel_ui.read_asset('index.html')[0][:15].decode(),"
+                "      panel_ui.read_asset('simurgh.png')[1])",
+                str(root / "usr" / "lib" / "simurgh")])
+    assert proc.returncode == 0, proc.stderr
+    assert "<!DOCTYPE html>" in proc.stdout and "image/png" in proc.stdout
+
+
 def test_the_tarball_directory_is_private(built, tmp_path):
     root = extract_tarball(built / f"simurgh-{VERSION}-noarch.tar.gz", tmp_path / "root")
     config_dir = root / "etc" / "simurgh"

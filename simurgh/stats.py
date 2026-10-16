@@ -88,13 +88,16 @@ class Stats:
         return c
 
     def snapshot(self) -> dict:
-        rates = self.meter.update(self.tunnel.in_bytes + self.tunnel.out_bytes * 0,
-                                  self.tunnel.out_bytes)
+        # user traffic is counted per mapping (see RelayNode.count_bytes), so the
+        # aggregate -- what the panel's chart draws and the map animates -- is the
+        # sum of both, not the tunnel counter alone.  The Go engine reports the
+        # same numbers from its own totals, so the two engines agree.
         total_in = self.tunnel.in_bytes
         total_out = self.tunnel.out_bytes
         for c in self.mappings.values():
             total_in += c.in_bytes
             total_out += c.out_bytes
+        rates = self.meter.update(total_in, total_out)
         snap = {
             "uptime": time.time() - self.started,
             "tunnel": {**self.tunnel.as_dict(), "uptime": time.time() - self.started},

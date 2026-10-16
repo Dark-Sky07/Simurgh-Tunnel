@@ -29,6 +29,16 @@ jobs:
       - name: Install test tooling
         run: python -m pip install --quiet pytest "cryptography>=41"
 
+      # the web panel is half JavaScript: node runs that half against a stubbed
+      # DOM (tests/test_panel_js.py skips itself if node is missing)
+      - name: Show the node version the panel's tests will use
+        run: node --version
+
+      - name: Check the panel's JavaScript syntax
+        run: |
+          node --check simurgh/assets/app.js
+          node --check simurgh/assets/login.js
+
       - name: Run the test suite
         run: |
           set -o pipefail

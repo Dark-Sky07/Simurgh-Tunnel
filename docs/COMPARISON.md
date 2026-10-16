@@ -180,29 +180,34 @@ limits; both are done now.
 | **Packaging (.deb / .rpm / tarball / container)** | `packaging/build-packages.sh` stages the tree and builds a `.deb` (`dpkg-deb`), an `.rpm` (`rpmbuild`, same layout through the spec's `%install`) and a portable tarball that unpacks at `/` — the compiled engine included when `--go-binary` is passed (`all`/`noarch` variants without it). The launcher carries its library path (`$SIMURGH_LIB` overrides), the units are the same two roles, the package creates `/etc/simurgh` with mode `0700` and never writes it (`remove` keeps it, `purge` drops it). `Dockerfile` is a two-stage build that compiles the engine with `GOPROXY=off`, `docker-compose.yml` runs the pair, and CI builds every artefact plus the image on each push. | `tests/test_packaging.py`: 15 tests — a real build, the tarball's contents and modes, the packaged launcher running the CLI, the build-time libdir substitution, `dpkg-deb -I/-c` (control fields, the three maintainer scripts, no `DEBIAN/` in the payload, `amd64` when the engine is inside), the RPM spec against the staging tree, the Dockerfile's `COPY` paths and offline engine build, the compose port map, and the compose recipe really run through `simurgh install` |
 | **The Go engine, supervised** | With `engine = "go"` the compiled engine runs as a child process instead of replacing the Python one, so the panel, `/metrics` and the alerts survive next to it (the engine opens no HTTP port of its own). `state.json` is followed for up/down and quota events, and a crashed engine is restarted with a growing backoff (0.5 s → 30 s) with the exit code in the alert. `simurgh relay --exec` keeps the old hand-off behaviour for the tiny VPS. | `tests/test_supervise.py`: 12 tests against a stand-in engine — start/announce, log redirection, up→down→up, quota fired once per period, crash → restart with a new pid and an `error` alert, clean SIGTERM shutdown, the panel facade, deliberate restarts not counting as crashes. Plus a live smoke run: real Go engine, real panel (25 metric series), real traffic through the tunnel, SIGKILL → restart → traffic again |
 
-### The panel (in progress)
+### The panel (v3.0.0 — done)
 
-The operator surface is complete in the CLI, but the web panel is the one place
-Simurgh is still visibly behind Kariz: theirs is a real single-page app with a
-live map, per-server pages, charts, a wizard that rolls back and a one-time
-login link. **This is the next release's work**, and it is being built to the
-same standard the rest of the repo is held to: no CDN, no build step for the
-user, one self-contained page served by `simurgh/panel.py`, bilingual (EN/FA,
-RTL) like the README, and it must work with **both** engines (the Python panel
-already reads `state.json`, so a Go engine reports into it).
+The panel was the one place Simurgh was visibly behind Kariz. It is not any
+more: v3.0.0 replaces the old table-of-numbers dashboard with a map of the bird
+itself, and every row of the comparison below is now a shipped, tested feature.
+All of it is built to the standard the rest of the repo is held to: no CDN, no
+build step for the user, four assets served by `simurgh/panel.py`, bilingual
+(EN/FA, RTL) like the README, and it works with **both** engines (the panel
+reads `state.json`, so a supervised Go engine reports into it).
 
-| Kariz has | Simurgh will have | State |
+| Kariz has | Simurgh has | Where |
 |---|---|---|
-| live map of servers and tunnels with traffic | a topology view: Iranian relay ⇄ foreign exit(s), animated with the real throughput, per-mapping spurs, quota rings — the same data `/metrics` already exposes | planned |
-| per-server pages, charts, logs in the browser | dashboard with rolling throughput charts (from the `traffic.json` ledger, which survives restarts — data Kariz keeps in memory), log tail, and a per-mapping card for limits/quota/state | planned |
-| wizard that checks both servers and rolls back | a mapping/role wizard that validates the config, applies it, and restores the previous file if the first traffic probe fails | planned |
-| one-time login link | single-use, expiring login tokens next to the current password lockout (`simurgh web --link`) | planned |
-| light/dark themes, phone layout | two themes named after the project (night/dawn), responsive down to a phone, and no JavaScript framework to fetch | planned |
-| speed test in the panel | the existing `simurgh speedtest` results (throughput, latency under load, UDP loss) rendered as a page, per run | planned |
+| live map of servers and tunnels with traffic | the **Simurgh map**: relay and exit as the two wings, tunnel body between them, a tail feather per mapping with a quota ring and a live rate — driven by one `/api/layout` poll every 2 s | `simurgh/layout.py`, `simurgh/assets/app.js` |
+| per-server pages, charts, logs in the browser | dashboard, ports, wizard, speed test, certificates, logs, security, settings and tools views; a half-hour throughput chart from the panel's own `History`, per-port sparklines, and the log tail filtered and auto-refreshing | `simurgh/assets/index.html`, `app.js`, `app.css` |
+| wizard that checks both servers and rolls back | a plan for a tunnel you have not built yet: previewed as a diff, applied **with a backup**, undone by one click; a plan that makes no sense is refused with the reason | `panel_ui.plan_changes` / `apply_plan` / `backup` / `rollback` |
+| one-time login link | single-use, hashed, 10-minute tokens (max five outstanding) beside the password lockout: `simurgh web --link`, or the Security page for a phone | `panel_ui.LoginTokens`, `POST /api/login-token` |
+| light/dark themes, phone layout | `night` and `dawn` themes, remembered per browser; under 720 px the sidebar becomes a bottom bar and the map stacks; installable as a web app (`/manifest.webmanifest`) | `simurgh/assets/app.css`, `manifest.webmanifest` |
+| speed test in the panel | `simurgh speedtest`'s real numbers rendered per run, with this session's history kept in the browser | `POST /api/speedtest` |
 
-What stays Simurgh: everything is still one Python process, the panel is
-read-mostly and never in the data path, and a server with no panel
-(`simurgh relay --exec`) keeps working exactly as it does today.
+What stays Simurgh: everything is still one Python process, the panel is never in
+the data path, it ships its own CSS/JS/PNG inside the package (a strict CSP, no
+inline script), and a server with no panel (`simurgh relay --exec`) keeps
+working exactly as it does today.
+
+The one Kariz feature deliberately **not** copied is the multi-server view: a
+Simurgh panel manages the node it runs on, and a second server is reached
+through its own panel. That is the P2 item below, still open on purpose — it is
+a change to the product's shape, not a gap in the panel.
 
 ### What is still open
 
