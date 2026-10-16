@@ -94,7 +94,10 @@ main options:
   --fingerprint HEX          certificate fingerprint of the foreign server (optional)
   --insecure                 skip verifying the foreign certificate (testing)
   --listen PORTS             exit listening ports, e.g. 443,2053
-  --tunnel-port PORT         reverse mode: the tunnel port on THIS server
+  --tunnel-port PORT         the tunnel port: in reverse mode (--dial exit) the
+                             port THIS server listens on; with --role both the
+                             port the local exit is reached on (it is added to
+                             --listen, first, so both sides agree)
   --mapping L1:T1,L2:T2      relay port forwardings, e.g. 443:443
   --panel-port PORT          web panel port on the relay
   --split N                  anti-DPI: let the first N bytes of the tunnel
@@ -188,6 +191,11 @@ if [ -n "$EXIT_ADDR" ]; then
   EXIT_HOST="${EXIT_ADDR%:*}"
   EXIT_PORT="${EXIT_ADDR##*:}"
   [ -n "$EXIT_HOST" ] || die "--exit has no address: $EXIT_ADDR"
+  # ``[2001:db8::1]:443`` -> the config wants the address without its brackets
+  case "$EXIT_HOST" in
+    \[*\]*) EXIT_HOST="${EXIT_HOST#[}"; EXIT_HOST="${EXIT_HOST%]}" ;;
+    *:*) die "--exit with an IPv6 address needs brackets:  --exit [2001:db8::1]:443" ;;
+  esac
   case "$EXIT_PORT" in
     *[!0-9]*|"") die "--exit wants HOST:PORT with a numeric port (got: $EXIT_ADDR)" ;;
   esac
@@ -455,12 +463,56 @@ if [ -z "$ROLE" ]; then
   if [ -n "$EXIT_ADDR" ] || [ "$DIAL" = "exit" ]; then ROLE="relay"; else ROLE="exit"; fi
 fi
 
+# ------------------------------------------------- where is the exit server?
+# first listen port (``443,2053`` / ``443-445`` / ``443 2053`` all work)
+first_listen_port() {
+  printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[, ].*$//' -e 's/-.*$//'
+}
+# Both services on one server: the relay dials the exit that runs next to it,
+# and the exit has to listen on exactly the port the relay dials -- served with
+# tls, which is the carrier `simurgh install` gives the first listen port.
+if [ -z "$EXIT_HOST" ] && [ "$BOTH" = "1" ] && [ "$DIAL" != "exit" ]; then
+  if [ -n "$TUNNEL_PORT" ]; then
+    case ",$LISTEN," in
+      *",$TUNNEL_PORT,"*) ;;
+      # first in the list on purpose: `simurgh install` serves the *first*
+      # listen port with tls and only switches the third one to wss
+      *) LISTEN="$TUNNEL_PORT${LISTEN:+,$LISTEN}" ;;
+    esac
+  else
+    TUNNEL_PORT="$(first_listen_port "$LISTEN")"
+    [ -n "$TUNNEL_PORT" ] || TUNNEL_PORT="443"
+  fi
+  EXIT_HOST="127.0.0.1"
+  EXIT_PORT="$TUNNEL_PORT"
+say "both roles on this server: the relay dials the local exit on $EXIT_HOST:$EXIT_PORT"
+fi
+if [ "$BOTH" = "1" ]; then
+  if [ -n "$CARRIER" ] && [ "$CARRIER" != "tls" ]; then
+warn "a local exit serves tls on its first port; '$CARRIER' is ignored there."
+  fi
+  CARRIER="tls"
+fi
+if [ -n "$EXIT_HOST" ]; then
+  [ -n "$EXIT_PORT" ] || EXIT_PORT="443"
+elif [ -n "$TUNNEL_PORT" ]; then
+  # in reverse mode the tunnel port is the port THIS server listens on, which
+  # is what `--exit-port` means there. In direct mode it would silently replace
+  # the foreign port, so we say so instead of doing that.
+  if [ "$DIAL" = "exit" ]; then
+    EXIT_PORT="$TUNNEL_PORT"
+  else
+warn "--tunnel-port only applies in reverse mode (--dial exit); ignoring it."
+  fi
+fi
+
 ARGS=()
 [ "$FORCE" = "1" ]     && ARGS+=(--force)
 ARGS+=(--role "$ROLE")
 [ "$BOTH" = "1" ]      && ARGS+=(--both)
 [ -n "$NAME" ]         && ARGS+=(--name "$NAME")
 [ -n "$EXIT_HOST" ]    && ARGS+=(--exit-host "$EXIT_HOST")
+[ -n "$EXIT_PORT" ]    && ARGS+=(--exit-port "$EXIT_PORT")
 [ -n "$DIAL" ]         && ARGS+=(--dial "$DIAL")
 [ -n "$CARRIER" ]      && ARGS+=(--carrier "$CARRIER")
 [ -n "$DOMAIN" ]       && ARGS+=(--domain "$DOMAIN")
@@ -475,28 +527,6 @@ if [ -n "$MAPPING" ]; then
   IFS=',' read -ra _maps <<< "$MAPPING"
   for m in "${_maps[@]}"; do ARGS+=(--mapping "$m"); done
 fi
-# ------------------------------------------------- where is the exit server?
-# Both services on one server: the relay dials the exit that runs next to it.
-if [ -z "$EXIT_HOST" ] && [ "$BOTH" = "1" ] && [ "$DIAL" != "exit" ]; then
-  EXIT_HOST="127.0.0.1"
-  [ -n "$TUNNEL_PORT" ] || TUNNEL_PORT="443"
-say "both roles on this server: the relay dials the local exit on $EXIT_HOST:$TUNNEL_PORT"
-fi
-if [ -n "$EXIT_HOST" ]; then
-  [ -n "$EXIT_PORT" ] || EXIT_PORT="443"
-  ARGS+=(--exit-host "$EXIT_HOST" --exit-port "$EXIT_PORT")
-elif [ -n "$TUNNEL_PORT" ]; then
-  # in reverse mode the tunnel port is the port THIS server listens on, which
-  # is what `--exit-port` means there. In direct mode it would silently replace
-  # the foreign port, so we say so instead of doing that.
-  if [ "$DIAL" = "exit" ]; then
-    ARGS+=(--exit-port "$TUNNEL_PORT")
-  else
-warn "--tunnel-port only applies in reverse mode (--dial exit); ignoring it."
-  fi
-fi
-# --no-units (not --no-start/--no-enable): a machine that has systemctl but no
-# root must not try to write /etc/systemd/system just to finish the install
 [ "$NO_SYSTEMD" = "1" ] && ARGS+=(--no-units)
 
 SIMURGH_BIN="$VENV_DIR/bin/simurgh"
@@ -562,12 +592,24 @@ printf '%s\n' "  ${DIM}text menu: simurgh menu${RESET}"
 fi
 if [ "$SHOW_LINK" = "1" ]; then
   LINK="$("$SIMURGH_BIN" link --show 2>/dev/null || true)"
-[ -n "$LINK" ] && printf '%s\n' "  ${BOLD}relay setup link:${RESET} ${CYAN}$LINK${RESET}"
+  LINK_LABEL="relay setup link"
+  [ "$DIAL" = "exit" ] && LINK_LABEL="exit setup link"
+[ -n "$LINK" ] && printf '%s\n' "  ${BOLD}$LINK_LABEL:${RESET} ${CYAN}$LINK${RESET}"
 printf '%s\n' "  ${DIM}active ports: ${PORTS:-443}${RESET}"
   if [ "$BOTH" = "1" ] && [ "$DIAL" = "exit" ]; then
-    # reverse + both: the local exit still has to be told to dial this server
-printf '%s\n' "  ${DIM}reverse mode: import the link on this server as well (the local${RESET}"
-printf '%s\n' "  ${DIM}exit dials it):  sudo simurgh join '<link>'${RESET}"
+    # reverse + both: the local exit has to be told to dial this relay. The
+    # link is fetched from the local panel, so this only works once the relay
+    # is running; when it is not, we print the exact command to run later.
+    LOCAL_LINK="$("$SIMURGH_BIN" link --show --host 127.0.0.1 2>/dev/null || true)"
+    if [ -n "$LOCAL_LINK" ] &&
+       "$SIMURGH_BIN" join "$LOCAL_LINK" --force --host 127.0.0.1 >/dev/null 2>&1; then
+      systemctl restart simurgh-exit 2>/dev/null || true
+      ok "reverse mode: the local exit dials this relay now (127.0.0.1)"
+    else
+      printf '%s\n' "  ${DIM}reverse mode: the local exit still has to be pointed at this relay:${RESET}"
+      printf '%s\n' "  ${DIM}  sudo simurgh link --host 127.0.0.1 --show    # then:${RESET}"
+      printf '%s\n' "  ${DIM}  sudo simurgh join '<that link>' --host 127.0.0.1 --force${RESET}"
+    fi
   fi
 fi
 printf '%s\n' "  ${DIM}status: simurgh status   •   log: simurgh logs -f${RESET}"

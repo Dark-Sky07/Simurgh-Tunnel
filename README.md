@@ -74,11 +74,18 @@ Change only the address in their config: from the foreign IP/domain to the
 ### Both roles on one server
 
 `--role both` installs the relay and the exit together; the relay dials the
-local exit on `127.0.0.1:443` (change it with `--tunnel-port` or `--exit`):
+local exit on `127.0.0.1:443` — the first of `--listen`, so with
+`--role both --tunnel-port 8443` the exit is made to listen on `8443` as well
+(one shared token is generated for the two services):
 
 ```bash
 sudo bash install.sh --role both --name my-server
+sudo bash install.sh --role both --tunnel-port 8443    # tunnel on 8443
 ```
+
+In reverse (`--dial exit`) the installer points the local exit back at the
+relay by itself; if the panel is not up yet it prints the two commands that do.
+
 
 The installer is safe to run again: it refreshes the configuration and can be
 re-run after an upgrade or a network change (`--uninstall --purge` removes

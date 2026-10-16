@@ -21,6 +21,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 INSTALL = ROOT / "install.sh"
 
@@ -183,3 +185,67 @@ def test_role_both_writes_both_configs(tmp_path):
     assert "127.0.0.1" in relay
     token_line = [line for line in exit_cfg.splitlines() if line.startswith("token")][0]
     assert token_line in relay, "the relay and the exit must share the token"
+
+
+def _both_configs(tmp_path):
+    from simurgh.config import load_exit, load_relay
+
+    home = tmp_path / "etc"
+    return load_exit(home / "exit.toml"), load_relay(home / "relay.toml")
+
+
+@pytest.mark.parametrize("extra", [
+    [],                                        # defaults: 443, 2053, 2083
+    ["--tunnel-port", "8443"],
+    ["--listen", "9443,9444"],
+    ["--listen", "9443-9445", "--tunnel-port", "8443"],
+    ["--carrier", "wss"],                      # a local exit always serves tls
+])
+def test_both_mode_dials_a_port_and_carrier_the_local_exit_serves(tmp_path, extra):
+    """``--role both`` puts the relay and the exit on one machine, so the relay
+    must dial 127.0.0.1 on a port the exit actually listens on -- with the same
+    carrier. Otherwise the tunnel can never come up (the installer used to dial
+    443 no matter what ``--tunnel-port`` said)."""
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", "--role", "both", "--name", "dual", *extra],
+        env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    exit_cfg, relay_cfg = _both_configs(tmp_path)
+    assert relay_cfg.exit.address == "127.0.0.1"
+    served = {(spec.port, spec.carrier) for spec in exit_cfg.listen}
+    assert (relay_cfg.exit.port, relay_cfg.exit.carrier) in served, (
+        f"the exit serves {sorted(served)} but the relay dials "
+        f"{relay_cfg.exit.port}/{relay_cfg.exit.carrier}")
+    assert exit_cfg.token == relay_cfg.token
+
+    # the exit's certificate is self-signed and there is no setup link to carry
+    # its fingerprint to the relay here, so the relay has to pin it -- without
+    # the pin every handshake fails with "cannot reach exit".
+    from simurgh.certs import fingerprint_of
+
+    assert relay_cfg.exit.fingerprint == fingerprint_of(exit_cfg.cert_file)
+
+    # the exit listens on the tunnel port on this same machine, so mirroring
+    # its port list would make the relay fight the exit for those ports.
+    assert relay_cfg.accept_push is False
+
+
+def test_both_mode_in_reverse_prints_commands_that_work(tmp_path):
+    """Reverse + both: the local exit has to be pointed at the relay. The
+    installer either does it (panel already up) or prints the two commands that
+    do -- never the old ``simurgh join '<link>'`` placeholder."""
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", "--role", "both", "--dial", "exit",
+         "--tunnel-port", "8443", "--name", "dual"],
+        env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "<link>" not in output, output
+    exit_cfg, relay_cfg = _both_configs(tmp_path)
+    assert relay_cfg.dial == "exit"
+    assert relay_cfg.tunnel.port == 8443
+    # either the exit dials the relay now, or the exact way to make it do so
+    assert ("the local exit dials this relay now" in output
+            or "simurgh link --host 127.0.0.1 --show" in output), output
