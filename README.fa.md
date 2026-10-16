@@ -185,7 +185,7 @@ ChaCha20-Poly1305 به‌صورت vendor داخل `go/third_party/` است، پ�
 
 | آزمون | نتیجه |
 |---|---|
-| `python -m pytest -q` | **۱۲۶ تست، همه سبز** (پروتکل، مالتی‌پلکسر، کانفیگ، پنل، لینک، e2e هر ۴ حامل، حالت معکوس، استخر تونل، پنجرهٔ مشترک، پنجرهٔ خودکار، پیش‌فرض موتور، تکه‌کردن ClientHello) |
+| `python -m pytest -q` | **۱۵۳ تست، همه سبز** (پایتون ۳٫۱۱؛ تعداد بین نسخه‌های پایتون کمی متفاوت است) (پروتکل، مالتی‌پلکسر، کانفیگ، پنل، لینک، e2e هر ۴ حامل، حالت معکوس، استخر تونل، پنجرهٔ مشترک، پنجرهٔ خودکار، پیش‌فرض موتور، تکه‌کردن ClientHello) |
 | `go test ./...` (داخل پوشهٔ `go/`) | **سبز** — مالتی‌پلکسر (رفت‌وبرگشت، برگشت کردیت، رد درخواست، پنجرهٔ مشترک) و حامل/طعمه (plain، TLS، توکن غلط، پروکسی `site:`، صفحهٔ دلخواه) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — ۴ حامل × (کوچک، ۱۰۰ کیلوبایت، ۸ کاربر همزمان) |
 | مسیر واقعی کاربر | محتوای سرور خارج، بایت‌به‌بایت از پورت ایران سرو شد (۲۰۰ مگابایت پیوسته) |
@@ -212,6 +212,7 @@ ChaCha20-Poly1305 به‌صورت vendor داخل `go/third_party/` است، پ�
 * [docs/CONFIGURATION.fa.md](docs/CONFIGURATION.fa.md) — همهٔ کلیدهای `exit.toml` و `relay.toml`، حامل‌ها، mapping، pool، سرویس‌های systemd
 * [tools/latency_bench.py](tools/latency_bench.py) — بازتولید همهٔ عددهای سرعت بالا روی ماشین خودتان (`python tools/latency_bench.py 60 40 tls --connections 4`)
 * [docs/TROUBLESHOOTING.fa.md](docs/TROUBLESHOOTING.fa.md) — نشانه‌ها، علت‌ها و راه‌حل‌ها
+* [docs/COMPARISON.fa.md](docs/COMPARISON.fa.md) — مقایسه با rathole، frp، wstunnel، chisel، gost، کاریز، FRPulse و قالب‌های Azumi67 و فهرست چیزهایی که سیمورغ هنوز کم دارد
 * [README.md](README.md) — نسخهٔ انگلیسی همین صفحه
 
 ## توسعه
@@ -221,7 +222,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # ۱۲۶ تست، بدون وابستگی تست‌اضافه
+python -m pytest -q                 # ۱۵۳ تست (پایتون ۳٫۱۱)، بدون وابستگی تست‌اضافه
 python tools/live_smoke.py          # می‌ریس زنده روی لوپ‌بک (۴۰ بررسی)
 
 # موتور کامپایل‌شده (همان پروتکل، همان فایل‌های تنظیمات)

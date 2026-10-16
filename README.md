@@ -187,7 +187,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **126 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting) |
+| `python -m pytest -q` | **153 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -212,6 +212,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 * [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — every key of `exit.toml` / `relay.toml`, carriers, mappings, pool, systemd units
 * [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — symptoms, causes, fixes
+* [docs/COMPARISON.md](docs/COMPARISON.md) — how Simurgh compares with rathole, frp, wstunnel, chisel, gost, Kariz, FRPulse and the Azumi67 recipes, and what it is still missing
 * [tools/latency_bench.py](tools/latency_bench.py) — reproduce every throughput number above on your own machine (`python tools/latency_bench.py 60 40 tls --connections 4`)
 * [README.fa.md](README.fa.md) — the Persian version of this page (توضیح فارسی)
 
@@ -222,7 +223,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 126 tests, no test-only dependencies
+python -m pytest -q                 # 153 tests (Python 3.11), no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
