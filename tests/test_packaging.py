@@ -275,7 +275,7 @@ def test_the_rpm_builds(built):
     assert rpms, "the builder said it had rpmbuild but produced no .rpm"
     info = run(["rpm", "-qip", str(rpms[0])])
     assert info.returncode == 0, info.stderr
-    assert f"Version        : {VERSION}" in info.stdout or f"Version : {VERSION}" in info.stdout
+    assert re.search(rf"Version\s*:\s*{VERSION}\b", info.stdout), info.stdout[:200]
     files = run(["rpm", "-qlp", str(rpms[0])])
     assert "/usr/bin/simurgh" in files.stdout
 

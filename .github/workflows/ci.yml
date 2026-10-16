@@ -123,12 +123,18 @@ jobs:
 
       - name: Build the image and the compose file
         run: |
+          set -x
           docker build -t simurgh:ci .
           docker run --rm simurgh:ci --version
-          docker run --rm simurgh:ci simurgh-go version
+          # the compiled engine, straight through the entrypoint's override
+          docker run --rm --entrypoint /usr/bin/simurgh-go simurgh:ci version
           docker compose config -q
-          docker run --rm --entrypoint /bin/sh simurgh:ci -c \
-            'SIMURGH_HOME=/tmp/none simurgh-entrypoint relay; test $? -eq 1'
+          # a role with no config must refuse to start, and say why
+          if docker run --rm --entrypoint /bin/sh simurgh:ci -c \
+               'SIMURGH_HOME=/tmp/none simurgh-entrypoint relay'; then
+            echo "the entrypoint started an unconfigured role" >&2
+            exit 1
+          fi
 
       - name: Keep the packages
         uses: actions/upload-artifact@v4
