@@ -232,3 +232,49 @@ async def test_throttle_action_keeps_the_user_online(certs, tmp_path):
         await relay.stop()
         await node.stop()
         web.close()
+
+
+async def test_max_conns_turns_extra_users_away(certs, tmp_path):
+    """``max_conns = 1``: the second user is refused, the first is untouched."""
+    web, target_port = await _body_server(64 * 1024)
+    mapping = Mapping(name="single", listen=0, target_port=target_port, max_conns=1)
+    relay, node, port = await _stack(mapping, certs, tmp_path, target_port)
+    try:
+        first_reader, first_writer = await asyncio.open_connection("127.0.0.1", port)
+        first_writer.write(b"GET / HTTP/1.1\r\nHost: panel\r\n\r\n")
+        await first_writer.drain()
+        # let the first connection be accepted and bridged
+        await asyncio.sleep(0.3)
+        second_reader, second_writer = await asyncio.open_connection("127.0.0.1", port)
+        second_writer.write(b"GET / HTTP/1.1\r\nHost: panel\r\n\r\n")
+        await second_writer.drain()
+        answer = b""
+        try:
+            answer = await asyncio.wait_for(second_reader.read(256), 3)
+        except (asyncio.TimeoutError, ConnectionError):
+            answer = b""
+        assert answer == b"", f"the second user was served anyway: {answer[:80]!r}"
+        assert relay.stats.mapping(mapping.key()).last_error == "max_conns reached"
+
+        # the first connection still works
+        chunk = await asyncio.wait_for(first_reader.read(1024), 10)
+        assert chunk, "the first user lost its connection"
+        first_writer.close()
+        # ...and once it is gone the port accepts again
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            probe_reader, probe_writer = await asyncio.open_connection("127.0.0.1", port)
+            probe_writer.write(b"GET / HTTP/1.1\r\nHost: panel\r\n\r\n")
+            await probe_writer.drain()
+            try:
+                if await asyncio.wait_for(probe_reader.read(256), 3):
+                    probe_writer.close()
+                    return
+            except (asyncio.TimeoutError, ConnectionError):
+                pass
+            probe_writer.close()
+        raise AssertionError("the mapping never accepted a user again")
+    finally:
+        await relay.stop()
+        await node.stop()
+        web.close()

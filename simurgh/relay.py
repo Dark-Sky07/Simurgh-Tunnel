@@ -55,8 +55,27 @@ class UserBridge(Bridge):
         self.mapping = mapping
         self.limiter = node.limiter_for(mapping)
         self.on_bytes = lambda direction, n: node.count_bytes(mapping, direction, n)
+        #: set once the mapping's connection slot is taken (see connection_made)
+        self._slot = False
+
+    def connection_lost(self, exc) -> None:
+        if self._slot:
+            self._slot = False
+            self.node.release_slot(self.mapping)
+        super().connection_lost(exc)
 
     def connection_made(self, transport) -> None:
+        if not self.node.get_slot(self.mapping):
+            self.node.stats.mapping(self.mapping.key()).errors += 1
+            self.node.stats.mapping(self.mapping.key()).last_error = "max_conns reached"
+            log.warning("mapping %s is at max_conns; refusing %s",
+                        self.mapping.name or self.mapping.key(), transport)
+            try:
+                transport.close()
+            except Exception:
+                pass
+            return
+        self._slot = True
         quota = self.node.quota_for(self.mapping)
         if self.node._over_quota(self.mapping):
             action = getattr(quota, "action", "block")
@@ -103,6 +122,8 @@ class RelayNode:
         #: per-mapping bandwidth buckets, quotas and their traffic history
         self._limiters: dict[str, object] = {}
         self._quotas: dict[str, object] = {}
+        #: concurrent user connections per mapping (``max_conns``)
+        self._active: dict[str, int] = {}
         self._warned: dict[str, float] = {}
         self.blocked = 0
         self.account: TrafficAccount | None = None
@@ -584,6 +605,28 @@ class RelayNode:
                 self.account.add(key, in_bytes=nbytes)
             else:
                 self.account.add(key, out_bytes=nbytes)
+
+    def max_conns(self, mapping) -> int:
+        """The concurrent-connection ceiling of one mapping (0 = unlimited)."""
+        return max(0, int(getattr(mapping, "max_conns", 0)
+                          or getattr(self.cfg, "max_conns", 0) or 0))
+
+    def get_slot(self, mapping) -> bool:
+        """Reserve one of the mapping's connection slots."""
+        limit = self.max_conns(mapping)
+        if not limit:
+            return True
+        key = mapping.key()
+        if self._active.get(key, 0) >= limit:
+            return False
+        self._active[key] = self._active.get(key, 0) + 1
+        return True
+
+    def release_slot(self, mapping) -> None:
+        if not self.max_conns(mapping):
+            return
+        key = mapping.key()
+        self._active[key] = max(0, self._active.get(key, 0) - 1)
 
     def _over_quota(self, mapping) -> bool:
         """Has this mapping used up its allowance?  Warns once per 5 minutes."""

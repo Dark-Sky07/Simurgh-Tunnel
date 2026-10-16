@@ -189,6 +189,26 @@ func CheckClientHeader(header []byte, token string) (int64, bool) {
 	return ts, true
 }
 
+// MatchClientHeader verifies a client header against several tokens (a
+// multi-tenant exit holds one per relay) and returns the timestamp together
+// with the token that signed it.  The matched token travels up with the
+// connection, which is how per-token policy stays enforceable.
+func MatchClientHeader(header []byte, tokens []string) (int64, string, bool) {
+	if len(tokens) == 1 {
+		ts, ok := CheckClientHeader(header, tokens[0])
+		return ts, tokens[0], ok
+	}
+	for _, token := range tokens {
+		if token == "" {
+			continue
+		}
+		if ts, ok := CheckClientHeader(header, token); ok {
+			return ts, token, true
+		}
+	}
+	return 0, "", false
+}
+
 // ServerHeader builds the server's answer, bound to the client timestamp.
 func ServerHeader(token string, clientTS, ts int64) []byte {
 	key := AuthKey(token)

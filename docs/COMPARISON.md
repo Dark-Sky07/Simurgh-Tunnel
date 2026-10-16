@@ -51,10 +51,9 @@ These are not small things — they are the reason the project exists:
   every dependency vendored under `go/third_party/` *(verified:
   `tools/build-go.sh` builds with `GOPROXY=off`)*. On a machine where pip or the
   Go proxy is blocked, this is the difference between "works" and "no install".
-* **Verified claims instead of vibes.** 171 tests pass in this checkout
-  *(verified here: `python3 -m pytest -q` → 153 passed in 138 s on Python 3.11;
-  the README said 126 — corrected while writing this page)*, plus Go tests and a
-  live carrier matrix.
+* **Verified claims instead of vibes.** 176 tests pass in this checkout
+  *(the number this page found was 153; every iteration since carries its own
+  proof in the table below)*, plus the Go test suite and a live carrier matrix.
 * **Operator ergonomics:** one command that works out the role by itself, a
   setup link / `simurgh join`, a text menu, `simurgh doctor`, a bilingual panel,
   live mapping changes without restart, engine switch without touching configs.
@@ -156,10 +155,24 @@ measurement proves is called done.
 | **Real multi-exit** | `[[pool]]` now dials **every** endpoint (one tunnel each, extras round robin); streams go to the least-loaded tunnel; a mapping can pin itself with `exit = "kharej-2"`; an active health loop pings every tunnel, records RTT and takes an endpoint out of the candidate list after three misses | `tests/test_pool.py` + `tests/test_e2e.py` |
 | **Per-mapping bandwidth and quota** | `rate_limit = "20M"` or `{rate = "10M", burst = "1M"}` is one shared token bucket per mapping, applied by *pausing the socket* (never dropping); `quota = "200G"` with `quota_action = block|throttle|warn` is enforced from a persistent ledger (`traffic.json`, day/month buckets, survives restarts) | `tests/test_limits.py` (limit is honoured, raising it in the config speeds the next connection up, an exhausted quota turns the next user away, `throttle` keeps them online, the ledger reloads after a restart) |
 
+### Go engine parity — complete
+
+The compiled engine used to speak four of the five carriers and to ignore the
+limits; both are done now.
+
+| Item | How it works now | Proof |
+|---|---|---|
+| **The `udp` carrier in Go** | `go/internal/carrier/udp.go` is a byte-for-byte reimplementation of `simurgh/udpcarrier.py`: the hello HMAC, ChaCha20-Poly1305 with the packet id as nonce, the SACK/stream core, XOR-FEC and the socket tuning. `carrier = "udp"` works on both sides, including the reverse mode (`[tunnel]` with `carrier = "udp"`). | `go/internal/carrier/udp_test.go`: wire-format vectors checked against the Python constants, `ParseFEC`, a round trip, a 512 KiB stream at **80 MB/s** on loopback, mux over UDP, and FEC repairing a real drop behind a lossy middlebox (`server received 4 parity packets … recovered 2`) |
+| **Limits in Go** | `go/internal/limits/` is the Go copy of `ratelimit.py` + `accounting.py`: one byte bucket per mapping drawing from both directions, quotas with `block` / `throttle` / `warn`, `max_conns` slots, and a ledger that **is** `traffic.json` — same version, same key names (`tcp:host:port/target:port`, `token:<name>`), same day/month buckets, so the panel and `simurgh traffic` read one history whichever engine ran. | `go/internal/limits/limits_test.go` (sizes, bucket rate within 60 %, ledger round trip) and `go/internal/node/limits_test.go`: 192 KiB through a `rate_limit = "64k"` mapping takes 5.0 s and every byte arrives; a mapping over `quota = "4k"` refuses the next user (`blocked` counted, ledger written); `quota_action = "throttle"` keeps serving at 128 KiB/s; `max_conns = 1` refuses the second user and accepts again once the first leaves |
+| **One fix the limits exposed** | A user who closed before the far side finished left the socket half open forever, holding its `max_conns` slot. The bridge now closes for real once both halves are done. | `tests/test_limits.py::test_max_conns_turns_extra_users_away` (the port accepts again after the first user leaves) |
+| **Cross-engine proof** | One engine as the relay, the other as the exit, over `plain` and `udp`, in both roles. | `tests/test_udp_cross_engine.py` (4 tests, a real HTTP answer byte for byte) |
+
 ### What is still open
 
 P1 (metrics/API, `simurgh update`, alerts, packaging, ACME, panel hardening,
 richer speedtest, tune profiles) and P2 (SOCKS5 listener, TUN/TAP, vhost reuse,
 SSH gateway, plugins, multi-server panel, packaging, first-class IPv6, socket
-knobs, Windows/macOS services) — plus the Go counterpart of the UDP carrier,
-which the next iteration of this branch adds.
+knobs, Windows/macOS services).  On the Go side the remaining parity work is the
+per-token data-path policy (port/target allowlists, per-token buckets and quotas)
+and the operator surface (panel, `/metrics`, alerts, proxy-out), which the next
+iterations of this branch add.

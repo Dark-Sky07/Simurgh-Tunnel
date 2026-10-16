@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -15,9 +16,14 @@ import (
 
 	"github.com/Dark-Sky07/Simurgh-Tunnel/go/internal/carrier"
 	"github.com/Dark-Sky07/Simurgh-Tunnel/go/internal/config"
+	"github.com/Dark-Sky07/Simurgh-Tunnel/go/internal/limits"
 	"github.com/Dark-Sky07/Simurgh-Tunnel/go/internal/mux"
 	"github.com/Dark-Sky07/Simurgh-Tunnel/go/internal/proto"
 )
+
+// ThrottleRate is what a mapping over a "throttle" quota drops to: still
+// online, but at a crawl until the period rolls over.
+const ThrottleRate = 128 * 1024
 
 var bufPool = sync.Pool{
 	New: func() any {
@@ -30,20 +36,26 @@ var bufPool = sync.Pool{
 // pool of tunnel connections.
 // mapCounter is what the panel shows under a port forwarding.
 type mapCounter struct {
-	in     atomic.Int64
-	out    atomic.Int64
-	conns  atomic.Int64
-	active atomic.Int64
-	errors atomic.Int64
+	in        atomic.Int64
+	out       atomic.Int64
+	conns     atomic.Int64
+	active    atomic.Int64
+	errors    atomic.Int64
+	lastError atomic.Value // string
 }
 
 func (c *mapCounter) asDict() map[string]any {
+	err := ""
+	if v, ok := c.lastError.Load().(string); ok {
+		err = v
+	}
 	return map[string]any{
-		"in_bytes":  c.in.Load(),
-		"out_bytes": c.out.Load(),
-		"conns":     c.conns.Load(),
-		"active":    c.active.Load(),
-		"errors":    c.errors.Load(),
+		"in_bytes":   c.in.Load(),
+		"out_bytes":  c.out.Load(),
+		"conns":      c.conns.Load(),
+		"active":     c.active.Load(),
+		"errors":     c.errors.Load(),
+		"last_error": err,
 	}
 }
 
@@ -60,6 +72,7 @@ type Relay struct {
 
 	listeners []net.Listener
 	tunnel    []net.Listener
+	udpTunnel []*carrier.UDPServer
 	udpListen []*udpListener
 	wg        sync.WaitGroup
 
@@ -73,6 +86,15 @@ type Relay struct {
 	statMu   sync.Mutex
 	mappings map[string]*mapCounter // key = listen port
 	state    *stateWriter
+
+	// bandwidth limits, quotas and the traffic ledger (see go/internal/limits)
+	limMu   sync.Mutex
+	buckets map[string]*limits.Bucket
+	quotas  map[string]limits.Quota
+	warned  map[string]time.Time
+	active  map[string]*atomic.Int64
+	blocked atomic.Int64
+	account *limits.Account
 }
 
 // NewRelay builds a relay node.
@@ -89,6 +111,12 @@ func (r *Relay) Config() *config.Relay { return r.cfg }
 
 // Start binds the user facing ports and keeps the tunnel pool full.
 func (r *Relay) Start() error {
+	// the ledger survives restarts and is the same file the Python engine
+	// writes, so `simurgh traffic` keeps its history across an engine switch
+	r.account = limits.Open(filepath.Join(r.home, "traffic.json"))
+	r.account.Start()
+	defer r.account.Prune(limits.KeepDays)
+
 	for _, m := range r.cfg.Mappings {
 		if !m.Enabled || m.Listen == 0 {
 			continue
@@ -145,11 +173,17 @@ func (r *Relay) Start() error {
 // Stop closes everything.
 func (r *Relay) Stop() {
 	r.once.Do(func() { close(r.stop) })
+	if r.account != nil {
+		defer r.account.Stop()
+	}
 	for _, ln := range r.listeners {
 		ln.Close()
 	}
 	for _, ln := range r.tunnel {
 		ln.Close()
+	}
+	for _, srv := range r.udpTunnel {
+		srv.Close()
 	}
 	for _, ul := range r.udpListen {
 		ul.close()
@@ -203,9 +237,36 @@ func (r *Relay) handleUser(counter *mapCounter, conn net.Conn, m config.Mapping)
 	if tc, ok := conn.(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
 	}
+	key := m.Key()
+	// a mapping over its quota either stops accepting or crawls
+	bucket := r.limiterFor(m)
+	if r.overQuota(m) {
+		if r.quotaFor(m).Action == "throttle" {
+			bucket = limits.NewBucket(ThrottleRate, 0, key)
+		} else {
+			r.blocked.Add(1)
+			counter.errors.Add(1)
+			counter.lastError.Store("quota exceeded")
+			slog.Warn("mapping is over its quota; refusing a user",
+				"mapping", m.Name, "key", key, "peer", conn.RemoteAddr())
+			conn.Close()
+			return
+		}
+	}
+	if !r.takeSlot(m, key) {
+		counter.errors.Add(1)
+		counter.lastError.Store("max_conns reached")
+		slog.Warn("mapping is at max_conns; refusing a user",
+			"mapping", m.Name, "limit", m.MaxConns, "peer", conn.RemoteAddr())
+		conn.Close()
+		return
+	}
 	counter.conns.Add(1)
 	counter.active.Add(1)
-	defer counter.active.Add(-1)
+	defer func() {
+		counter.active.Add(-1)
+		r.releaseSlot(key)
+	}()
 	conn = countingConn{Conn: conn, counter: counter}
 	target, err := proto.EncodeAddr(m.TargetHost, m.TargetPort)
 	if err != nil {
@@ -226,7 +287,133 @@ func (r *Relay) handleUser(counter *mapCounter, conn net.Conn, m config.Mapping)
 		conn.Close()
 		return
 	}
-	Bridge(conn, s)
+	BridgeLimited(conn, s, bucket, func(up bool, n int) {
+		if up {
+			r.countBytes(key, int64(n), 0)
+		} else {
+			r.countBytes(key, 0, int64(n))
+		}
+	})
+}
+
+// ------------------------------------------------------------------- limits
+
+// limiterFor is the shared byte bucket of one mapping (nil = unlimited).
+func (r *Relay) limiterFor(m config.Mapping) *limits.Bucket {
+	key := m.Key()
+	r.limMu.Lock()
+	defer r.limMu.Unlock()
+	if r.buckets == nil {
+		r.buckets = map[string]*limits.Bucket{}
+	}
+	if bucket, ok := r.buckets[key]; ok {
+		return bucket
+	}
+	value := m.RateLimit
+	if value == nil {
+		value = r.cfg.RateLimit
+	}
+	bucket := limits.Limiter(value, key)
+	if bucket != nil {
+		slog.Info("rate limit", "mapping", m.Name, "key", key,
+			"rate", limits.Human(float64(bucket.Rate))+"/s")
+	}
+	r.buckets[key] = bucket
+	return bucket
+}
+
+// quotaFor is the quota of one mapping, falling back to the node default.
+func (r *Relay) quotaFor(m config.Mapping) limits.Quota {
+	key := m.Key()
+	r.limMu.Lock()
+	defer r.limMu.Unlock()
+	if r.quotas == nil {
+		r.quotas = map[string]limits.Quota{}
+	}
+	if quota, ok := r.quotas[key]; ok {
+		return quota
+	}
+	value, period, action := m.Quota, m.QuotaPeriod, m.QuotaAction
+	if value == nil {
+		value, period, action = r.cfg.Quota, r.cfg.QuotaPeriod, r.cfg.QuotaAction
+	}
+	quota := limits.QuotaFrom(value, period, action, key)
+	if quota.Enabled() {
+		slog.Info("traffic quota", "mapping", m.Name, "key", key, "quota", quota.Describe())
+	}
+	r.quotas[key] = quota
+	return quota
+}
+
+// overQuota reports whether a mapping has used up its allowance.  A "warn"
+// quota never blocks; it just says so once per five minutes.
+func (r *Relay) overQuota(m config.Mapping) bool {
+	quota := r.quotaFor(m)
+	if r.account == nil || !quota.Enabled() {
+		return false
+	}
+	key := m.Key()
+	if !quota.Exceeded(r.account, key) {
+		return false
+	}
+	if quota.Action == "warn" {
+		r.limMu.Lock()
+		if r.warned == nil {
+			r.warned = map[string]time.Time{}
+		}
+		last := r.warned[key]
+		r.warned[key] = time.Now()
+		r.limMu.Unlock()
+		if time.Since(last) > 5*time.Minute {
+			slog.Warn("mapping is over its quota", "key", key,
+				"used", r.account.Usage(key, quota.Period), "limit", quota.Limit)
+		}
+		return false
+	}
+	return true
+}
+
+// takeSlot reserves one of the mapping's concurrent connections.
+func (r *Relay) takeSlot(m config.Mapping, key string) bool {
+	if m.MaxConns <= 0 {
+		return true
+	}
+	r.limMu.Lock()
+	if r.active == nil {
+		r.active = map[string]*atomic.Int64{}
+	}
+	slot := r.active[key]
+	if slot == nil {
+		slot = &atomic.Int64{}
+		r.active[key] = slot
+	}
+	r.limMu.Unlock()
+	for {
+		current := slot.Load()
+		if current >= int64(m.MaxConns) {
+			return false
+		}
+		if slot.CompareAndSwap(current, current+1) {
+			return true
+		}
+	}
+}
+
+func (r *Relay) releaseSlot(key string) {
+	r.limMu.Lock()
+	slot := r.active[key]
+	r.limMu.Unlock()
+	if slot != nil {
+		slot.Add(-1)
+	}
+}
+
+// countBytes writes traffic into the ledger (and keeps the ledger's totals
+// visible in the panel as it goes).
+func (r *Relay) countBytes(key string, in, out int64) {
+	if r.account != nil {
+		r.account.Add(key, in, out)
+	}
 }
 
 // halfCloser is a socket that can close just its write side (HTTP style half
@@ -264,12 +451,40 @@ func (c countingConn) CloseWrite() error {
 	return nil
 }
 
+// Paced is the part of *limits.Bucket a data path needs: how many bytes may
+// pass now, and how long to wait for the rest.
+type Paced interface {
+	Allowance(n int) (int, time.Duration)
+}
+
 // Bridge wires a local socket to a tunnel stream in both directions.
 func Bridge(conn net.Conn, s *mux.Stream) {
+	BridgeLimited(conn, s, nil, nil)
+}
+
+// BridgeLimited is Bridge with a bandwidth limit and a byte counter.
+//
+// The limit is applied on both directions of the same connection and both draw
+// from one bucket, so `rate_limit = "20M"` really means 20 Mbit/s for that map
+// (10 Mbit/s each way when both directions run at once), like frp's
+// bandwidthLimit.  When the bucket runs dry the data path sleeps a moment
+// instead of dropping anything, so a limited user sees a slower link, never a
+// broken one.
+func BridgeLimited(conn net.Conn, s *mux.Stream, paced Paced, onBytes func(up bool, n int)) {
+	count := func(up bool, n int) {
+		if onBytes != nil && n > 0 {
+			onBytes(up, n)
+		}
+	}
+	// down: the stream's own pump goroutine calls this, so sleeping here
+	// backpressures the tunnel instead of stalling the mux reader
 	s.Attach(
 		func(data []byte) error {
-			_, err := conn.Write(data)
-			return err
+			if err := writePaced(conn, data, paced); err != nil {
+				return err
+			}
+			count(false, len(data))
+			return nil
 		},
 		func() {
 			// the peer finished sending: pass a half close on
@@ -291,7 +506,8 @@ func Bridge(conn net.Conn, s *mux.Stream) {
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
-			if werr := s.Write(buf[:n]); werr != nil {
+			count(true, n)
+			if werr := writeStream(s, buf[:n], paced); werr != nil {
 				return
 			}
 		}
@@ -306,6 +522,56 @@ func Bridge(conn net.Conn, s *mux.Stream) {
 	}
 }
 
+// writePaced writes every byte of data to w, waiting on the bucket when it has
+// to.  A partial allowance is written straight away, so a frame bigger than
+// the burst still makes progress.
+func writePaced(w io.Writer, data []byte, paced Paced) error {
+	for len(data) > 0 {
+		if paced == nil {
+			_, err := w.Write(data)
+			return err
+		}
+		allowed, delay := paced.Allowance(len(data))
+		if allowed > 0 {
+			if _, err := w.Write(data[:allowed]); err != nil {
+				return err
+			}
+			data = data[allowed:]
+		}
+		if len(data) > 0 {
+			if delay <= 0 {
+				delay = time.Millisecond
+			}
+			time.Sleep(delay)
+		}
+	}
+	return nil
+}
+
+// writeStream is writePaced for a tunnel stream (whose Write takes the whole
+// chunk and waits for window credit).
+func writeStream(s *mux.Stream, data []byte, paced Paced) error {
+	for len(data) > 0 {
+		if paced == nil {
+			return s.Write(data)
+		}
+		allowed, delay := paced.Allowance(len(data))
+		if allowed > 0 {
+			if err := s.Write(data[:allowed]); err != nil {
+				return err
+			}
+			data = data[allowed:]
+		}
+		if len(data) > 0 {
+			if delay <= 0 {
+				delay = time.Millisecond
+			}
+			time.Sleep(delay)
+		}
+	}
+	return nil
+}
+
 // -------------------------------------------------------------------- tunnel
 
 func (r *Relay) startTunnelListener() error {
@@ -316,6 +582,16 @@ func (r *Relay) startTunnelListener() error {
 	host := t.Host
 	if host == "" {
 		host = "0.0.0.0"
+	}
+	if carrier.IsUDPName(t.Carrier) {
+		srv := carrier.NewUDPServer(r.cfg.TokenValues(), t.MTU, t.FEC, t.Window)
+		addr, err := srv.Serve(host, t.Port, r.serveTunnelChannel)
+		if err != nil {
+			return fmt.Errorf("cannot listen on %s:%d: %w", host, t.Port, err)
+		}
+		r.udpTunnel = append(r.udpTunnel, srv)
+		slog.Info("waiting for the exit", "listen", "udp://"+addr, "fec", t.FEC)
+		return nil
 	}
 	if t.Carrier == "tls" || t.Carrier == "wss" {
 		cert, err := carrier.LoadOrCreate(certDir(r.home), r.cfg.Name, t.CertFile, t.KeyFile)
@@ -358,25 +634,30 @@ func (r *Relay) serveTunnel(conn net.Conn) {
 		return
 	}
 	srv := carrier.NewServer(t.Carrier, r.cfg.Token, cert, t.Fallback, t.DecoyFile)
+	srv.Tokens = r.cfg.TokenValues()
 	srv.Padding = t.Padding
-	srv.Serve(conn, func(ch mux.Channel) {
-		m := mux.New(ch, true, mux.Options{
-			StreamWindow:    int64(r.cfg.StreamWindow),
-			MaxStreamWindow: int64(r.cfg.MaxStreamWindow),
-			Chunk:           r.cfg.Chunk,
-			OnCtrl:          r.onCtrl,
-		})
-		if !r.addMux(m, true) {
-			m.Close()
-			return
-		}
-		go m.Keepalive(time.Duration(r.cfg.Keepalive) * time.Second)
-		slog.Info("exit connected", "peer", ch.Peer(), "tunnels", r.tunnelCount())
-		if err := m.Run(); err != nil && !isClosed(err) {
-			slog.Debug("tunnel ended", "err", err)
-		}
-		r.removeMux(m)
+	srv.Serve(conn, r.serveTunnelChannel)
+}
+
+// serveTunnelChannel adopts one authenticated reverse tunnel, whatever carried
+// it here.
+func (r *Relay) serveTunnelChannel(ch mux.Channel) {
+	m := mux.New(ch, true, mux.Options{
+		StreamWindow:    int64(r.cfg.StreamWindow),
+		MaxStreamWindow: int64(r.cfg.MaxStreamWindow),
+		Chunk:           r.cfg.Chunk,
+		OnCtrl:          r.onCtrl,
 	})
+	if !r.addMux(m, true) {
+		m.Close()
+		return
+	}
+	go m.Keepalive(time.Duration(r.cfg.Keepalive) * time.Second)
+	slog.Info("exit connected", "peer", ch.Peer(), "tunnels", r.tunnelCount())
+	if err := m.Run(); err != nil && !isClosed(err) {
+		slog.Debug("tunnel ended", "err", err)
+	}
+	r.removeMux(m)
 }
 
 // ------------------------------------------------------------------ dialling
@@ -438,19 +719,7 @@ func (r *Relay) supervisor(slot int) {
 }
 
 func (r *Relay) runTunnel(ep config.Endpoint, primary bool) error {
-	ch, err := carrier.Dial(carrier.ClientOptions{
-		Carrier:     ep.Carrier,
-		Address:     ep.Address,
-		Port:        ep.Port,
-		Domain:      ep.Domain,
-		Path:        ep.Path,
-		Fingerprint: ep.Fingerprint,
-		Insecure:    ep.InsecureSkipVerify,
-		Padding:     ep.Padding,
-		Split:       ep.Split,
-		Token:       r.cfg.Token,
-		Timeout:     10 * time.Second,
-	})
+	ch, err := endpointTarget(ep, r.cfg.Token).dial()
 	if err != nil {
 		return err
 	}
@@ -664,7 +933,39 @@ func (r *Relay) Status() map[string]any {
 			"totals": map[string]any{"in": in, "out": out, "sum": in + out, "conns": active},
 			"tunnel": map[string]any{"in_bytes": in, "out_bytes": out, "conns": active},
 		},
+		"traffic": r.trafficRows(),
+		"ledger":  r.ledgerSnapshot(),
+		"blocked": r.blocked.Load(),
 	}
+}
+
+// trafficRows is the per-key traffic table the panel shows.
+func (r *Relay) trafficRows() []map[string]any {
+	if r.account == nil {
+		return []map[string]any{}
+	}
+	return r.account.Rows("month")
+}
+
+// ledgerSnapshot is the raw counters (today / this month / all time).
+func (r *Relay) ledgerSnapshot() map[string]any {
+	if r.account == nil {
+		return map[string]any{}
+	}
+	return r.account.Snapshot()
+}
+
+// Limits exposes the live buckets for the panel.
+func (r *Relay) Limits() map[string]any {
+	r.limMu.Lock()
+	defer r.limMu.Unlock()
+	out := map[string]any{}
+	for key, bucket := range r.buckets {
+		if bucket != nil {
+			out[key] = bucket.Snapshot()
+		}
+	}
+	return out
 }
 
 // listening reports whether a user port is bound right now.

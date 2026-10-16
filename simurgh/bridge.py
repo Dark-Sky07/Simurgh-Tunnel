@@ -56,6 +56,9 @@ class Bridge(asyncio.Protocol):
         self.closed = False
         #: the far side sent EOF while bytes were still parked in ``out``
         self.eof_pending = False
+        #: the far side finished *and* its end was passed to the socket; a local
+        #: EOF after this means both halves are done and the socket can go
+        self.far_eof = False
         self._opening = False
         self.peer = ""
 
@@ -268,6 +271,11 @@ class Bridge(asyncio.Protocol):
         # the local socket is done sending: tell the peer, keep receiving
         if self.stream is not None:
             self.stream.close()
+        if self.far_eof and not self.out and not self.closed:
+            # the answer is out and the user has gone: with both halves done the
+            # socket has to be closed for real, or it lingers half open and keeps
+            # its slot in the mapping's ``max_conns`` budget
+            self.close_socket()
         return True
 
     def _stream_eof(self) -> None:
@@ -294,6 +302,7 @@ class Bridge(asyncio.Protocol):
         try:
             if self.transport is not None:
                 self.transport.write_eof()
+            self.far_eof = True
         except Exception:
             self.close_socket()
 

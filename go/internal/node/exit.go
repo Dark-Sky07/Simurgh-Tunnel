@@ -27,6 +27,7 @@ type Exit struct {
 	peers     map[*mux.Mux]string
 	started   map[*mux.Mux]time.Time
 	listeners []net.Listener
+	udp       []*carrier.UDPServer
 	state     *stateWriter
 	endpoint  []string
 
@@ -90,11 +91,35 @@ func (e *Exit) Start() error {
 	return nil
 }
 
+// startUDPListener brings up the udp carrier, where "listening" means holding
+// one socket and telling every relay apart by its source address.
+func (e *Exit) startUDPListener(spec config.ListenSpec, host string) error {
+	srv := carrier.NewUDPServer(e.cfg.TokenValues(), spec.MTU, spec.FEC, spec.Window)
+	addr, err := srv.Serve(host, spec.Port, e.onChannel)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.udp = append(e.udp, srv)
+	e.endpoint = append(e.endpoint, "udp://"+addr)
+	e.mu.Unlock()
+	slog.Info("listening", "carrier", "udp", "address", addr, "mtu", spec.MTU,
+		"fec", spec.FEC, "window", spec.Window, "tokens", len(e.cfg.TokenValues()))
+	return nil
+}
+
 // Stop closes the listeners and every tunnel.
 func (e *Exit) Stop() {
 	e.once.Do(func() { close(e.stop) })
 	for _, ln := range e.listeners {
 		ln.Close()
+	}
+	e.mu.Lock()
+	udpServers := append([]*carrier.UDPServer(nil), e.udp...)
+	e.udp = nil
+	e.mu.Unlock()
+	for _, srv := range udpServers {
+		srv.Close()
 	}
 	e.mu.Lock()
 	tunnels := append([]*mux.Mux(nil), e.tunnels...)
@@ -130,6 +155,9 @@ func (e *Exit) startListener(spec config.ListenSpec) error {
 	if host == "" {
 		host = "0.0.0.0"
 	}
+	if carrier.IsUDPName(spec.Carrier) {
+		return e.startUDPListener(spec, host)
+	}
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprint(spec.Port)))
 	if err != nil {
 		return err
@@ -145,6 +173,7 @@ func (e *Exit) startListener(spec config.ListenSpec) error {
 			return err
 		}
 		srv = carrier.NewServer(spec.Carrier, e.cfg.Token, cert, spec.Fallback, decoyFileOf(spec))
+		srv.Tokens = e.cfg.TokenValues()
 		srv.Padding = spec.Padding
 		if fp, err := carrier.Fingerprint(cert); err == nil {
 			slog.Info("listening", "carrier", spec.Carrier, "address", ln.Addr().String(),
@@ -152,6 +181,7 @@ func (e *Exit) startListener(spec config.ListenSpec) error {
 		}
 	} else {
 		srv = carrier.NewServer(spec.Carrier, e.cfg.Token, tls.Certificate{}, spec.Fallback, decoyFileOf(spec))
+		srv.Tokens = e.cfg.TokenValues()
 		srv.Padding = spec.Padding
 		slog.Info("listening", "carrier", spec.Carrier, "address", ln.Addr().String(), "probers see", "noise")
 	}
@@ -284,18 +314,7 @@ func (e *Exit) reverseSupervisor(spec config.ListenSpec, slot int) {
 }
 
 func (e *Exit) reverseTunnel(spec config.ListenSpec) error {
-	ch, err := carrier.Dial(carrier.ClientOptions{
-		Carrier:     spec.Carrier,
-		Address:     spec.Dial,
-		Port:        spec.Port,
-		Domain:      spec.Path, // unused for tls; the SNI stays the address
-		Fingerprint: spec.Fingerprint,
-		Insecure:    spec.InsecureSkipVerify,
-		Padding:     spec.Padding,
-		Split:       spec.Split,
-		Token:       e.cfg.Token,
-		Timeout:     10 * time.Second,
-	})
+	ch, err := listenTarget(spec, e.cfg.Token).dial()
 	if err != nil {
 		return err
 	}
