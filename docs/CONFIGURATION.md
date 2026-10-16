@@ -284,6 +284,61 @@ systemctl status simurgh-relay
 journalctl -u simurgh-relay -f          # or: simurgh logs -f
 ```
 
+## Metrics and updates
+
+### Prometheus metrics (`/metrics`)
+
+Every node that runs a panel also exports Prometheus text on the same port:
+
+```bash
+curl -u admin:password http://127.0.0.1:8787/metrics
+```
+
+| Metric | Meaning |
+|---|---|
+| `simurgh_up` / `simurgh_uptime_seconds` | the node answers, and for how long |
+| `simurgh_tunnel_connected`, `simurgh_tunnel_connections`, `simurgh_tunnel_rtt_seconds` | state of the tunnel(s) to the other side |
+| `simurgh_streams`, `simurgh_reconnects_total`, `simurgh_blocked_total` | multiplexed streams, reconnects, users refused by a quota |
+| `simurgh_bytes_in_total`, `simurgh_bytes_out_total` | traffic moved for users |
+| `simurgh_mapping_*{key,name,listen,target}` | per-mapping bytes, connections, active, errors, `up` |
+| `simurgh_traffic_bytes_total{key,period}` | the persistent ledger (`today` / `month` / `total`) |
+| `simurgh_quota_*{key,period}` | quota limit, used bytes and whether it is exhausted |
+| `simurgh_exit_*{endpoint}` | pool health: is the endpoint answering, and its RTT |
+
+Authentication is the same as the panel (Basic auth, the session cookie or the
+one-click `?k=` link), so a scraper's credentials are the panel's. Everything is
+read from the same status the panel shows, which means the metrics work with
+**either engine** — with the Python engine the collector reads the node live, and
+with the Go engine it reads the `state.json` that engine keeps updated.
+
+`scrape_configs` example:
+
+```yaml
+- job_name: simurgh
+  basic_auth: {username: admin, password: "…"}
+  static_configs: [{targets: ["ir.example.com:8787"]}]
+```
+
+### `simurgh update`
+
+```bash
+simurgh update            # install the newest release
+simurgh update --check     # only report (exit code 3 when one is available)
+simurgh update --check --json
+```
+
+The command works out what kind of install it is looking at:
+
+* **a git checkout** — it fetches the tags, checks out the newest release tag and
+  rebuilds the Go engine (`--no-rebuild` skips that);
+* **a packaged install** — it downloads the asset for this OS/architecture,
+  checks its SHA-256 against the release's `SHA256SUMS.txt` and replaces the
+  running binary atomically, keeping the old one as `simurgh-go.bak`;
+* **a pip install** — it runs `pip install -U simurgh-tunnel`.
+
+With no network it says so and changes nothing. After an update, `simurgh
+restart` runs the new version.
+
 ## Environment variables
 
 | Variable | Meaning |

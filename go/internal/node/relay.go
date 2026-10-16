@@ -935,8 +935,22 @@ func (r *Relay) Status() map[string]any {
 		},
 		"traffic": r.trafficRows(),
 		"ledger":  r.ledgerSnapshot(),
+		"quotas":  r.quotaStates(),
 		"blocked": r.blocked.Load(),
 	}
+}
+
+// quotaStates is what /metrics and the panel read for the quota gauges.
+func (r *Relay) quotaStates() map[string]any {
+	out := map[string]any{}
+	for _, m := range r.cfg.Mappings {
+		quota := r.quotaFor(m)
+		if r.account == nil {
+			continue
+		}
+		out[m.Key()] = quota.State(r.account, m.Key())
+	}
+	return out
 }
 
 // trafficRows is the per-key traffic table the panel shows.

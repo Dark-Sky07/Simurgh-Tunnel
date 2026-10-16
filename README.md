@@ -103,6 +103,7 @@ simurgh mapping list | remove | toggle
 simurgh speedtest                # real speed through the tunnel
 simurgh logs -f                  # live log
 simurgh doctor                   # self-diagnosis with hints
+simurgh update --check           # is a newer release out?  (--force to reinstall)
 simurgh link --show              # setup link for the *other* server
 simurgh join '<link>'            # build the config from a link
 simurgh start | stop | restart   # systemd control
@@ -187,7 +188,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **176 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, and the cross-engine tests below) |
+| `python -m pytest -q` | **189 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, and the cross-engine tests below) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -200,6 +201,8 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 | Engine interop | Go relay ⇄ Python exit and Python relay ⇄ Go exit, verified for `plain` and `udp`: `python -m pytest tests/test_udp_cross_engine.py` starts one engine as a relay and the other as an exit, then checks a real HTTP answer byte for byte. Both directions. |
 | Go `udp` carrier | the compiled engine speaks the datagram carrier byte for byte with Python: hello HMAC, ChaCha20-Poly1305, SACK retransmit, FEC (`fec = "8:2"` really repairs a dropped datagram), mux over UDP; **80 MB/s** on loopback in the Go tests |
 | Go limits | `rate_limit`, `quota` / `quota_period` / `quota_action` (`block`, `throttle`, `warn`) and `max_conns` are enforced in the Go data plane exactly like the Python one, from the same `relay.toml`, and the Go engine writes the same `traffic.json` ledger — the panel and `simurgh traffic` read one history whichever engine ran |
+| Prometheus `/metrics` | the panel port serves Prometheus text (node, tunnel, per-mapping, ledger and quota series, plus pool health), authenticated like the panel and fed from the same status — so it works with the Python *and* the Go engine (`state.json`) |
+| `simurgh update` | works out what kind of install it is: a git checkout moves to the newest tag (and rebuilds the engine), a packaged install downloads this machine's asset, verifies its SHA-256 against `SHA256SUMS.txt` and swaps it in (old one kept as `.bak`), a pip install upgrades through pip. `--check [--json]` reports without touching anything, and with no network nothing changes |
 | Pool | 8 user connections over 4 tunnels: 13.0 MB/s vs 3.6 MB/s on one tunnel with the same per-flow cap, load spread 1/1/1/1 |
 | Memory | 33-41 MB peak RSS for relay + exit + test target on a single fat stream; 95 MB moving 200 MB over 4 tunnels |
 | Decoy | plain HTTP or TLS + HTTP → real nginx page (200), unknown path → 404, HTTP/2 → `GOAWAY(HTTP_1_1_REQUIRED)` like a normal site, `fallback = "site:host:port"` → the port really serves that site, wrong token → 400/binary-noise or a silent close |
@@ -225,7 +228,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 176 tests (Python 3.11), no test-only dependencies
+python -m pytest -q                 # 189 tests (Python 3.11), no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
@@ -238,7 +241,7 @@ cd go && go test -race ./...        # the same under the race detector
 
 Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
 which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
-existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.3.0`.
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.4.0`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,

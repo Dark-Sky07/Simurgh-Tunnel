@@ -278,3 +278,49 @@ async def test_max_conns_turns_extra_users_away(certs, tmp_path):
         await relay.stop()
         await node.stop()
         web.close()
+
+
+async def test_metrics_show_live_limit_numbers(certs, tmp_path, home):
+    """A live relay's own counters reach /metrics (both engines' shape)."""
+    from simurgh.panel import Panel
+
+    size = 32 * 1024
+    web, target_port = await _body_server(size)
+    mapping = Mapping(name="metered", listen=0, target_port=target_port,
+                      rate_limit="1M", quota="1G", quota_period="month")
+    relay, node, port = await _stack(mapping, certs, tmp_path, target_port)
+    panel_port = free_port()
+    panel = Panel(home, "relay", node=relay, host="127.0.0.1", port=panel_port,
+                  user="admin", password="pw")
+    await panel.start()
+    try:
+        data, _elapsed = await _fetch(port, size, timeout=20)
+        assert data.endswith(b"x" * size)
+
+        reader, writer = await asyncio.open_connection("127.0.0.1", panel_port)
+        import base64
+        auth = base64.b64encode(b"admin:pw").decode()
+        writer.write(("GET /metrics HTTP/1.1\r\nHost: localhost\r\n"
+                      f"Authorization: Basic {auth}\r\nConnection: close\r\n\r\n")
+                     .encode())
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(-1), 10)
+        writer.close()
+        assert b" 200 " in raw.split(b"\r\n", 1)[0]
+        text = raw.partition(b"\r\n\r\n")[2].decode()
+
+        assert f'listen="{mapping.listen}"' in text
+        assert "simurgh_mapping_bytes_out_total" in text
+        assert "simurgh_quota_limit_bytes" in text and "1073741824" in text
+        assert "simurgh_quota_used_bytes" in text
+        # the mapping really moved the page, so the counter is not zero
+        row = [line for line in text.splitlines()
+               if line.startswith("simurgh_mapping_bytes_out_total")]
+        assert row and float(row[0].rsplit(" ", 1)[1]) >= size
+        assert "simurgh_traffic_bytes_total" in text.replace(
+            "simurgh_traffic_bytes_total_", "")
+    finally:
+        await panel.stop()
+        await relay.stop()
+        await node.stop()
+        web.close()

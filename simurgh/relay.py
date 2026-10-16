@@ -316,18 +316,25 @@ class RelayNode:
             "dial": self.cfg.dial,
             "tunnel_listen": ([self.cfg.tunnel.endpoint()] if self.cfg.reverse else []),
             "exit_info": self.exit_info,
-            "mappings": [
-                {"key": m.key(), "name": m.name, "listen": m.listen,
-                 "target": f"{m.target_host}:{m.target_port}",
-                 "udp": m.udp, "enabled": m.enabled,
-                 "bound": m.key() in self._servers or m.key() in self._udp}
-                for m in self.cfg.mappings
-            ],
+            "mappings": [self._mapping_row(m) for m in self.cfg.mappings],
+            "quotas": {m.key(): self.quota_state(m) for m in self.cfg.mappings},
             "stats": self.stats.snapshot(),
             "health": self.health_snapshot(),
             "traffic": (self.account.rows("month") if self.account else []),
             "ledger": (self.account.snapshot() if self.account else {}),
             "blocked": self.blocked,
+        }
+
+    def _mapping_row(self, m) -> dict:
+        """One panel/metrics row per mapping, with its own counters."""
+        counter = self.stats.mappings.get(m.key())
+        stats = counter.as_dict() if counter is not None else {}
+        return {
+            "key": m.key(), "name": m.name, "listen": m.listen,
+            "target": f"{m.target_host}:{m.target_port}",
+            "udp": m.udp, "enabled": m.enabled,
+            "bound": m.key() in self._servers or m.key() in self._udp,
+            "stats": stats,
         }
 
     # -------------------------------------------------------------- listeners
@@ -599,9 +606,22 @@ class RelayNode:
         return quota.state(self.account, mapping.key())
 
     def count_bytes(self, mapping, direction: str, nbytes: int) -> None:
-        if self.account is not None and nbytes:
-            key = mapping.key()
-            if direction == "up":
+        """Count one chunk of a mapping's traffic.
+
+        Both the panel's live counter and the persistent ledger are fed here,
+        which is also what the quota checks and `/metrics` read.
+        """
+        if not nbytes:
+            return
+        key = mapping.key()
+        counter = self.stats.mapping(key)
+        up = direction == "up"
+        if up:
+            counter.in_bytes += nbytes
+        else:
+            counter.out_bytes += nbytes
+        if self.account is not None:
+            if up:
                 self.account.add(key, in_bytes=nbytes)
             else:
                 self.account.add(key, out_bytes=nbytes)

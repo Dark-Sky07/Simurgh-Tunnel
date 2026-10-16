@@ -167,6 +167,14 @@ limits; both are done now.
 | **One fix the limits exposed** | A user who closed before the far side finished left the socket half open forever, holding its `max_conns` slot. The bridge now closes for real once both halves are done. | `tests/test_limits.py::test_max_conns_turns_extra_users_away` (the port accepts again after the first user leaves) |
 | **Cross-engine proof** | One engine as the relay, the other as the exit, over `plain` and `udp`, in both roles. | `tests/test_udp_cross_engine.py` (4 tests, a real HTTP answer byte for byte) |
 
+### P1 — the operator surface is landing
+
+| Item | How it works now | Proof |
+|---|---|---|
+| **`/metrics`** | The panel port serves Prometheus text: node and tunnel state, per-mapping bytes/connections/errors, the persistent ledger (`today`/`month`/`total`), quota limit + used + exhausted, and pool health with RTT. Authentication is the panel's (Basic auth, session cookie or the `?k=` link). It reads the same status the panel shows, so it works with the Python engine *and* with the Go one (from `state.json`). | `tests/test_panel.py` (the exposition is parsed line by line, label values are checked, an unauthenticated scrape is refused, and a Go-engine `state.json` produces the same series); `tests/test_limits.py` (a live relay's own counters: the mapping that just moved 32 KiB shows it, and the quota gauges are there) |
+| **`simurgh update`** | Works out the install shape: a git checkout fetches and checks out the newest tag (and rebuilds the engine), a packaged install downloads this machine's asset, verifies its SHA-256 against `SHA256SUMS.txt` and swaps it in atomically (old binary kept as `.bak`), a pip install upgrades through pip. `--check [--json]` reports only (exit code 3 when an update exists), `--force` reinstalls, and with no network nothing is touched. | `tests/test_update.py`: version ordering, asset choice per OS/arch, an unavailable network, "up to date", a real git repository that really moves to a newer tag, and a verified binary swap that keeps the old one as `.bak` — plus a corrupted download that must leave the install alone |
+| **Loud numbers in the panel** | `count_bytes()` now feeds the live per-mapping counters as well as the ledger, so the panel's mapping table and `/metrics` agree with `simurgh traffic` instead of only the latter being right. | the same two test files |
+
 ### What is still open
 
 P1 (metrics/API, `simurgh update`, alerts, packaging, ACME, panel hardening,

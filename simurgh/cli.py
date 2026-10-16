@@ -1253,6 +1253,49 @@ def cmd_uninstall(args) -> int:
     return 0
 
 
+def cmd_update(args) -> int:
+    """Bring this install to the newest release (see simurgh/update.py)."""
+    from . import update as updater
+
+    home = Home(args.home)
+    try:
+        if args.check:
+            info = updater.check()
+            if getattr(args, "json", False):
+                print(json.dumps(info, ensure_ascii=False, indent=2))
+                return 0 if not info["available"] else 3
+            print(f"{__product__} {info['current']}   newest release: {info['latest']}")
+            if info["available"]:
+                print(f"  an update is available: {info['tag']} "
+                      f"({info['published'][:10]})")
+                print(f"  run `simurgh update` to install it   {info['notes_url']}")
+                return 3
+            print("  this install is already the newest release")
+            return 0
+        result = updater.update(home, force=args.force,
+                                rebuild=not args.no_rebuild)
+        if getattr(args, "json", False):
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if result.get("available") is False and result.get("action") == "up to date":
+            print(f"nothing to do: {__version__} is the newest release "
+                  f"({result['latest']})")
+            return 0
+        _ok(f"updated to {result.get('tag') or result.get('latest')}")
+        print(f"  {result.get('action', '')}")
+        for step in result.get("steps", []) or []:
+            print(f"  - {step}")
+        if result.get("notes_url"):
+            print(f"  release notes: {result['notes_url']}")
+        print("  restart the service to run the new version: "
+              "simurgh restart" if shutil.which("systemctl") else
+              "  restart the node to run the new version")
+        return 0
+    except updater.UpdateError as exc:
+        _err(str(exc))
+        return 1
+
+
 def cmd_version(args) -> int:
     print(f"{__product__} v{__version__}")
     print(f"python {sys.version.split()[0]}   home={Home(args.home).path}")
@@ -1425,6 +1468,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=0)
     p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser("update", help="install the newest release")
+    p.add_argument("--check", action="store_true",
+                   help="only report whether an update is available")
+    p.add_argument("--force", action="store_true",
+                   help="reinstall even when this version looks newest")
+    p.add_argument("--no-rebuild", action="store_true",
+                   help="git checkouts: skip rebuilding the Go engine")
+    p.add_argument("--json", action="store_true", help="machine readable output")
+    p.set_defaults(func=cmd_update)
 
     p = sub.add_parser("uninstall", help="remove the services")
     p.add_argument("--purge", action="store_true", help="also delete the config folder")

@@ -233,6 +233,9 @@ class Panel:
             return http_response(self.dashboard().encode("utf-8"), extra=extra)
         if req.method == "GET" and path == "/api/status":
             return json_response(self.status())
+        if req.method == "GET" and path == "/metrics":
+            return http_response(self.metrics().encode("utf-8"), 200,
+                                 ctype="text/plain; version=0.0.4; charset=utf-8")
         if req.method == "GET" and path == "/api/config":
             return json_response(self.config_dict())
         if req.method == "POST" and path == "/api/config":
@@ -315,6 +318,163 @@ class Panel:
             "ok": True, "product": __product__, "version": __version__,
             "now": time.time(), "panel": panel, "node": node_status,
         }
+
+    # ------------------------------------------------------------- metrics
+    def metrics(self) -> str:
+        """Prometheus exposition text for the node behind this panel.
+
+        Everything here comes from the same status the panel shows, so it works
+        for either engine: with the Python engine the numbers are read live, and
+        with the Go engine they come from the ``state.json`` that engine keeps
+        up to date.  Scrapers can authenticate with Basic auth (or the session
+        cookie), exactly like the rest of the API.
+        """
+        status = self.status()
+        node = status.get("node") or {}
+        panel = status.get("panel") or {}
+        role = str(status.get("role") or self.role)
+
+        def esc(value) -> str:
+            text = str(value if value is not None else "")
+            return (text.replace("\\", "\\\\").replace('"', '\\"')
+                    .replace("\n", " "))
+
+        def labels(**pairs) -> str:
+            items = [f'{k}="{esc(v)}"' for k, v in pairs.items()
+                     if v is not None and v != ""]
+            return "{" + ",".join(items) + "}" if items else ""
+
+        def number(value) -> str:
+            try:
+                if isinstance(value, bool):
+                    return "1" if value else "0"
+                if isinstance(value, int):
+                    return str(value)
+                return repr(float(value))
+            except (TypeError, ValueError):
+                return "0"
+
+        lines: list[str] = []
+        meta = labels(role=role, version=__version__, product=__product__)
+
+        def emit(name: str, help_text: str, kind: str = "gauge") -> None:
+            lines.append(f"# HELP {name} {help_text}")
+            lines.append(f"# TYPE {name} {kind}")
+
+        emit("simurgh_up", "1 while this node is serving.")
+        lines.append(f"simurgh_up{meta} 1")
+
+        emit("simurgh_uptime_seconds", "Seconds since the node started.", "counter")
+        lines.append(f"simurgh_uptime_seconds{meta} "
+                     f"{number(node.get('uptime', panel.get('uptime', 0)))}")
+
+        emit("simurgh_panel_requests_total", "Panel requests served.", "counter")
+        lines.append(f"simurgh_panel_requests_total{meta} "
+                     f"{number(panel.get('requests', 0))}")
+
+        emit("simurgh_tunnel_connected", "1 when a tunnel to the other side is up.")
+        lines.append(f"simurgh_tunnel_connected{meta} "
+                     f"{number(bool(node.get('connected')))}")
+        emit("simurgh_tunnel_connections", "Live tunnel connections.")
+        lines.append(f"simurgh_tunnel_connections{meta} "
+                     f"{number(node.get('connections', 0))}")
+        emit("simurgh_tunnel_rtt_seconds", "RTT of the first live tunnel.")
+        lines.append(f"simurgh_tunnel_rtt_seconds{meta} "
+                     f"{number(float(node.get('rtt_ms') or 0) / 1000.0)}")
+        emit("simurgh_reconnects_total", "Tunnel (re)connections since start.",
+             "counter")
+        lines.append(f"simurgh_reconnects_total{meta} "
+                     f"{number(node.get('reconnects', 0))}")
+        emit("simurgh_streams", "Live multiplexed streams.")
+        lines.append(f"simurgh_streams{meta} {number(node.get('streams', 0))}")
+
+        totals = ((node.get("stats") or {}).get("totals") or {})
+        emit("simurgh_bytes_in_total", "Bytes received from users.", "counter")
+        lines.append(f"simurgh_bytes_in_total{meta} "
+                     f"{number(totals.get('in', totals.get('in_bytes', 0)))}")
+        emit("simurgh_bytes_out_total", "Bytes sent to users.", "counter")
+        lines.append(f"simurgh_bytes_out_total{meta} "
+                     f"{number(totals.get('out', totals.get('out_bytes', 0)))}")
+        emit("simurgh_blocked_total",
+             "Connections refused because a mapping was over its quota.",
+             "counter")
+        lines.append(f"simurgh_blocked_total{meta} {number(node.get('blocked', 0))}")
+
+        mappings = node.get("mappings") or []
+        if mappings:
+            emit("simurgh_mapping_bytes_in_total", "Bytes per mapping (users).",
+                 "counter")
+            emit("simurgh_mapping_bytes_out_total", "Bytes per mapping (answers).",
+                 "counter")
+            emit("simurgh_mapping_connections_total",
+                 "Connections accepted per mapping.", "counter")
+            emit("simurgh_mapping_active", "Live connections per mapping.")
+            emit("simurgh_mapping_errors_total", "Errors per mapping.", "counter")
+            emit("simurgh_mapping_up", "1 when the mapping is bound.")
+            stats_by_key = ((node.get("stats") or {}).get("mappings") or {})
+            for mapping in mappings:
+                stats = mapping.get("stats") or stats_by_key.get(mapping.get("key")) or {}
+                name = labels(key=mapping.get("key"), name=mapping.get("name"),
+                              listen=mapping.get("listen"),
+                              target=mapping.get("target"), role=role)
+                lines.append("simurgh_mapping_bytes_in_total"
+                             f"{name} {number(stats.get('in_bytes', 0))}")
+                lines.append("simurgh_mapping_bytes_out_total"
+                             f"{name} {number(stats.get('out_bytes', 0))}")
+                lines.append("simurgh_mapping_connections_total"
+                             f"{name} {number(stats.get('conns', 0))}")
+                lines.append("simurgh_mapping_active"
+                             f"{name} {number(stats.get('active', 0))}")
+                lines.append("simurgh_mapping_errors_total"
+                             f"{name} {number(stats.get('errors', 0))}")
+                lines.append("simurgh_mapping_up"
+                             f"{name} {number(bool(mapping.get('bound', True)))}")
+
+        # traffic ledger (day / month / all time) -- both engines write it
+        rows = node.get("traffic") or []
+        if rows:
+            emit("simurgh_traffic_bytes_total",
+                 "Ledger traffic per key and period.", "counter")
+            for row in rows:
+                key = row.get("key")
+                for period in ("today", "month", "total"):
+                    lines.append("simurgh_traffic_bytes_total"
+                                 f'{labels(key=key, period=period, role=role)} '
+                                 f"{number(row.get(period, 0))}")
+
+        # quotas, when the node reports them
+        quotas = node.get("quotas") or {}
+        if isinstance(quotas, dict) and quotas:
+            emit("simurgh_quota_limit_bytes", "Configured quota per mapping.")
+            emit("simurgh_quota_used_bytes", "Quota already used per mapping.")
+            emit("simurgh_quota_exceeded", "1 when a mapping is over its quota.")
+            for key, state in quotas.items():
+                if not isinstance(state, dict):
+                    continue
+                name = labels(key=key, period=state.get("period"), role=role)
+                lines.append("simurgh_quota_limit_bytes"
+                             f"{name} {number(state.get('limit', 0))}")
+                lines.append("simurgh_quota_used_bytes"
+                             f"{name} {number(state.get('used', 0))}")
+                lines.append("simurgh_quota_exceeded"
+                             f"{name} {number(bool(state.get('exceeded')))}")
+
+        health = node.get("health") or {}
+        if isinstance(health, dict) and health:
+            emit("simurgh_exit_up", "1 when a pool endpoint answers.")
+            emit("simurgh_exit_rtt_seconds", "RTT per pool endpoint.")
+            for endpoint, state in health.items():
+                if not isinstance(state, dict):
+                    continue
+                name = labels(endpoint=endpoint, role=role)
+                lines.append("simurgh_exit_up"
+                             f"{name} {number(bool(state.get('up', True)))}")
+                rtt = state.get("rtt_ms")
+                if rtt is not None:
+                    lines.append("simurgh_exit_rtt_seconds"
+                                 f"{name} {number(float(rtt) / 1000.0)}")
+
+        return "\n".join(lines) + "\n"
 
     def config_dict(self) -> dict:
         path = self.home.exit_cfg if self.role == "exit" else self.home.relay_cfg

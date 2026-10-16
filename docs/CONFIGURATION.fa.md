@@ -279,6 +279,53 @@ systemctl status simurgh-relay
 journalctl -u simurgh-relay -f          # یا: simurgh logs -f
 ```
 
+## متریک‌ها و به‌روزرسانی
+
+### متریک‌های Prometheus (`/metrics`)
+
+هر نودی که پنل دارد، متن Prometheus را روی همان پورت بیرون می‌دهد:
+
+```bash
+curl -u admin:password http://127.0.0.1:8787/metrics
+```
+
+| متریک | معنی |
+|---|---|
+| `simurgh_up` / `simurgh_uptime_seconds` | نود پاسخ می‌دهد و از چه زمانی |
+| `simurgh_tunnel_connected`، `simurgh_tunnel_connections`، `simurgh_tunnel_rtt_seconds` | وضعیت تونل(ها) به طرف مقابل |
+| `simurgh_streams`، `simurgh_reconnects_total`، `simurgh_blocked_total` | استریم‌های زنده، وصل‌شدن‌های دوباره، کاربرانی که کوتا ردشان کرده |
+| `simurgh_bytes_in_total`، `simurgh_bytes_out_total` | ترافیک کاربران |
+| `simurgh_mapping_*{key,name,listen,target}` | بایت، اتصال، فعال، خطا و `up` هر mapping |
+| `simurgh_traffic_bytes_total{key,period}` | دفتر کل پایدار (`today` / `month` / `total`) |
+| `simurgh_quota_*{key,period}` | سقف کوتا، مصرف‌شده و تمام‌شدن آن |
+| `simurgh_exit_*{endpoint}` | سلامت استخر: اندپوینت جواب می‌دهد؟ RTT چقدر است؟ |
+
+احراز هویت مثل خود پنل است (Basic auth، کوکی نشست یا لینک `?k=`)، پس همان
+اطلاعات پنل برای اسکرپر کافی است.  همهٔ عددها از همان وضعیتی خوانده می‌شوند که
+پنل نشان می‌دهد، یعنی متریک‌ها با **هر دو موتور** کار می‌کنند: با موتور
+پایتون مستقیم از خود نود و با موتور Go از `state.json` که آن موتور به‌روز
+نگه می‌دارد.
+
+### `simurgh update`
+
+```bash
+simurgh update            # نصب جدیدترین ریلیز
+simurgh update --check     # فقط گزارش (کد خروج ۳ اگر نسخهٔ جدید باشد)
+simurgh update --check --json
+```
+
+خودش تشخیص می‌دهد نصب از چه نوعی است:
+
+* **چک‌اوت گیت** — تگ‌ها را می‌گیرد، جدیدترین تگ ریلیز را checkout می‌کند و
+  موتور Go را دوباره می‌سازد (`--no-rebuild` این مرحله را رد می‌کند)؛
+* **نصب بسته‌ای** — فایل مناسب سیستم‌عامل و معماری را دانلود می‌کند، SHA-256
+  آن را با `SHA256SUMS.txt` همان ریلیز می‌سنجد و باینری در حال اجرا را
+  اتمیک جایگزین می‌کند و نسخهٔ قبلی را به‌عنوان `simurgh-go.bak` نگه می‌دارد؛
+* **نصب pip** — دستور `pip install -U simurgh-tunnel` را اجرا می‌کند.
+
+بدون اینترنت چیزی را عوض نمی‌کند و صریح می‌گوید.  بعد از به‌روزرسانی،
+`simurgh restart` نسخهٔ جدید را بالا می‌آورد.
+
 ## متغیرهای محیطی
 
 | متغیر | معنی |

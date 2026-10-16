@@ -359,3 +359,89 @@ async def test_dashboard_served_over_http_carries_both_languages(home, tmp_path,
         assert b"toggleLang" in raw
     finally:
         await panel.stop()
+
+
+async def test_metrics_endpoint_speaks_prometheus(home, tmp_path, relay_cfg):
+    """`/metrics` is scrapable, authenticated, and reads both engines' status."""
+    node = FakeRelayNode(relay_cfg)
+    node.status = lambda: {
+        "role": "relay", "connected": True, "connections": 2, "rtt_ms": 25.0,
+        "uptime": 42.5, "reconnects": 3, "streams": 7, "blocked": 4,
+        "stats": {"totals": {"in": 1234, "out": 5678}},
+        "traffic": [{"key": "tcp:0.0.0.0:443/127.0.0.1:8443", "today": 11,
+                     "month": 22, "total": 33}],
+        "quotas": {"tcp:0.0.0.0:443/127.0.0.1:8443": {"limit": 100, "used": 60,
+                                                      "period": "month",
+                                                      "exceeded": False}},
+        "health": {"tls://exit.test:443": {"up": True, "rtt_ms": 30.0}},
+        "mappings": [{"key": "tcp:0.0.0.0:443/127.0.0.1:8443", "name": "web",
+                      "listen": 443, "target": "127.0.0.1:8443", "bound": True,
+                      "stats": {"in_bytes": 10, "out_bytes": 20, "conns": 2,
+                                "active": 1, "errors": 0}}],
+    }
+    panel, port = await _panel(home, tmp_path, role="relay", node=node)
+    try:
+        status, body = await _request(port, "/metrics", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+        text = body.decode()
+        assert "simurgh_up{" in text and 'role="relay"' in text
+        assert 'simurgh_tunnel_connected{role="relay"' in text
+        assert "simurgh_tunnel_connections" in text
+        assert "simurgh_tunnel_rtt_seconds" in text and "0.025" in text
+        assert "simurgh_bytes_in_total" in text and "1234" in text
+        assert "simurgh_blocked_total" in text and " 4" in text
+        assert ('simurgh_mapping_bytes_out_total{key="tcp:0.0.0.0:443/'
+                '127.0.0.1:8443",name="web",listen="443"') in text
+        assert 'simurgh_traffic_bytes_total{key="tcp:0.0.0.0:443/127.0.0.1:8443",period="month"' in text
+        assert 'simurgh_quota_used_bytes{key="tcp:0.0.0.0:443/127.0.0.1:8443",period="month"' in text
+        assert "simurgh_exit_rtt_seconds" in text and "0.03" in text
+        # every metric line is `name{labels} value` with a numeric value
+        import re
+        pattern = re.compile(r'^[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^}]*\})? '
+                             r'[-+0-9.eE]+$')
+        for line in text.splitlines():
+            if line.startswith("#"):
+                continue
+            assert pattern.match(line), line
+        # and every HELP has its TYPE
+        for line in text.splitlines():
+            if line.startswith("# HELP "):
+                name = line.split()[2]
+                assert f"# TYPE {name} " in text, name
+    finally:
+        await panel.stop()
+
+
+async def test_metrics_needs_credentials_too(home, tmp_path, relay_cfg):
+    panel, port = await _panel(home, tmp_path, role="relay",
+                               node=FakeRelayNode(relay_cfg))
+    try:
+        status, _body = await _request(port, "/metrics")
+        assert status == 401
+    finally:
+        await panel.stop()
+
+
+async def test_metrics_from_a_go_engine_state_file(home, tmp_path):
+    """The Go engine writes state.json; the panel turns it into metrics."""
+    (home.path / "state.json").write_text(json.dumps({"relay": {
+        "role": "relay", "engine": "go", "connected": True, "connections": 1,
+        "rtt_ms": 10.0, "uptime": 5.0, "streams": 2, "blocked": 0,
+        "stats": {"totals": {"in": 100, "out": 200}},
+        "traffic": [{"key": "tcp:0.0.0.0:8080/127.0.0.1:80", "today": 1,
+                     "month": 2, "total": 3}],
+        "mappings": [{"key": "tcp:0.0.0.0:8080/127.0.0.1:80", "name": "web",
+                      "listen": 8080, "target": "127.0.0.1:80", "bound": True,
+                      "stats": {"in_bytes": 100, "out_bytes": 200, "conns": 1,
+                                "active": 1, "errors": 0}}],
+    }}))
+    panel, port = await _panel(home, tmp_path, role="relay", node=None)
+    try:
+        status, body = await _request(port, "/metrics", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+        text = body.decode()
+        assert "simurgh_bytes_out_total" in text and "200" in text
+        assert "simurgh_mapping_up" in text and 'listen="8080"' in text
+        assert "simurgh_traffic_bytes_total" in text
+    finally:
+        await panel.stop()
