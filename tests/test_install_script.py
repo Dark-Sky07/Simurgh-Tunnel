@@ -31,6 +31,8 @@ INSTALL = ROOT / "install.sh"
 BASE_ENV = {
     "SIMURGH_ALLOW_NONROOT": "1",
     "SIMURGH_SRC": str(ROOT),
+    # the tests never answer questions: pretend there is no terminal
+    "SIMURGH_NO_TTY": "1",
 }
 
 TIMEOUT = 300
@@ -249,3 +251,51 @@ def test_both_mode_in_reverse_prints_commands_that_work(tmp_path):
     # either the exit dials the relay now, or the exact way to make it do so
     assert ("the local exit dials this relay now" in output
             or "simurgh link --host 127.0.0.1 --show" in output), output
+
+
+def _auto(tmp_path, country):
+    """The one command, with no role flag: only the country decides."""
+    env = _env(tmp_path)
+    env["SIMURGH_COUNTRY"] = country
+    return subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", "--name", "auto-box", "--token", "auto-token"],
+        env=env, capture_output=True, text=True, timeout=TIMEOUT,
+    )
+
+
+def test_iranian_address_gets_the_relay_without_any_role_flag(tmp_path):
+    proc = _auto(tmp_path, "IR")
+    output = proc.stdout + proc.stderr
+    assert "role of this server: relay" in output, output
+    # without a terminal the relay cannot ask for the foreign address, and the
+    # error has to say so (with a terminal the installer asks for it instead)
+    assert proc.returncode != 0
+    assert "foreign server address" in output, output
+    assert not (tmp_path / "etc" / "exit.toml").exists()
+
+
+def test_other_country_gets_the_exit_without_any_role_flag(tmp_path):
+    proc = _auto(tmp_path, "DE")
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "role of this server: exit" in output, output
+    assert (tmp_path / "etc" / "exit.toml").exists()
+    assert not (tmp_path / "etc" / "relay.toml").exists()
+
+
+def test_a_rerun_keeps_the_role_that_is_already_installed(tmp_path):
+    """Re-running the same command must not flip a server to the other role,
+    even when the location lookup would say otherwise."""
+    assert _auto(tmp_path, "DE").returncode == 0
+    proc = _auto(tmp_path, "IR")
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "role of this server: exit" in output, output
+    assert not (tmp_path / "etc" / "relay.toml").exists()
+
+
+def test_exit_summary_shows_the_token_the_relay_needs(tmp_path):
+    proc = _auto(tmp_path, "DE")
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "auto-token" in output, output

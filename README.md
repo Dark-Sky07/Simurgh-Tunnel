@@ -37,25 +37,27 @@ customer ──same config, Iran IP──► [Iran relay] ══one disguised tu
 
 ## Install
 
-### Foreign server (exit)
+### One command for every server
+
+Run **the same command** on the foreign server and on the Iranian server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
-  | sudo bash /dev/stdin --role exit --name omega-de --listen 443,2053,2083
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
-The installer creates the venv, writes `/etc/simurgh/exit.toml`, generates a
-self-signed certificate, installs the `simurgh-exit` systemd service and prints
-a **relay setup link**.
+The script installs everything it needs (Python environment, the compiled engine
+when it can be built, systemd service, kernel tuning) and works out the role by
+itself:
 
-### Iranian server (relay), direct mode
+* **Iranian address → relay (Iranian server).** It asks for the foreign server's
+  address (`IP:port`) and the token that the foreign server printed at the end of
+  its install.
+* **Any other country → exit (foreign server).** It prints the token and the
+  setup link at the end. Copy the token to the Iranian server when it asks.
 
-```bash
-sudo bash install.sh --role relay --exit 203.0.113.9:443        # or the link:
-sudo simurgh join 'simurgh://203.0.113.9:8787/setup?u=admin&p=…#omega-de'
-sudo simurgh mapping add 443 443 --name panel
-sudo simurgh restart
-```
+Running the command again keeps the role the server already has. Options such as
+`--role`, `--name`, `--listen` or `--mapping` are optional overrides; see
+`bash install.sh --help`.
 
 ### Iranian server (relay), reverse mode
 
