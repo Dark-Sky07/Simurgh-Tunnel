@@ -88,7 +88,7 @@ The table stays as the record of what was missing and why.
 | **Packaging: Docker/compose, DEB/RPM, nix** | gost (DEB/RPM/Docker), frp (Docker/k8s/brew), rathole (nix), Kariz (single static binary) | `install.sh` + systemd is excellent for a VPS, but container users and package-manager users are simply not served. | **M** |
 | **Certificate automation** | chisel (`--tls-domain` → Let's Encrypt), FRPulse (certbot) | Simurgh *uses* an existing Let's Encrypt file fine (`cert_file`/`key_file`) and `certs.py` mentions acme.sh, but nothing obtains or renews a certificate for you *(verified)*. | **M** |
 | **Panel hardening** | Kariz (one-time login link) | The panel is plain HTTP with a shared password, has a `?k=<password>` URL form (password ends up in logs/history), and has an IP allow-list but no failed-attempt lockout and no 2FA *(verified: `panel.py`)*. Options: TLS, rate-limit login, one-time links. | **S–M** |
-| **Fuller speed test** | Kariz (download/upload, latency under load, jitter, UDP loss) | Simurgh measures throughput through the tunnel *(verified: `speedtest.py`)*; latency-under-load and UDP loss are the two numbers an operator needs to choose a carrier. | **S–M** |
+| **Fuller speed test** | Kariz (download/upload, latency under load, jitter, UDP loss) | **Done in 2.7.0.** `simurgh speedtest` measures throughput (one or more streams), the idle *and* under-load round trip with jitter and a bufferbloat grade A–F, and — with `--udp` — datagram loss, RTT and jitter through the tunnel. The exit's localhost-only endpoint answers all three probes and now exists in **both** engines, and the exit announces its port in the connection hello so moving `speedtest_port` does not break the measurement. *(verified: `tests/test_speedtest.py` through a real relay+exit pair, and a live Python client against a Go exit)* | **done** |
 | **Preset tuning profiles** | Kariz (`balanced` / `ultraspeed` / `gaming`) | `stream_window`, `max_stream_window`, `chunk`, `connections`, `split` are all manual; a `simurgh tune gaming\|balanced\|speed` that writes sensible combinations would help most users. | **S** |
 
 ### P2 — worth having, out of the critical path
@@ -181,8 +181,8 @@ limits; both are done now.
 
 ### What is still open
 
-P1 left: packaging (Docker/DEB/RPM), a richer `simurgh speedtest` (latency under
-load, UDP loss) and tuning profiles (`simurgh tune gaming\|balanced\|speed`).  The operator surface is now complete
+P1 left: packaging (Docker/DEB/RPM) and tuning profiles (`simurgh tune
+gaming\|balanced\|speed`).  The operator surface is now complete
 on the Python side and works *with* the Go engine (supervised child: panel,
 `/metrics`, alerts, restarts).
 

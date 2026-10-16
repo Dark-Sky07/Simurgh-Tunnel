@@ -279,18 +279,24 @@ async def test_speedtest_action_reports_a_result(home, tmp_path, relay_cfg,
                                                  monkeypatch):
     import simurgh.speedtest as speedtest_module
 
-    async def fake_speedtest(node, seconds=6, port=8808):
+    async def fake_speedtest(node, seconds=6, port=0, udp=False, streams=1,
+                            latency=True):
+        assert udp is True and streams == 1
         return {"seconds": seconds, "download_mbps": 42.0, "upload_mbps": 21.0,
-                "download_bytes": 1000, "upload_bytes": 500}
+                "download_bytes": 1000, "upload_bytes": 500,
+                "latency": {"idle_ms": 1.0, "loaded_ms": 5.0, "grade": "A"},
+                "udp": {"sent": 10, "received": 10, "loss_percent": 0.0}}
 
     monkeypatch.setattr(speedtest_module, "run_speedtest", fake_speedtest)
     panel, port = await _panel(home, tmp_path, node=FakeRelayNode(relay_cfg))
     try:
         status, data = await _request(port, "/api/action", method="POST",
                                       auth=f"{USER}:{PASSWORD}",
-                                      body={"name": "speedtest", "seconds": 2})
+                                      body={"name": "speedtest", "seconds": 2,
+                                            "udp": True})
         assert status == 200
         assert data["speedtest"]["download_mbps"] == 42.0
+        assert data["speedtest"]["latency"]["grade"] == "A"
     finally:
         await panel.stop()
 

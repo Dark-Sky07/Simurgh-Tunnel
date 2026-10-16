@@ -974,23 +974,61 @@ def cmd_speedtest(args) -> int:
             _err("the tunnel is not up; check `simurgh status` first.")
             return 3
         try:
-            result = await run_speedtest(node, seconds=args.seconds)
+            result = await run_speedtest(
+                node, seconds=args.seconds, streams=args.streams,
+                udp=args.udp, latency=not args.no_latency)
         finally:
             await node.stop()
         if args.json:
             print(json.dumps(result, ensure_ascii=False))
         else:
-            print(f"  download: \033[32m{result['download_mbps']:.1f} Mbps\033[0m "
-                  f"({human_bytes(result['download_bytes'])})")
-            print(f"  upload:   \033[32m{result['upload_mbps']:.1f} Mbps\033[0m "
-                  f"({human_bytes(result['upload_bytes'])})")
-            print(f"  test time: {result['seconds']:.1f} s")
+            _print_speedtest(result)
         return 0
 
     try:
         return asyncio.run(go())
     except KeyboardInterrupt:
         return 0
+
+
+def _print_speedtest(result: dict) -> None:
+    """Human output: throughput first, then what users actually feel."""
+    print(f"  download: \033[32m{result['download_mbps']:.1f} Mbps\033[0m "
+          f"({human_bytes(result['download_bytes'])})")
+    print(f"  upload:   \033[32m{result['upload_mbps']:.1f} Mbps\033[0m "
+          f"({human_bytes(result['upload_bytes'])})")
+    latency = result.get("latency")
+    if latency and latency.get("idle_ms") is not None:
+        loaded = latency.get("loaded_ms")
+        grade = latency.get("grade") or "?"
+        if loaded is None:
+            print(f"  latency:  {latency['idle_ms']:.1f} ms idle "
+                  "(the load phase produced no samples)")
+        else:
+            colour = {"A": "\033[32m", "B": "\033[32m", "C": "\033[33m",
+                      "D": "\033[33m", "F": "\033[31m"}.get(grade, "")
+            print(f"  latency:  {latency['idle_ms']:.1f} ms idle -> "
+                  f"{colour}{loaded:.1f} ms\033[0m under load "
+                  f"({latency['increase_ms']:+.1f} ms, bufferbloat "
+                  f"{colour}{grade}\033[0m)")
+            print(f"  jitter:   {latency.get('jitter_ms') or 0:.1f} ms under load "
+                  f"({latency.get('jitter_idle_ms') or 0:.1f} ms idle, "
+                  f"p95 {latency.get('loaded_p95_ms') or 0:.1f} ms)")
+    udp = result.get("udp")
+    if udp:
+        if udp.get("error"):
+            print(f"  udp:      \033[33mnot measured\033[0m ({udp['error']})")
+        else:
+            loss = udp.get("loss_percent") or 0.0
+            colour = "\033[32m" if loss < 1 else (
+                "\033[33m" if loss < 5 else "\033[31m")
+            print(f"  udp:      {colour}{loss:.2f}% loss\033[0m of "
+                  f"{udp['sent']} datagrams, "
+                  f"{udp.get('rtt_ms') or 0:.1f} ms rtt, "
+                  f"jitter {udp.get('jitter_ms') or 0:.1f} ms")
+    streams = result.get("streams") or 1
+    extra = f", {streams} streams" if streams > 1 else ""
+    print(f"  test time: {result['seconds']:.1f} s{extra}")
 
 
 def _join_exit(home: Home, payload: dict, args) -> int:
@@ -1691,8 +1729,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-f", "--follow", action="store_true")
     p.set_defaults(func=cmd_logs)
 
-    p = sub.add_parser("speedtest", help="measure the real speed through the tunnel")
+    p = sub.add_parser("speedtest",
+                       help="measure the real speed through the tunnel")
     p.add_argument("--seconds", type=int, default=6)
+    p.add_argument("--streams", type=int, default=1,
+                   help="tunnel streams to sum (default 1)")
+    p.add_argument("--udp", action="store_true",
+                   help="also measure UDP loss and jitter through the tunnel")
+    p.add_argument("--no-latency", action="store_true",
+                   help="skip the latency probe (idle and under load)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_speedtest)
 

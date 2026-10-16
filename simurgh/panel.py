@@ -687,8 +687,11 @@ class Panel:
             if self.role != "relay" or self.node is None:
                 return json_response({"ok": False, "error": "speed test runs on the relay"}, 400)
             seconds = clamp(float(body.get("seconds") or 6), 2, 20)
+            streams = int(clamp(float(body.get("streams") or 1), 1, 8))
             try:
-                result = await run_speedtest(self.node, seconds=seconds)
+                result = await run_speedtest(self.node, seconds=seconds,
+                                             streams=streams,
+                                             udp=bool(body.get("udp")))
             except Exception as exc:
                 return json_response({"ok": False, "error": str(exc)}, 500)
             return json_response({"ok": True, "speedtest": result})
@@ -921,6 +924,8 @@ PANEL_I18N = {
         "toast_conflict": "port conflict: {list}",
         "toast_need_listen": "enter the Iranian port",
         "toast_speed": "download: {down} Mbps / upload: {up} Mbps",
+        "toast_speed_latency": "{idle} -> {loaded} ms under load (grade {grade})",
+        "toast_speed_udp": "udp loss {loss}%",
         "logs_empty": "no log yet"
     },
     "fa": {
@@ -988,6 +993,8 @@ PANEL_I18N = {
         "toast_conflict": "هشدار پورت تکراری: {list}",
         "toast_need_listen": "پورت ایران را وارد کنید",
         "toast_speed": "دانلود: {down} Mbps / آپلود: {up} Mbps",
+        "toast_speed_latency": "زیر بار {idle} -> {loaded} میلی‌ثانیه (نمرهٔ {grade})",
+        "toast_speed_udp": "افت UDP {loss}٪",
         "logs_empty": "لاگی موجود نیست"
     }
 }
@@ -1091,7 +1098,7 @@ footer{color:var(--dim);text-align:center;padding:24px;font-size:12px}
   <div class="card">
     <h2 data-i18n="card_tools">Tools</h2>
     <div class="row">
-      <button class="primary" onclick="act('speedtest',{seconds:6})" data-i18n="btn_speedtest">Speed test through the tunnel</button>
+      <button class="primary" onclick="act('speedtest',{seconds:6,udp:true})" data-i18n="btn_speedtest">Speed test through the tunnel</button>
       <button onclick="act('reconnect')" data-i18n="btn_reconnect">Reconnect</button>
       <button onclick="act('restart')" data-i18n="btn_restart">Restart service</button>
     </div>
@@ -1260,7 +1267,11 @@ async function act(name, extra){
     body:JSON.stringify(body)});
   const d = await r.json();
   if(name==='speedtest' && d.ok){
-    toast(t('toast_speed', {down:d.speedtest.download_mbps.toFixed(1), up:d.speedtest.upload_mbps.toFixed(1)}));
+    const s=d.speedtest, l=s.latency||{}, u=s.udp||{};
+    const parts=[t('toast_speed', {down:s.download_mbps.toFixed(1), up:s.upload_mbps.toFixed(1)})];
+    if(l.idle_ms!=null) parts.push(t('toast_speed_latency', {idle:l.idle_ms.toFixed(1), loaded:(l.loaded_ms||0).toFixed(1), grade:l.grade||'?'}));
+    if(u.loss_percent!=null) parts.push(t('toast_speed_udp', {loss:u.loss_percent.toFixed(2)}));
+    toast(parts.join(' · '));
   } else { toast(d.ok ? t('toast_done') : t('toast_error', {msg:(d.error||'')}), !d.ok); }
   load();
 }

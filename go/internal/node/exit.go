@@ -29,6 +29,7 @@ type Exit struct {
 	listeners []net.Listener
 	udp       []*carrier.UDPServer
 	state     *stateWriter
+	speed     *speedServer
 	endpoint  []string
 
 	stop       chan struct{}
@@ -69,6 +70,9 @@ func (e *Exit) Start() error {
 	// live numbers for the web panel and `simurgh status`
 	e.state = newStateWriter(e.home, "exit", 3*time.Second)
 	go e.state.loop(e.stop, e.Status)
+
+	// the localhost-only endpoint behind `simurgh speedtest` (0 = off)
+	e.speed = startSpeedServer(e.cfg.SpeedtestPort)
 
 	for _, spec := range e.cfg.Listen {
 		if !spec.Enabled {
@@ -114,6 +118,7 @@ func (e *Exit) Stop() {
 	for _, ln := range e.listeners {
 		ln.Close()
 	}
+	e.speed.Close()
 	e.mu.Lock()
 	udpServers := append([]*carrier.UDPServer(nil), e.udp...)
 	e.udp = nil
@@ -222,6 +227,11 @@ func (e *Exit) onChannel(ch mux.Channel) {
 	count := len(e.tunnels)
 	e.mu.Unlock()
 	slog.Info("tunnel established", "peer", ch.Peer(), "carrier", ch.Name(), "tunnels", count)
+	// introduce ourselves, in direct mode as well as in reverse: the relay
+	// needs to know where our localhost-only speed endpoint listens
+	m.Ctrl(map[string]any{"kind": "hello", "name": e.cfg.Name,
+		"uptime":         time.Since(e.start).Seconds(),
+		"speedtest_port": e.cfg.SpeedtestPort})
 	go m.Keepalive(time.Duration(e.cfg.Keepalive) * time.Second)
 	err := m.Run()
 	e.mu.Lock()
@@ -330,7 +340,10 @@ func (e *Exit) reverseTunnel(spec config.ListenSpec) error {
 	e.started[m] = time.Now()
 	e.mu.Unlock()
 	slog.Info("tunnel established with the relay", "peer", ch.Peer())
-	m.Ctrl(map[string]any{"kind": "hello", "name": e.cfg.Name, "uptime": time.Since(e.start).Seconds()})
+	m.Ctrl(map[string]any{"kind": "hello", "name": e.cfg.Name,
+		"uptime": time.Since(e.start).Seconds(),
+		// the speed endpoint is localhost-only: this is how the relay finds it
+		"speedtest_port": e.cfg.SpeedtestPort})
 	go m.Keepalive(time.Duration(e.cfg.Keepalive) * time.Second)
 	err = m.Run()
 	e.mu.Lock()

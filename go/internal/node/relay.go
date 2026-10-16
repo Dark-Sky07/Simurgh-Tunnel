@@ -87,6 +87,10 @@ type Relay struct {
 	mappings map[string]*mapCounter // key = listen port
 	state    *stateWriter
 
+	// what the exit told us about itself (name, uptime, speed port)
+	exitMu   sync.Mutex
+	exitInfo map[string]any
+
 	// bandwidth limits, quotas and the traffic ledger (see go/internal/limits)
 	limMu   sync.Mutex
 	buckets map[string]*limits.Bucket
@@ -758,6 +762,36 @@ func (r *Relay) runTunnel(ep config.Endpoint, primary bool) error {
 
 func (r *Relay) onCtrl(obj map[string]any) {
 	slog.Debug("control message", "kind", obj["kind"])
+	if kind, _ := obj["kind"].(string); kind != "hello" {
+		return
+	}
+	// the exit introduces itself: its name, its uptime and where its
+	// localhost-only speed endpoint listens
+	r.exitMu.Lock()
+	defer r.exitMu.Unlock()
+	if r.exitInfo == nil {
+		r.exitInfo = map[string]any{}
+	}
+	if name, ok := obj["name"].(string); ok && name != "" {
+		r.exitInfo["name"] = name
+	}
+	if up, ok := obj["uptime"].(float64); ok {
+		r.exitInfo["uptime"] = up
+	}
+	if port, ok := obj["speedtest_port"].(float64); ok {
+		r.exitInfo["speedtest_port"] = int(port)
+	}
+}
+
+// ExitInfo is what the connected exit announced (nil entries are absent).
+func (r *Relay) ExitInfo() map[string]any {
+	r.exitMu.Lock()
+	defer r.exitMu.Unlock()
+	out := make(map[string]any, len(r.exitInfo))
+	for k, v := range r.exitInfo {
+		out[k] = v
+	}
+	return out
 }
 
 // --------------------------------------------------------------------- pool
@@ -926,7 +960,7 @@ func (r *Relay) Status() map[string]any {
 		"bind_errors":    []string{},
 		"dial":           r.cfg.Dial,
 		"tunnel_listen":  tunnelListen,
-		"exit_info":      map[string]any{},
+		"exit_info":      r.ExitInfo(),
 		"streams":        streams,
 		"mappings":       mappings,
 		"stats": map[string]any{

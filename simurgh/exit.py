@@ -31,7 +31,7 @@ from .protocol import (
     decode_addr,
     make_frame,
 )
-from .speedtest import SpeedServer
+from .speedtest import SpeedServer, UdpEchoServer
 from .stats import Stats
 from .udp import UdpExitFlow
 from .util import dial_stream, get_logger
@@ -61,6 +61,7 @@ class ExitNode:
         self.push_callback = push_callback
         self.speed_port = cfg.speedtest_port
         self._speed_server: asyncio.AbstractServer | None = None
+        self._speed_udp: asyncio.DatagramTransport | None = None
         self.connected_at: float | None = None
         #: telegram / webhook notifications (see simurgh/alerts.py)
         self.alerts = alerts_from_config(cfg, name=cfg.name or "exit")
@@ -137,6 +138,16 @@ class ExitNode:
                      self.speed_port)
         except OSError:
             self._speed_server = None
+        # ... and the same port for datagrams: the udp half of the test asks
+        # the exit to bounce a datagram back through the tunnel
+        try:
+            transport, _ = await loop.create_datagram_endpoint(
+                UdpEchoServer, local_addr=("127.0.0.1", self.speed_port))
+            self._speed_udp = transport
+            log.info("udp speed test endpoint on 127.0.0.1:%d (localhost only)",
+                     self.speed_port)
+        except OSError:
+            self._speed_udp = None
 
     async def _listen(self, carrier: ServerCarrier, spec):
         """Open one listener: a datagram endpoint for 'udp', a socket otherwise."""
@@ -219,6 +230,9 @@ class ExitNode:
             task.cancel()
         for s in self.servers:
             s.close()
+        if self._speed_udp is not None:
+            self._speed_udp.close()
+            self._speed_udp = None
         if self._speed_server:
             self._speed_server.close()
         for mux in list(self.tunnels):
@@ -303,6 +317,14 @@ class ExitNode:
         self.stats.tunnel.active = len(self.tunnels)
         if self.connected_at is None:
             self.connected_at = time.time()
+        # tell the relay where our speed endpoint listens (it is localhost-only,
+        # so this is the only way `simurgh speedtest` can find a moved port)
+        try:
+            mux.ctrl({"kind": "hello", "name": self.cfg.name or "exit",
+                      "uptime": time.time() - self.connected_at,
+                      "speedtest_port": self.speed_port})
+        except Exception:      # pragma: no cover - the mux may be gone already
+            pass
         log.info("tunnel established with %s (carrier: %s)", peer or "?", channel.name)
         self.alerts.notify("connected", f"relay connected from {peer or '?'} "
                            f"(carrier: {channel.name}); "

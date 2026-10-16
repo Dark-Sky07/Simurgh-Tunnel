@@ -889,6 +889,17 @@ class RelayNode:
                         row["checked"] = time.time()
                     break
             return
+        if kind == "hello":
+            # the exit introduces itself: its name, its uptime and where its
+            # localhost-only speed endpoint listens
+            self.exit_info["name"] = msg.get("name") or self.exit_info.get("name") or ""
+            if isinstance(msg.get("uptime"), (int, float)):
+                self.exit_info["uptime"] = float(msg["uptime"])
+            if isinstance(msg.get("speedtest_port"), int):
+                self.exit_info["speedtest_port"] = int(msg["speedtest_port"])
+            if msg.get("version"):
+                self.exit_info["version"] = str(msg["version"])
+            return
         if kind == "mappings":
             if not self.cfg.accept_push:
                 log.info("ignored a port list pushed by the exit (accept_push = false)")

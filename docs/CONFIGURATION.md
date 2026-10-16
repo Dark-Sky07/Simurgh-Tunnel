@@ -172,7 +172,7 @@ the Iranian side.
 | `max_stream_window` | `16777216` | ceiling for the automatic window growth (16 MiB) |
 | `chunk` | `65536` | max frame payload, in bytes |
 | `connections` | `1` | tunnel connections kept open; 2-16 spread the load |
-| `speedtest_port` | `0` | local speed endpoint (`0` = off) |
+| `speedtest_port` | `0` | local speed endpoint (`0` = off); the relay learns it from the exit's handshake, so `simurgh speedtest` follows a change |
 | `[exit]` | — | the foreign endpoint (direct mode); accepts `split` too |
 | `split` | `3` in files written by `simurgh init` | in `[exit]` (and in any `[[pool]]` entry): how many bytes of the first write leave in a TCP segment of their own — the anti-DPI trick described under `[[listen]]`. `simurgh install --split N` (or `init`) sets it |
 | `[tunnel]` | — | the listener (reverse mode) |
@@ -253,6 +253,47 @@ simurgh mapping add 2096 2096 --udp
 simurgh mapping add 8443 8443 --target-host 10.0.0.5
 simurgh mapping toggle 443
 simurgh mapping remove 443
+```
+
+---
+
+## The speed test
+
+```bash
+simurgh speedtest                 # throughput + latency, both sides real
+simurgh speedtest --udp           # ... and datagram loss/jitter
+simurgh speedtest --streams 4     # four tunnel streams, summed
+simurgh speedtest --seconds 10 --json
+simurgh speedtest --no-latency    # throughput only (the old behaviour)
+```
+
+It runs on the **Iranian** side and measures straight through the tunnel — the
+carrier, the multiplexer and flow control included, which is the point:
+
+| What | How |
+|---|---|
+| download / upload | the exit's localhost-only endpoint at `speedtest_port` gives data away and swallows what it receives |
+| latency, idle and under load | a second stream opens in *echo* mode (its first bytes are a magic marker) and tiny samples are timed round trip: once before the load, then repeatedly while the link is saturated |
+| bufferbloat grade | from the growth of the median round trip under load: `A` ≤30 ms, `B` ≤60, `C` ≤120, `D` ≤250, `F` above |
+| UDP loss and jitter | `--udp`: datagrams are sent through the tunnel to the same endpoint, which echoes them back, and every missing sequence number is counted |
+
+The endpoint binds `127.0.0.1` only, in **both** engines, and the exit
+announces the port it uses in the connection handshake — so changing
+`speedtest_port` (or `0` to switch the endpoint off) on the exit works without
+touching the relay. With no tunnel up, `simurgh speedtest` says so and exits 3
+instead of inventing numbers.
+
+`--json` returns everything:
+
+```json
+{
+  "seconds": 3.0, "streams": 1,
+  "download_mbps": 3655.3, "upload_mbps": 1528.8,
+  "latency": {"idle_ms": 0.6, "loaded_ms": 12.4, "increase_ms": 11.9,
+              "jitter_ms": 6.5, "loaded_p95_ms": 25.9, "grade": "A"},
+  "udp": {"sent": 200, "received": 200, "loss_percent": 0.0,
+          "rtt_ms": 0.3, "jitter_ms": 0.1}
+}
 ```
 
 ---
