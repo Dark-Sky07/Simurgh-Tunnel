@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simurgh-tunnel"
-version = "2.5.1"
+version = "2.6.0"
 description = "Simurgh Tunnel v2 — an Iran <-> Kharej transparent TCP/UDP relay for VPN panels (3x-ui, OMEGA, X-UI, ...)"
 readme = "README.md"
 requires-python = ">=3.9"

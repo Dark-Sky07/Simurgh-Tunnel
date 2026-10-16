@@ -1304,12 +1304,143 @@ def cmd_uninstall(args) -> int:
     return 0
 
 
+def cmd_cert(args) -> int:
+    """`simurgh cert [status|issue|renew]` -- Let's Encrypt, wired in."""
+    from . import acme
+
+    home = _home_or_fail(args)
+    role = _detect_role(home, args.role)
+    if role == "relay":
+        cfg = _load_relay_or_fail(home)
+        path = home.relay_cfg
+    else:
+        cfg = _load_exit_or_fail(home)
+        path = home.exit_cfg
+
+    if args.action == "issue":
+        if not args.domain:
+            _err("a domain is required: simurgh cert issue panel.example.com "
+                 "[--webroot DIR | --standalone]")
+            return 2
+        reload_cmd = args.reload or (
+            f"systemctl restart simurgh-{role}"
+            if shutil.which("systemctl") else "simurgh restart")
+        try:
+            result = acme.issue(
+                args.domain, email=args.email or "", webroot=args.webroot or "",
+                standalone=bool(args.standalone), staging=bool(args.staging),
+                prefer=args.client, reload_cmd=reload_cmd,
+                config_dir=args.config_dir or "", binary=args.acme_sh or "")
+        except acme.AcmeError as exc:
+            _err(str(exc))
+            return 1
+        for step in result.steps:
+            _info(step)
+        if args.no_write:
+            _warn("certificate obtained; the config was left alone (--no-write)")
+            return 0
+        try:
+            changed = acme.wire(cfg, role, result.cert_file, result.key_file,
+                                port=args.port or None)
+        except acme.AcmeError as exc:
+            _err(str(exc))
+            return 1
+        try:
+            save_exit(cfg, path) if role == "exit" else save_relay(cfg, path)
+        except OSError as exc:
+            _err(f"cannot write {path}: {exc}")
+            return 1
+        if args.port:
+            _ok(f"{path.name}: [[listen]] port {args.port} now serves "
+                f"{result.cert_file}")
+        else:
+            _ok(f"{path.name}: {', '.join(changed)} -> {result.cert_file}")
+        _info("the certificate is renewed by the client itself; the reload hook "
+              f"runs `{reload_cmd}` after each renewal")
+        if args.apply:
+            _info(f"applying now: {reload_cmd}")
+            ok, output = acme.reload_now(reload_cmd)
+            for line in output.splitlines():
+                print(f"  {line}")
+            (_ok if ok else _warn)(
+                f"reload hook: {reload_cmd} "
+                + ("ran" if ok else "failed -- run it yourself"))
+            return 0 if ok else 1
+        print("apply it now: simurgh restart")
+        return 0
+
+    if args.action == "renew":
+        try:
+            name, ok, output = acme.renew(prefer=args.client,
+                                          config_dir=args.config_dir or "")
+        except acme.AcmeError as exc:
+            _err(str(exc))
+            return 1
+        for line in output.splitlines():
+            print(f"  {line}")
+        if ok:
+            _ok(f"{name} renewed everything that was due")
+            return 0
+        _err(f"{name} reported a problem (see above)")
+        return 1
+
+    # status
+    found = acme.describe_clients()
+    rows = acme.status(cfg, role)
+    if getattr(args, "json", False):
+        print(json.dumps({"role": role, "config": str(path), "client": found,
+                          "ok": all(r["exists"] and (r["days"] or 0) > 14
+                                    for r in rows) if rows else True,
+                          "certificates": rows}, indent=2))
+        return 0 if all(r["exists"] and (r["days"] or 0) > 14
+                         for r in rows) else 1
+    print(f"{__product__} v{__version__}   role={role}   "
+          f"acme client: {found or 'none'}")
+    if not found:
+        print("  " + acme.install_hint().replace("\n", "\n  "))
+    if not rows:
+        print(f"  no tls/wss listener in {path.name}; nothing to certify")
+        return 0
+    problems = 0
+    self_signed = 0
+    for row in rows:
+        days = row["days"]
+        if not row["cert_file"]:
+            _warn(f"{row['endpoint']}: no certificate configured "
+                  "(cert_auto generates a self-signed one at start)")
+            problems += 1
+            continue
+        if not row["exists"]:
+            _warn(f"{row['endpoint']}: {row['cert_file']} is missing")
+            problems += 1
+            continue
+        if days is None:
+            _warn(f"{row['endpoint']}: no certificate could be read from "
+                  f"{row['cert_file']}")
+            problems += 1
+            continue
+        state = "ok" if days > 14 else "expiring"
+        if state == "expiring":
+            problems += 1
+        mark = "  (self-signed)" if row["note"] == "generated" else ""
+        if mark:
+            self_signed += 1
+        line = (f"  {row['endpoint']}: {row['cert_file']}  "
+                f"{days if days is not None else '?'} day(s) left  "
+                f"{row['fingerprint'][:23]}…{mark}")
+        (_ok if state == "ok" else _warn)(line)
+    if self_signed:
+        _info("self-signed certificates are fine for the tunnel itself; for a "
+              "panel or a website use `simurgh cert issue <domain>`")
+    return 1 if problems else 0
+
+
 def cmd_alert(args) -> int:
     """`simurgh alert [status|test|events]` -- does the operator's phone ring?"""
     from .alerts import EVENTS, alerts_from_config
 
     home = _home_or_fail(args)
-    role = args.role or "relay"
+    role = _detect_role(home, args.role)
     path = home.exit_cfg if role == "exit" else home.relay_cfg
     try:
         cfg = load_exit(path) if role == "exit" else load_relay(path)
@@ -1593,6 +1724,35 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=0)
     p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser("cert", help="Let's Encrypt certificates (acme.sh / certbot)")
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["status", "issue", "renew"])
+    p.add_argument("domain", nargs="?", default="", help="the host name to certify")
+    p.add_argument("--role", choices=["relay", "exit"], default=None,
+                   help="exit | relay (auto-detected by default)")
+    p.add_argument("--email", default="", help="ACME account e-mail")
+    p.add_argument("--webroot", default="", help="directory a webserver already serves")
+    p.add_argument("--standalone", action="store_true",
+                   help="let the client bind port 80 for a moment")
+    p.add_argument("--staging", action="store_true", help="use the test CA (dry runs)")
+    p.add_argument("--client", choices=["acme.sh", "certbot"], default="",
+                   help="which client to use (default: whichever is installed)")
+    p.add_argument("--acme-sh", dest="acme_sh", default="",
+                   help=argparse.SUPPRESS)
+    p.add_argument("--config-dir", dest="config_dir", default="",
+                   help="certbot's store (default /etc/letsencrypt)")
+    p.add_argument("--port", type=int, default=0,
+                   help="wire the certificate into this [[listen]] port only")
+    p.add_argument("--no-write", action="store_true",
+                   help="obtain the certificate but leave the config alone")
+    p.add_argument("--reload", default="",
+                   help="command to run after a renewal (default: this service)")
+    p.add_argument("--apply", action="store_true",
+                   help="run that command now as well (skip waiting for a restart)")
+    p.add_argument("--json", action="store_true",
+                   help="print the status as JSON (for scripts)")
+    p.set_defaults(func=cmd_cert)
 
     p = sub.add_parser("alert", aliases=["alerts"], help="telegram / webhook alerts")
     p.add_argument("action", nargs="?", default="status",

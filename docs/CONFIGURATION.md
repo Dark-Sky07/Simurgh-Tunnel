@@ -394,6 +394,62 @@ simurgh alert events quota cert error # write a new list (then: simurgh restart)
 simurgh alert status --role exit
 ```
 
+## Certificates (Let's Encrypt)
+
+Every `tls`/`wss` endpoint needs a certificate, and there are three ways to give
+it one:
+
+1. **`cert_auto = true`** (the default) — a self-signed certificate is generated
+   on first start. Perfect for the tunnel itself: both sides speak TLS, the relay
+   pins the fingerprint, and nobody sees the "untrusted" warning. Not usable for a
+   panel or a website behind the tunnel.
+2. **Your own files** — `cert_file` / `key_file` at the top of the file (or inside
+   one `[[listen]]` block, for one box serving several domains). Point them at
+   what your tool produced:
+
+   ```toml
+   cert_auto = false
+   cert_file = "/etc/letsencrypt/live/panel.example.com/fullchain.pem"
+   key_file  = "/etc/letsencrypt/live/panel.example.com/privkey.pem"
+   ```
+
+   After a renewal, restart the service (`simurgh restart`); if you forget, the
+   `cert` alert from the section above tells you 14 days before it hurts.
+3. **`simurgh cert issue`** — let Simurgh drive `acme.sh` (preferred: a single
+   shell script, so it installs on a filtered server) or `certbot` for you, then
+   wire the result into the config and install a renewal hook:
+
+   ```bash
+   sudo simurgh cert issue panel.example.com --email me@example.com \
+        --webroot /var/www/html          # nginx/caddy already serves it
+   sudo simurgh cert issue panel.example.com --standalone   # port 80 is free
+   sudo simurgh cert issue panel.example.com --staging      # dry run, test CA
+   sudo simurgh cert issue panel.example.com --port 8443     # this listener only
+   ```
+
+   The certificate is written into `exit.toml` (or the relay's
+   `[tunnel]` block with `--role relay`), `cert_auto` is switched off so the
+   engine never replaces it, and `acme.sh --install-cert --reloadcmd "systemctl
+   restart simurgh-exit"` means the next renewal restarts the service by itself.
+   `--no-write` obtains the certificate and leaves the config alone, and
+   `--apply` runs that hook right away instead of waiting for the next renewal
+   (handy when a service manager is not in play).
+
+   ```bash
+   simurgh cert                     # what is in use: paths, days left, fingerprint
+   simurgh cert renew               # run the client's own renewal (= its cron job)
+   simurgh cert status --role relay
+   simurgh cert status --json       # the same, for a script or a check
+   ```
+
+   Rows marked `(self-signed)` come from `cert_auto`; they are fine for the
+   tunnel itself, and `simurgh cert issue <domain>` replaces them with a real
+   certificate.  `simurgh cert status` exits 1 when something is missing, not a
+   certificate, or inside the last 14 days, so it works in a monitoring script.
+
+   On a listener that already has its own `cert_file`, `simurgh cert issue`
+   without `--port` leaves that block alone and says so.
+
 ### Panel hardening
 
 * **Failed logins** are counted per source address. The fifth wrong password

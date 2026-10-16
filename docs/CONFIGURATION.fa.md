@@ -381,6 +381,60 @@ simurgh alert events quota cert error # نوشتن فهرست تازه (بعدش
 simurgh alert status --role exit
 ```
 
+## گواهی‌ها (Let's Encrypt)
+
+هر اندپوینت `tls`/`wss` به گواهی نیاز دارد و سه راه برای دادنش هست:
+
+۱. **`cert_auto = true`** (پیش‌فرض) — یک گواهی خودامضا در اولین اجرا ساخته
+   می‌شود. برای خودِ تونل کامل است: هر دو طرف TLS حرف می‌زنند، رله اثرانگشت را
+   پین می‌کند و کسی هشدار «نامعتبر» نمی‌بیند. ولی برای پنل یا سایتی که پشت
+   تونل است قابل استفاده نیست.
+۲. **فایل‌های خودتان** — `cert_file` / `key_file` بالای فایل (یا داخل یک بلوک
+   `[[listen]]` برای سروری که چند دامنه دارد). همان مسیرهایی که ابزارتان
+   ساخته را بدهید:
+
+   ```toml
+   cert_auto = false
+   cert_file = "/etc/letsencrypt/live/panel.example.com/fullchain.pem"
+   key_file  = "/etc/letsencrypt/live/panel.example.com/privkey.pem"
+   ```
+
+   بعد از هر تمدید سرویس را ری‌استارت کنید (`simurgh restart`)؛ اگر یادتان
+   برود، همان هشدار `cert` در بخش بالا ۱۴ روز قبل از دردسر خبر می‌دهد.
+۳. **`simurgh cert issue`** — بگذارید سیمورغ `acme.sh` (ترجیح‌داده‌شده: یک
+   اسکریپت شل، پس روی سرور فیلترشده هم نصب می‌شود) یا `certbot` را برایتان
+   اجرا کند، نتیجه را در کانفیگ بنویسد و هوک تمدید نصب کند:
+
+   ```bash
+   sudo simurgh cert issue panel.example.com --email me@example.com \
+        --webroot /var/www/html          # nginx/caddy همان را سرو می‌کند
+   sudo simurgh cert issue panel.example.com --standalone   # پورت ۸۰ آزاد است
+   sudo simurgh cert issue panel.example.com --staging      # آزمایش با CA تستی
+   sudo simurgh cert issue panel.example.com --port 8443     # فقط همین لیسنر
+   ```
+
+   گواهی در `exit.toml` نوشته می‌شود (یا با `--role relay` در بلوک
+   `[tunnel]` رله)، `cert_auto` خاموش می‌شود تا موتور هرگز روی آن گواهی
+   خودامضا نگذارد، و `acme.sh --install-cert --reloadcmd "systemctl restart
+   simurgh-exit"` یعنی تمدید بعدی خودش سرویس را ری‌استارت می‌کند. با
+   `--no-write` گواهی گرفته می‌شود ولی کانفیگ دست‌نخورده می‌ماند و با `--apply`
+   همان هوک همین حالا اجرا می‌شود (وقتی سرویس‌منیجری در کار نیست، به‌کار می‌آید).
+
+   ```bash
+   simurgh cert                     # چه چیزی در استفاده است: مسیر، روز باقی‌مانده، اثرانگشت
+   simurgh cert renew               # اجرای تمدید خودِ کلاینت (= همان کرون)
+   simurgh cert status --role relay
+   simurgh cert status --json       # همان، برای اسکریپت یا مانیتورینگ
+   ```
+
+   خط‌هایی که `(self-signed)` خورده‌اند از `cert_auto` می‌آیند؛ برای خودِ تونل
+   مشکلی ندارند و `simurgh cert issue <domain>` آن‌ها را با گواهی واقعی عوض
+   می‌کند. `simurgh cert status` اگر چیزی نبود، خوانده نشد یا کمتر از ۱۴ روز
+   مانده باشد با کد ۱ خارج می‌شود، پس در اسکریپت پایش هم قابل استفاده است.
+
+   روی لیسنری که `cert_file` مخصوص خودش را دارد، `simurgh cert issue` بدون
+   `--port` آن بلوک را دست نمی‌زند و همان را گزارش می‌کند.
+
 ### سخت‌ترشدن پنل
 
 * **رمزهای اشتباه** برای هر آدرس شمرده می‌شوند. رمز غلط پنجم آن آدرس را

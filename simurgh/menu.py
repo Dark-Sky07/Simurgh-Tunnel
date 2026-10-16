@@ -476,6 +476,8 @@ MENU_RELAY = {
     "11": "Import a setup link",
     "12": "Doctor (self-diagnostics)",
     "13": "Enable start on boot",
+    "14": "Alerts (Telegram / webhook)",
+    "15": "Certificates (Let's Encrypt)",
 }
 
 
@@ -540,8 +542,44 @@ def menu_loop(home: Home, role: str) -> int:
             doctor(home, role)
         elif choice == "13":
             service_action(role, "enable")
+        elif choice == "14":
+            show_alerts(home, role)
+        elif choice == "15":
+            show_certificates(home, role)
         else:
             time.sleep(0.3)
+
+
+def show_alerts(home: Home, role: str) -> None:
+    """What the alerter is configured to do (see simurgh/alerts.py)."""
+    from .cli import cmd_alert
+
+    cmd_alert(type("A", (), {"home": str(home.path), "role": role,
+                             "action": "status", "extra": []})())
+    print()
+    print(c("  Setup:", "cyan"))
+    print("    telegram_token / telegram_chat  (or telegram_api for your own "
+          "Bot API server)")
+    print("    alert_webhook                   any endpoint that takes a JSON POST")
+    print("    alert_events = [\"all\"]            every event instead of the default set")
+    print(f"    in {home.exit_cfg.name if role == 'exit' else home.relay_cfg.name}, "
+          "then: simurgh restart")
+    print(c("  Test it once: simurgh alert test", "cyan"))
+    pause()
+
+
+def show_certificates(home: Home, role: str) -> None:
+    """Which certificate each endpoint serves, and how long it has left."""
+    from .cli import cmd_cert
+
+    cmd_cert(type("A", (), {"home": str(home.path), "role": role,
+                            "action": "status"})())
+    print()
+    print(c("  Let's Encrypt:", "cyan"))
+    print("    simurgh cert issue panel.example.com --webroot /var/www/html")
+    print("    simurgh cert issue panel.example.com --standalone")
+    print("    simurgh cert renew          # what the client's own cron runs")
+    pause()
 
 
 def main(args=None) -> int:
