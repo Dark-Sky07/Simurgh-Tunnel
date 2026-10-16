@@ -38,25 +38,25 @@
 
 ## نصب
 
-### سرور خارج (اگزیت)
+### یک دستور برای هر سروری
+
+روی **سرور خارج** و روی **سرور ایران** دقیقاً **همین دستور** را اجرا کنید:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
-  | sudo bash /dev/stdin --role exit --name omega-de --listen 443,2053,2083
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
-نصاب محیط پایتون را می‌سازد، `/etc/simurgh/exit.toml` را می‌نویسد، گواهی
-خودامضا می‌سازد، سرویس systemd را نصب می‌کند و در پایان **لینک اتصال رله** را
-چاپ می‌کند.
+نصاب همه‌چیزِ لازم را نصب می‌کند (محیط پایتون، موتور کامپایل‌شده وقتی ساخته
+شود، سرویس systemd و تنظیمات کرنل) و نقش سرور را خودش تشخیص می‌دهد:
 
-### سرور ایران (رله) — حالت مستقیم
+* **آدرس IP ایرانی ← رله (سرور ایران).** نصاب آدرس سرور خارج (`IP:port`) و
+  توکنی که سرور خارج در پایان نصبش چاپ کرده را می‌پرسد.
+* **هر کشور دیگر ← اگزیت (سرور خارج).** در پایان توکن و لینک اتصال را چاپ
+  می‌کند. وقتی سرور ایران توکن را خواست، همان را وارد کنید.
 
-```bash
-sudo bash install.sh --role relay --exit 203.0.113.9:443        # یا با لینک:
-sudo simurgh join 'simurgh://203.0.113.9:8787/setup?u=admin&p=…#omega-de'
-sudo simurgh mapping add 443 443 --name panel
-sudo simurgh restart
-```
+اجرای دوباره‌ی دستور، نقش فعلی سرور را نگه می‌دارد. گزینه‌هایی مثل `--role`،
+`--name`، `--listen` و `--mapping` اختیاری‌اند؛ برای دیدن همه‌شان
+`bash install.sh --help` را اجرا کنید.
 
 ### سرور ایران (رله) — حالت معکوس
 
@@ -234,7 +234,7 @@ cd go && go test -race ./...        # همان‌ها زیر race detector
 
 با انتشار GitHub Release، workflow در `.github/workflows/release-binaries.yml`
 شش باینری و `SHA256SUMS.txt` را می‌سازد و پیوست می‌کند. برای افزودن فایل‌ها به
-ریلیز موجود، اجرا کنید: `gh workflow run release-binaries.yml -f tag=v2.1.0`.
+ریلیز موجود، اجرا کنید: `gh workflow run release-binaries.yml -f tag=v2.2.0`.
 
 ساختار: `simurgh/protocol.py` (فریم‌ها و کدگذاری آدرس)، `mux.py` (مالتی‌پلکسر و
 کنترل جریان)، `carriers.py` (چهار حامل) + `tlsio.py`/`obfs.py`/`decoy.py`،

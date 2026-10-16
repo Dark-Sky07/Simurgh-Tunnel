@@ -4,7 +4,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 #
-# or, from a checkout:   sudo bash install.sh --role relay --exit 203.0.113.9:443 --token XXX
+# The same command is used on the foreign server and on the Iranian server. The
+# script works out which one it is (see "which role is this server?") and asks
+# only for what it cannot know by itself (the relay asks for the foreign address
+# and the token). Flags are optional overrides, e.g. --role relay.
 set -euo pipefail
 
 BOLD=$'\033[1m'; GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'
@@ -22,6 +25,15 @@ else
   VENV_DIR="${SIMURGH_VENV:-$HOME/.local/share/simurgh/venv}"
   BIN_DIR="$HOME/.local/bin"
 fi
+
+# Questions are asked on the terminal even when the script itself came through
+# a pipe (curl … | sudo bash). SIMURGH_NO_TTY=1 turns that off (used by tests).
+HAS_TTY=0
+if [ "${SIMURGH_NO_TTY:-0}" != "1" ] && { : </dev/tty; } 2>/dev/null; then
+  HAS_TTY=1
+fi
+if [ "$(id -u)" = "0" ]; then CONF_HOME="${SIMURGH_HOME:-/etc/simurgh}"
+else CONF_HOME="${SIMURGH_HOME:-$HOME/.simurgh}"; fi
 
 # every variable the script reads must exist before it is read: the script runs
 # with `set -u`, so a missing one aborts the install with "unbound variable".
@@ -434,34 +446,53 @@ if [ "$(id -u)" = "0" ] && [ -d /etc/sysctl.d ] && command -v sysctl >/dev/null 
     || warn "some kernel values could not be applied"
 fi
 
-# --------------------------------------------------------------- configure
-# Ask first, build the argument list afterwards: the answers decide what
-# `simurgh install` is told (asking about the tunnel port after the argument
-# list was already built is how --tunnel-port used to get lost).
-if [ -z "$ROLE" ] && [ "$ASSUME_YES" != "1" ] && [ -t 0 ]; then
-printf '\n%s\n' "${BOLD}What is the role of this server?${RESET}"
-printf '  %s1)%s Foreign server (exit)  — your panel and services live here\n' "$CYAN" "$RESET"
-printf '  %s2)%s Iranian server (relay) — your users connect to this server\n' "$CYAN" "$RESET"
-read -r -p "  choice [1]: " _role_choice
-  case "${_role_choice:-1}" in
-2|relay) ROLE="relay" ;;
-    *) ROLE="exit" ;;
-  esac
-  if [ "$ROLE" = "relay" ] && [ -z "$EXIT_ADDR" ]; then
-    printf '  %s1)%s direct: this server dials the foreign server (normal)\n' "$CYAN" "$RESET"
-    printf '  %s2)%s reverse: the foreign server dials this one (no open port needed there)\n' "$CYAN" "$RESET"
-    read -r -p "  choice [1]: " _dial_choice
-    if [ "${_dial_choice:-1}" = "2" ]; then
-      DIAL="exit"
-      read -r -p "  tunnel port on this server [8443]: " _tp
-      TUNNEL_PORT="${_tp:-8443}"
-    fi
+# --------------------------------------------------- which role is this server?
+# Nothing has to be typed for this. The role comes from, in order: --role; an
+# exit/relay address given on the command line; the config already on this
+# machine (a re-run keeps its role); the country of the public IP address
+# (Iran -> relay, anywhere else -> exit). Only if all of that fails is there a
+# question, and without a terminal the foreign (exit) role is used.
+detect_country() {
+  local url c
+  command -v curl >/dev/null 2>&1 || return 1
+  for url in https://ipapi.co/country/ https://ifconfig.co/country-iso https://ipinfo.io/country; do
+    c="$(curl -fsS --max-time 6 "$url" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' || true)"
+    case "$c" in
+      [A-Z][A-Z]) printf '%s' "$c"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+if [ -z "$ROLE" ]; then
+  if [ -n "$EXIT_ADDR" ] || [ "$DIAL" = "exit" ]; then
+    ROLE="relay"
+  elif [ -f "$CONF_HOME/exit.toml" ] && [ ! -f "$CONF_HOME/relay.toml" ]; then
+    ROLE="exit"
+  elif [ -f "$CONF_HOME/relay.toml" ] && [ ! -f "$CONF_HOME/exit.toml" ]; then
+    ROLE="relay"
   fi
 fi
 if [ -z "$ROLE" ]; then
-  # no answer needed: a relay dials a foreign server, the exit is what is left
-  if [ -n "$EXIT_ADDR" ] || [ "$DIAL" = "exit" ]; then ROLE="relay"; else ROLE="exit"; fi
+  COUNTRY="${SIMURGH_COUNTRY:-}"
+  [ -n "$COUNTRY" ] || COUNTRY="$(detect_country || true)"
+  case "$COUNTRY" in
+    IR) ROLE="relay"; say "public address is in Iran: this is the Iranian server (relay)." ;;
+    "") ;;
+    *)  ROLE="exit";  say "public address country: $COUNTRY: this is the foreign server (exit)." ;;
+  esac
 fi
+if [ -z "$ROLE" ]; then
+  if [ "$HAS_TTY" = "1" ] && [ "$ASSUME_YES" != "1" ]; then
+    read -r -p "  Is this server located in Iran? [y/N]: " _iran </dev/tty || _iran=""
+    case "$_iran" in y|Y|yes|YES|1) ROLE="relay" ;; *) ROLE="exit" ;; esac
+  else
+    warn "could not tell where this server is; installing the foreign (exit) role."
+    warn "on the Iranian server run the same command again with:  --role relay"
+    ROLE="exit"
+  fi
+fi
+ok "role of this server: $ROLE"
 
 # ------------------------------------------------- where is the exit server?
 # first listen port (``443,2053`` / ``443-445`` / ``443 2053`` all work)
@@ -537,7 +568,7 @@ if [ -z "$TOKEN" ]; then
     [ -n "$TOKEN" ] || TOKEN="tok$(date +%s)$RANDOM"
     ARGS+=(--token "$TOKEN")
 ok "generated a shared token: $TOKEN"
-  elif [ "$ROLE" = "relay" ] && [ ! -t 0 ]; then
+  elif [ "$ROLE" = "relay" ] && [ "$HAS_TTY" != "1" ]; then
 die "the relay needs the shared token:  --token XXX  (copy it from the exit,
      or install the exit first and run:  sudo simurgh join '<setup link>')"
   fi
@@ -546,7 +577,11 @@ else
 fi
 
 say "writing the config…"
-"$SIMURGH_BIN" install "${ARGS[@]}" || die "writing the config failed."
+if [ "$HAS_TTY" = "1" ]; then
+  "$SIMURGH_BIN" install "${ARGS[@]}" </dev/tty || die "writing the config failed."
+else
+  "$SIMURGH_BIN" install "${ARGS[@]}" || die "writing the config failed."
+fi
 
 # ------------------------------------------------------------------- finish
 echo
@@ -595,6 +630,8 @@ if [ "$SHOW_LINK" = "1" ]; then
   LINK_LABEL="relay setup link"
   [ "$DIAL" = "exit" ] && LINK_LABEL="exit setup link"
 [ -n "$LINK" ] && printf '%s\n' "  ${BOLD}$LINK_LABEL:${RESET} ${CYAN}$LINK${RESET}"
+  SHOW_TOKEN="$(sed -n 's/^token = "\(.*\)"/\1/p' "$SIMHOME/exit.toml" 2>/dev/null | head -n 1 || true)"
+  [ -n "$SHOW_TOKEN" ] && printf '%s\n' "  ${BOLD}token (the Iranian server asks for it):${RESET} ${CYAN}$SHOW_TOKEN${RESET}"
 printf '%s\n' "  ${DIM}active ports: ${PORTS:-443}${RESET}"
   if [ "$BOTH" = "1" ] && [ "$DIAL" = "exit" ]; then
     # reverse + both: the local exit has to be told to dial this relay. The
