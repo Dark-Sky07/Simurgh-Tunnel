@@ -224,10 +224,11 @@ class RelayNode:
             task = asyncio.ensure_future(self._supervisor(slot, endpoint))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
-        if endpoints:
-            health = asyncio.ensure_future(self.health_loop())
-            self._tasks.add(health)
-            health.add_done_callback(self._tasks.discard)
+        # the health loop is harmless with no tunnel and useful the moment one
+        # appears (a server paired from the panel while it is already running)
+        health = asyncio.ensure_future(self.health_loop())
+        self._tasks.add(health)
+        health.add_done_callback(self._tasks.discard)
         certs = asyncio.ensure_future(self.cert_loop())
         self._tasks.add(certs)
         certs.add_done_callback(self._tasks.discard)
@@ -526,14 +527,20 @@ class RelayNode:
 
     async def _supervisor(self, slot: int = 0, pinned=None) -> None:
         backoff = 0.5
-        endpoints = self.cfg.endpoints()
-        if not endpoints:
-            self.last_error = "no exit endpoint configured"
-            return
         if slot:
             # stagger a pool so the tunnels do not all flap in lockstep
             await asyncio.sleep(0.15 * slot)
         while not self._stopping:
+            # re-read the config every time round: a relay installed unpaired
+            # gets its exit from `simurgh join`/the panel while this loop runs,
+            # and must start dialing without a service restart
+            endpoints = self.cfg.endpoints()
+            if not endpoints:
+                self.last_error = ("no exit endpoint configured -- pair this "
+                                   "relay with a setup link")
+                self._fail_until.clear()
+                await asyncio.sleep(1.5)
+                continue
             ep = pinned
             if ep is None or self._fail_until.get(ep.describe(), 0) > time.monotonic():
                 ep = self._pick(endpoints)

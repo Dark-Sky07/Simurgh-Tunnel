@@ -347,6 +347,8 @@ def build(status: dict, role: str, history: History, tracker: RateTracker,
         },
         "panel": {
             "port": _int(panel.get("port")),
+            "paired": bool(panel.get("paired", True)),
+            "pairing_required": bool(panel.get("pairing_required", False)),
             "user": panel.get("user") or "",
             "requests": _int(panel.get("requests")),
             "lockouts": _int(panel.get("lockouts")),

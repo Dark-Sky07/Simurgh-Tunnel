@@ -678,10 +678,21 @@ class RelayConfig:
     #: panel
     panel_tls: bool = False
     panel_host: str = "0.0.0.0"
+    #: installed but not paired yet: a relay can be set up in one command and
+    #: told where its exit is later (``simurgh join '<link>'`` or the panel).
+    #: Only such a config may carry an empty token and no exit address.
+    unpaired: bool = False
 
     @property
     def reverse(self) -> bool:
         return self.dial == "exit"
+
+    @property
+    def paired(self) -> bool:
+        """True when the relay knows where to dial and with which secret."""
+        if self.unpaired or not self.token:
+            return False
+        return self.reverse or bool(self.endpoints())
 
     def endpoints(self) -> list[ExitEndpoint]:
         """Primary first, then the failover pool."""
@@ -722,6 +733,10 @@ class RelayConfig:
             d["dual_stack"] = False
         if self.panel_tls:
             d["panel_tls"] = True
+        if self.unpaired:
+            # written by `simurgh install --pair-later` (and the one-command
+            # installer): no token and no exit address yet, on purpose
+            d["unpaired"] = True
         if self.quota:
             d["quota_period"] = self.quota_period
             d["quota_action"] = self.quota_action
@@ -860,12 +875,12 @@ def _quota_action_from(value) -> str:
     return text
 
 
-def _endpoint_from(data: dict) -> ExitEndpoint:
+def _endpoint_from(data: dict, strict: bool = True) -> ExitEndpoint:
     carrier = str(data.get("carrier", "tls")).lower()
     if carrier not in CARRIERS:
         raise ConfigError(f"unknown carrier {carrier!r} for exit")
     address = str(data.get("address") or data.get("host") or "")
-    if not address:
+    if not address and strict:
         raise ConfigError("exit: 'address' is required")
     return ExitEndpoint(
         carrier=carrier,
@@ -922,8 +937,13 @@ def load_relay(path: str | Path) -> RelayConfig:
     cfg.tokens = _tokens_from(data, cfg.token)
     if cfg.tokens:
         cfg.token = cfg.tokens[0].token
-    if not cfg.token:
-        raise ConfigError("relay config: 'token' is required")
+    # `unpaired = true` is written by an install that was deliberately told to
+    # wait for the exit (``simurgh install --pair-later``); everything else
+    # still needs a token, so a typo can never produce a silent, open relay.
+    cfg.unpaired = bool(data.get("unpaired", False))
+    if not cfg.token and not cfg.unpaired:
+        raise ConfigError("relay config: 'token' is required "
+                          "(or `unpaired = true` for a server that is not paired yet)")
     cfg.name = str(data.get("name") or "")
     cfg.accept_push = bool(data.get("accept_push", True))
     cfg.keepalive = int(data.get("keepalive", 25))
@@ -988,8 +1008,10 @@ def load_relay(path: str | Path) -> RelayConfig:
                           "(or [tunnel] cert_auto = true)")
 
     exit_data = data.get("exit") or {}
-    if exit_data.get("address") or exit_data.get("host"):
-        cfg.exit = _endpoint_from(exit_data)
+    if exit_data and (exit_data.get("address") or exit_data.get("host")
+                      or cfg.unpaired):
+        # an unpaired install still keeps its carrier and port choices
+        cfg.exit = _endpoint_from(exit_data, strict=not cfg.unpaired)
     elif not cfg.reverse:
         raise ConfigError("relay config: an [exit] block with an address is required")
     cfg.pool = [_endpoint_from(e) for e in data.get("pool", [])]
@@ -997,6 +1019,10 @@ def load_relay(path: str | Path) -> RelayConfig:
     for item in data.get("mapping", []):
         cfg.mappings.extend(_mappings_from(item))
     _validate_mappings(cfg.mappings)
+    if cfg.unpaired and cfg.token and (cfg.reverse or cfg.endpoints()):
+        # the file has been completed by hand (or by an older `join`): do not
+        # keep calling a relay that can dial "unpaired" for ever
+        cfg.unpaired = False
     return cfg
 
 

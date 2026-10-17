@@ -353,6 +353,31 @@ simurgh://<host>:<panel-port>/setup?u=<panel-user>&p=<base64 password>#<name>
 * On the other server: `simurgh join '<link>'` writes the config; add
   `--host <ip>` to override the address, `--force` to overwrite an existing
   config.
+* `--no-restart` writes the config without restarting the service; otherwise the
+  unit is restarted when it is running, so the tunnel comes up immediately.
+
+### Installing first, pairing later
+
+An Iranian server does not need the foreign one to exist yet. The one-command
+installer never asks for the token or the exit address: it writes `relay.toml`
+with `unpaired = true`, installs the panel, and the tunnel stays idle (the panel
+and `simurgh status` both say so):
+
+```bash
+sudo bash install.sh                 # on the Iranian server, no questions
+sudo simurgh join '<setup link>'     # later, in any order
+```
+
+* `simurgh install --role relay --pair-later` is the same thing without the
+  installer (also available as `simurgh init`).
+* The panel has a **Pair** page for exactly this: paste the link, press Pair,
+  and the running relay adopts it in place — the panel port, the engine, the
+  limits and the ports already added are kept; only the secret and the exit
+  arrive from the link.
+* `simurgh join` on an unpaired config needs no `--force` and keeps a copy of
+  the previous file at `relay.toml.bak-pair`.
+* An unpaired config without `unpaired = true` is still refused: an empty token
+  alone is a mistake, not a state.
 
 Treat links as secrets: they contain the tunnel token.
 

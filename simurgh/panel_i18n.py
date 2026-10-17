@@ -191,7 +191,24 @@ EN: dict[str, str] = {
     "login_hint": "one-time links sign you in without the password",
     "login_other": "فارسی",
     "login_bad": "wrong user or password",
-    "login_locked": "too many failed logins; try again in a minute"
+    "login_locked": "too many failed logins; try again in a minute",
+    "nav_pair": "Pair",
+    "pair_title": "Pair this relay",
+    "pair_lead": "This server is installed and its panel is running, but it is not paired with its exit yet — the tunnel stays idle until it is.",
+    "pair_step1": "On the foreign (exit) server run:  simurgh link",
+    "pair_step2": "It prints one line that starts with simurgh://",
+    "pair_step3": "Paste that line here and press Pair — nothing else to install.",
+    "pair_label": "Setup link",
+    "pair_btn": "Pair",
+    "pair_need_link": "paste the setup link first",
+    "pair_ok": "paired — the tunnel is dialing now",
+    "pair_exit": "Exit",
+    "pair_ports": "Active ports",
+    "pair_done_title": "Paired",
+    "pair_done_hint": "The tunnel starts dialing immediately; traffic flows through this server from now on.",
+    "pair_banner_title": "This relay is not paired yet",
+    "pair_banner_hint": "Paste the exit's setup link to bring the tunnel up.",
+    "pair_open": "Pair now"
 }
 
 FA: dict[str, str] = {
@@ -376,5 +393,22 @@ FA: dict[str, str] = {
     "login_hint": "لینک یک‌بارمصرف بدون رمز واردتان می‌کند",
     "login_other": "English",
     "login_bad": "کاربر یا رمز اشتباه است",
-    "login_locked": "تلاش‌های ناموفق زیاد بود؛ یک دقیقه بعد دوباره امتحان کنید"
+    "login_locked": "تلاش‌های ناموفق زیاد بود؛ یک دقیقه بعد دوباره امتحان کنید",
+    "nav_pair": "جفت‌سازی",
+    "pair_title": "این سرور را جفت کنید",
+    "pair_lead": "سرور نصب شده و پنلش بالاست، ولی هنوز به سمت خارج وصل نیست؛ تونل تا جفت‌شدن بی‌حرکت می‌ماند.",
+    "pair_step1": "روی سرور خارج (exit) این را اجرا کنید:  simurgh link",
+    "pair_step2": "یک خط چاپ می‌کند که با simurgh:// شروع می‌شود",
+    "pair_step3": "همان خط را اینجا بچسبانید و «جفت کن» را بزنید — نصب دیگری لازم نیست.",
+    "pair_label": "لینک راه‌اندازی",
+    "pair_btn": "جفت کن",
+    "pair_need_link": "اول لینک راه‌اندازی را بچسبانید",
+    "pair_ok": "جفت شد — تونل دارد وصل می‌شود",
+    "pair_exit": "سمت خارج",
+    "pair_ports": "پورت‌های فعال",
+    "pair_done_title": "جفت شد",
+    "pair_done_hint": "تونل همین حالا شروع به اتصال می‌کند؛ از این به بعد ترافیک از این سرور رد می‌شود.",
+    "pair_banner_title": "این سرور هنوز جفت نشده است",
+    "pair_banner_hint": "لینک راه‌اندازی سمت خارج را بچسبانید تا تونل بالا بیاید.",
+    "pair_open": "جفت کردن"
 }

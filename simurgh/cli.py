@@ -246,17 +246,30 @@ def _init_exit(home: Home, args) -> int:
 
 
 def _init_relay(home: Home, args) -> int:
+    """Write ``relay.toml``.
+
+    A relay can be installed *before* its exit exists: with ``--pair-later``
+    (which is what the one-command installer passes) no token and no address
+    are asked for, the file is marked ``unpaired``, the panel starts, and
+    ``simurgh join '<link>'`` (or the panel) completes it later.  Without the
+    flag nothing changes: an interactive install still asks, and a silent one
+    writes the same unpaired file instead of failing at the last step.
+    """
     if home.relay_cfg.exists() and not args.force:
         _warn(f"relay config already exists: {home.relay_cfg} (use --force to overwrite)")
         return 1
     dial = getattr(args, "dial", "relay") or "relay"
-    carrier = (args.carrier or _ask("carrier (tls/wss/raw/plain)", "tls")).lower()
-    token = args.token or _ask("token (copy it from the foreign server)")
-    if not token:
-        return _fail("token is required: --token XXX")
+    pair_later = bool(getattr(args, "pair_later", False))
+    # a "pair later" install must not ask anything either: tls is the carrier
+    # the exit serves on its first port, and it is what `join` will find
+    carrier = (args.carrier or ("tls" if pair_later
+                                else _ask("carrier (tls/wss/raw/plain)", "tls"))).lower()
     name = args.name or socket.gethostname()[:32]
     panel_port = args.panel_port or RELAY_DEFAULT_PANEL
     if dial == "exit":
+        # reverse mode: this relay is the one that defines the secret, so it
+        # never has to be told a token from the other side
+        token = args.token or new_token()
         # reverse mode: we listen, the foreign exit connects to us
         exit_host = ""
         exit_port = args.exit_port or int(_ask("tunnel port on THIS server", "8443"))
@@ -275,18 +288,27 @@ def _init_relay(home: Home, args) -> int:
         # `--both` means the exit runs on this machine too, so its address needs
         # no question: it is the loopback address (the tunnel port stays the
         # first of --listen / the default 443)
-        exit_host = args.exit_host or ("127.0.0.1" if both else
-                                       _ask("foreign server address (IP or domain)"))
-        if not exit_host:
-            return _fail("foreign server address is required: --exit-host 203.0.113.9")
-        exit_port = args.exit_port or (443 if both else
-                                       int(_ask("tunnel port on the foreign server", "443")))
+        can_ask = _interactive() and not pair_later
+        token = args.token or ""
+        if not token and both:
+            # one box, two services: the secret is ours to make
+            token = new_token()
+        elif not token and can_ask:
+            token = _ask("token (copy it from the foreign server)")
+        exit_host = args.exit_host or ("127.0.0.1" if both else "")
+        if not exit_host and can_ask:
+            exit_host = _ask("foreign server address (IP or domain)")
+        exit_port = args.exit_port or 443
+        if not both and not args.exit_port and can_ask and exit_host:
+            exit_port = int(_ask("tunnel port on the foreign server", "443"))
+        unpaired = not (token and exit_host)
         domain = args.domain or None
-        if carrier in ("tls", "wss") and not domain and _interactive():
+        if carrier in ("tls", "wss") and not domain and can_ask and not unpaired:
             if _ask_yes("do you have a domain name for the SNI?", False):
                 domain = _ask("domain name")
         cfg = RelayConfig(
             token=token, name=name, panel_port=panel_port,
+            unpaired=unpaired,
             exit=ExitEndpoint(carrier=carrier, address=exit_host, port=exit_port,
                               domain=domain, path=args.path or "/ws",
                               insecure_skip_verify=args.insecure,
@@ -310,6 +332,11 @@ def _init_relay(home: Home, args) -> int:
         print("   mode:           reverse (the exit dials us)")
         print(f"   tunnel listen:  {cfg.tunnel.endpoint()}")
         _info("run `simurgh link` on this server and paste the link on the exit")
+    elif cfg.unpaired:
+        print("   pairing:        not paired yet (the tunnel stays idle)")
+        _info("on the FOREIGN (exit) server run:  simurgh link")
+        _info("then here:                        simurgh join '<that link>'")
+        _info("or open the panel and paste the link there")
     else:
         print(f"   foreign server: {carrier}://{exit_host}:{exit_port}")
         split = _split_arg(args)
@@ -578,8 +605,13 @@ async def _run_relay(home: Home, args) -> int:
     stop = asyncio.Event()
     _install_signal_handlers(stop)
     writer = asyncio.ensure_future(_state_writer(home, "relay", node, panel))
-    where = (f"tunnel listen: {cfg.tunnel.endpoint()}" if cfg.reverse
-             else f"target: {cfg.exit.describe()}")
+    if cfg.reverse:
+        where = f"tunnel listen: {cfg.tunnel.endpoint()}"
+    elif cfg.unpaired:
+        where = ("not paired yet -- the panel is up, the tunnel waits for "
+                 "`simurgh join '<link>'`")
+    else:
+        where = f"target: {cfg.exit.describe()}"
     _ok(f"relay \"{cfg.name or 'relay'}\" is up. {where}")
     await stop.wait()
     writer.cancel()
@@ -874,6 +906,14 @@ def cmd_status(args) -> int:
     print(f"\033[1m{__product__} v{__version__}\033[0m — {home.path}")
     cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
     print(f"  config: {cfg_path} {'✔' if cfg_path.exists() else '✘'}")
+    if role == "relay" and cfg_path.exists():
+        try:
+            relay_cfg = load_relay(cfg_path)
+        except (ConfigError, OSError):
+            relay_cfg = None
+        if relay_cfg is not None and not relay_cfg.paired:
+            print("  pairing:  \033[33mnot paired yet\033[0m — on the exit run "
+                  "`simurgh link`, then here: simurgh join '<link>'")
     if not node:
         _warn(f"no live data for {role}. Is the service running? (simurgh status/up)")
         return cmd_service(argparse.Namespace(role=role, service_action="status",
@@ -1196,8 +1236,16 @@ def cmd_link(args) -> int:
 
 
 def cmd_join(args) -> int:
+    """Complete a server from the other side's one-string setup link.
+
+    On a relay this is also how a server that was installed with
+    ``--pair-later`` is paired: an unpaired config is completed in place (no
+    ``--force`` needed, and nothing the install chose is thrown away), then the
+    service is restarted so the tunnel comes up right away.
+    """
     home = Home(args.home).ensure()
-    from .links import LinkError, fetch_setup, relay_config_from_payload
+    from .links import (LinkError, fetch_setup, merge_relay_payload,
+                        relay_config_from_payload)
 
     try:
         payload = fetch_setup(args.link, timeout=args.timeout)
@@ -1209,18 +1257,80 @@ def cmd_join(args) -> int:
         return 2
     if str(payload.get("role") or "") == "exit":
         return _join_exit(home, payload, args)
-    cfg = relay_config_from_payload(payload)
-    if home.relay_cfg.exists() and not args.force:
+    existing = None
+    if home.relay_cfg.exists():
+        try:
+            existing = load_relay(home.relay_cfg)
+        except (ConfigError, OSError):
+            existing = None
+    if existing is not None and existing.paired and not args.force:
         _err(f"the relay config already exists ({home.relay_cfg}); use --force to overwrite.")
         return 2
-    if args.host:
-        cfg.exit.address = args.host
-    save_relay(cfg, home.relay_cfg)
-    _ok(f"relay config built from the link: {home.relay_cfg}")
+    if existing is not None:
+        # installed but never paired: keep the panel port, the engine, the
+        # limits and the ports this server already forwards
+        try:
+            merged = merge_relay_payload(existing, payload)
+        except (KeyError, ValueError, ConfigError) as exc:
+            _err(f"the link is incomplete: {exc}")
+            return 2
+        if args.host:
+            existing.exit.address = args.host
+        backup = _backup_config(home.relay_cfg, "pair")
+        save_relay(existing, home.relay_cfg)
+        cfg = existing
+        _ok(f"relay paired with {merged['exit']}")
+        if backup:
+            _info(f"previous config kept at {backup}")
+    else:
+        cfg = relay_config_from_payload(payload)
+        if args.host:
+            cfg.exit.address = args.host
+        save_relay(cfg, home.relay_cfg)
+        _ok(f"relay config built from the link: {home.relay_cfg}")
     print(f"   target: {cfg.exit.describe()}")
     for m in cfg.mappings:
         print(f"   mapping: {m.listen} → {m.target_host}:{m.target_port}")
+    _restart_after_pairing(home, "relay", args)
     return 0
+
+
+def _backup_config(path, tag: str) -> str:
+    """Copy a config aside before pairing; returns the backup path ('' if none)."""
+    if not path.exists():
+        return ""
+    target = path.with_suffix(path.suffix + f".bak-{tag}")
+    try:
+        shutil.copy2(path, target)
+        target.chmod(0o600)
+        return str(target)
+    except OSError:
+        return ""
+
+
+def _restart_after_pairing(home: Home, role: str, args) -> None:
+    """Make the new config live now, not at the next reboot.
+
+    Only touches systemd when the unit is actually running, and never fails the
+    pairing because of it: the config is already on disk either way.
+    """
+    if getattr(args, "no_restart", False):
+        return
+    from . import systemd
+
+    if not systemd.available():
+        _info("apply it with: simurgh restart")
+        return
+    service = f"simurgh-{role}"
+    state = systemd.service_state(service)
+    if state.get("ActiveState") != "active":
+        _info("apply it with: simurgh restart")
+        return
+    answer = systemd.control("restart", (service,)).get(service)
+    if answer == "ok":
+        _ok(f"{service}: restarted with the new config")
+    else:
+        _warn(f"{service}: {answer}")
 
 
 def _detect_role(home: Home, role: str | None) -> str:
@@ -1325,7 +1435,11 @@ def cmd_doctor(args) -> int:
         return 0 if problems == 0 else 1
 
     cfg = _load_relay_or_fail(home)
-    if not cfg.token:
+    if cfg.unpaired:
+        _warn("this relay is not paired yet — that is a state, not a fault:")
+        _info("on the exit run `simurgh link`, then here: simurgh join '<link>'")
+        _info("(or paste the link on the panel's Pair page)")
+    elif not cfg.token:
         _err("the token is empty (copy it from the foreign server).")
         problems += 1
     else:
@@ -1358,7 +1472,10 @@ def cmd_doctor(args) -> int:
                       "(it is created when the service starts)")
     else:
         addresses = [(ep.address, ep.port, ep.describe()) for ep in cfg.endpoints()]
-        if not addresses:
+        if cfg.unpaired:
+            _info("the exit address arrives with the setup link, so there is "
+                  "nothing to dial yet")
+        elif not addresses:
             _err("no foreign server is configured.")
             problems += 1
         for host, port, desc in addresses:
@@ -1740,6 +1857,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--engine", choices=ENGINES, default="",
                    help="data plane: python (default) or go (see tools/build-go.sh)")
     p.add_argument("--user", default="")
+    p.add_argument("--pair-later", "--unpaired", dest="pair_later",
+                   action="store_true",
+                   help="write the relay config without its exit (no token or "
+                        "address questions); pair it later with `simurgh join` "
+                        "or from the panel")
     # keep the long-standing behaviour, but say what it does: this skips the
     # config and only (re)installs the services
     p.add_argument("--config-only", action="store_true",
@@ -1773,6 +1895,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--engine", choices=ENGINES, default="",
                    help="data plane to use (default: python; go needs tools/build-go.sh)")
+    p.add_argument("--pair-later", "--unpaired", dest="pair_later",
+                   action="store_true",
+                   help="write a relay config without its exit; pair it later")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init)
 
@@ -1855,12 +1980,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--show", action="store_true", help="print just the raw link")
     p.set_defaults(func=cmd_link)
 
-    p = sub.add_parser("join", help="build the config from a setup link")
+    p = sub.add_parser("join", help="pair this server from a setup link")
     p.add_argument("link")
     p.add_argument("--host", default="", help="override the exit address")
     p.add_argument("--timeout", type=float, default=15.0)
     p.add_argument("--split", type=int, default=3, help="bytes of the first write that travel in their own TCP segment (anti-DPI); 0 disables it")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--no-restart", action="store_true",
+                   help="write the config but do not restart the service")
     p.set_defaults(func=cmd_join)
 
     p = sub.add_parser("engine", help="show or switch the data plane (python | go)")

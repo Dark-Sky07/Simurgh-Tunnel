@@ -242,3 +242,33 @@ def test_init_writes_the_anti_dpi_split(tmp_path, monkeypatch):
                      "--exit-port", "443", "--token", "t0k", "--carrier", "tls",
                      "--split", "0"])
     assert load_relay(tmp_path / "relay.toml").exit.split == 0
+
+
+def test_an_unpaired_relay_round_trips(home):
+    """`install --pair-later` leaves a config that is legal but incomplete."""
+    cfg = RelayConfig(name="ir-tehran", unpaired=True, panel_port=8787)
+    cfg.exit = ExitEndpoint(carrier="wss", address="", port=443)
+    save_relay(cfg, home.relay_cfg)
+
+    back = load_relay(home.relay_cfg)
+    assert back.unpaired is True and back.paired is False
+    assert back.token == "" and back.exit.address == ""
+    # the choices the install made are kept, so `join` only has to add the rest
+    assert back.exit.carrier == "wss" and back.exit.port == 443
+    assert back.panel_port == 8787
+
+
+def test_a_relay_without_a_token_is_still_refused(home):
+    """`unpaired` must be written down: an empty token alone is a typo."""
+    text = 'name = "x"\n[exit]\naddress = "203.0.113.9"\nport = 443\n'
+    home.relay_cfg.write_text(text)
+    with pytest.raises(ConfigError, match="token"):
+        load_relay(home.relay_cfg)
+
+
+def test_a_completed_unpaired_config_stops_being_unpaired(home):
+    """Hand-editing the file in is enough: no stale 'pair me' for ever."""
+    cfg = RelayConfig(token="tok", name="ir", unpaired=True)
+    cfg.exit = ExitEndpoint(carrier="tls", address="203.0.113.9", port=443)
+    save_relay(cfg, home.relay_cfg)
+    assert load_relay(home.relay_cfg).paired is True

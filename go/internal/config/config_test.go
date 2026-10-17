@@ -143,3 +143,32 @@ tcp_nodelay = false
 		t.Fatal("the explicit false must win over the file value")
 	}
 }
+
+// An install that is paired later: no token and no exit yet, on purpose.
+func TestAnUnpairedRelayLoadsAndKnowsItHasNoExit(t *testing.T) {
+	path := write(t, "relay.toml", `name = "ir-tehran"
+unpaired = true
+
+[exit]
+carrier = "tls"
+address = ""
+port = 443
+`)
+	cfg, err := LoadRelay(path)
+	if err != nil {
+		t.Fatalf("an unpaired relay must load: %v", err)
+	}
+	if !cfg.Unpaired {
+		t.Fatal("the unpaired flag was not read")
+	}
+	if cfg.Token != "" || cfg.Exit.Address != "" {
+		t.Fatalf("expected an empty token and address, got %q / %q",
+			cfg.Token, cfg.Exit.Address)
+	}
+
+	// and the same file without the flag is still a hard error
+	plain := write(t, "plain.toml", "name = \"x\"\n\n[exit]\naddress = \"203.0.113.9\"\n")
+	if _, err := LoadRelay(plain); err == nil {
+		t.Fatal("a relay without a token and without `unpaired` must be refused")
+	}
+}

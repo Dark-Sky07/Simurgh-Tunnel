@@ -49,11 +49,22 @@ The script installs everything it needs (Python environment, the compiled engine
 when it can be built, systemd service, kernel tuning) and works out the role by
 itself:
 
-* **Iranian address → relay (Iranian server).** It asks for the foreign server's
-  address (`IP:port`) and the token that the foreign server printed at the end of
-  its install.
 * **Any other country → exit (foreign server).** It prints the token and the
-  setup link at the end. Copy the token to the Iranian server when it asks.
+  one-string setup link at the end.
+* **Iranian address → relay (Iranian server).** It installs **without asking
+  anything** — no token, no foreign address. The panel comes up straight away
+  and says it is not paired yet; pair it whenever you like, in either of two
+  ways:
+
+  ```bash
+  sudo simurgh join 'simurgh://<exit-ip>:8787/setup?u=admin&p=…#de-frankfurt'
+  # ...or open the panel → Pair, paste the same line, press Pair
+  ```
+
+  The tunnel starts the moment the link is accepted; nothing is re-installed.
+  Order does not matter: the foreign server can be installed first, later, or
+  even after the Iranian one. A one-shot install still works if you already
+  have the token: `--token XXX --exit-host 203.0.113.9`.
 
 Running the command again keeps the role the server already has. Options such as
 `--role`, `--name`, `--listen` or `--mapping` are optional overrides; see
@@ -69,9 +80,9 @@ units, the package never writes `/etc/simurgh` itself, and `simurgh update`
 understands all of them. Details: **[docs/PACKAGING.md](docs/PACKAGING.md)**.
 
 ```bash
-sudo dpkg -i simurgh_3.0.0_amd64.deb            # Debian / Ubuntu / Proxmox
-sudo dnf install ./simurgh-3.0.0-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
-sudo tar -xzf simurgh-3.0.0-noarch.tar.gz -C /  # any system with Python 3.9+
+sudo dpkg -i simurgh_3.1.0_amd64.deb            # Debian / Ubuntu / Proxmox
+sudo dnf install ./simurgh-3.1.0-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
+sudo tar -xzf simurgh-3.1.0-noarch.tar.gz -C /  # any system with Python 3.9+
 docker compose up -d                            # relay + exit, one machine
 ```
 
@@ -141,12 +152,13 @@ shows its live traffic. English **and** Persian (`EN / فا` switch, remembered
 per browser, RTL/LTR automatic), a half-hour throughput chart, per-port
 sparklines, and a `night`/`dawn` theme switch.
 
-Nine views, all of them served from the panel itself (no CDN, no external
+Ten views, all of them served from the panel itself (no CDN, no external
 fonts, strict CSP):
 
 | View | What it does |
 |---|---|
 | **Dashboard** | the Simurgh map, the state cards, the live chart and the exit pool with its failover state |
+| **Pair** | shown while the relay is installed but not paired yet: paste the exit's setup link, press Pair, and the running node adopts it in place |
 | **Ports** | add, remove, enable, disable and re-point mappings **without a restart**, with quota rings, byte totals and per-port sparklines |
 | **Wizard** | a **plan** for a tunnel you have not built yet: carrier, port, path, split and the first mapping — previewed as a diff, applied with a backup, undoable with one click |
 | **Speed test** | the same engine as `simurgh speedtest`, with this session's runs kept in the browser |
@@ -231,7 +243,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **351 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, tuning profiles, the web panel (the map, the wizard, one-time links, the assets), the packages (a real .deb/.rpm/tarball build, the container image files), and the cross-engine tests below) |
+| `python -m pytest -q` | **365 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, tuning profiles, the web panel (the map, the wizard, one-time links, the assets), the packages (a real .deb/.rpm/tarball build, the container image files), and the cross-engine tests below) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -264,7 +276,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 ## Documentation
 
-* [docs/PANEL.md](docs/PANEL.md) — the web panel: the map, the nine views, the wizard, themes, hardening and the whole API
+* [docs/PANEL.md](docs/PANEL.md) — the web panel: the map, the ten views (the Pair page appears until the relay is paired), the wizard, themes, hardening and the whole API
 * [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — every key of `exit.toml` / `relay.toml`, carriers, mappings, pool, systemd units
 * [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — symptoms, causes, fixes
 * [docs/COMPARISON.md](docs/COMPARISON.md) — how Simurgh compares with rathole, frp, wstunnel, chisel, gost, Kariz, FRPulse and the Azumi67 recipes, and what it is still missing
@@ -278,7 +290,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 351 tests (Python 3.11), no test-only dependencies
+python -m pytest -q                 # 365 tests (Python 3.11), no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
@@ -291,7 +303,7 @@ cd go && go test -race ./...        # the same under the race detector
 
 Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
 which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
-existing release manually, run `gh workflow run release-binaries.yml -f tag=v3.0.0`.
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v3.1.0`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,

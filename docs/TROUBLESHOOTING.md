@@ -22,6 +22,11 @@ simurgh logs -f          # live log (/etc/simurgh/logs/*.log)
 
 ## The tunnel never comes up (direct mode)
 
+0. Is the relay paired at all? `simurgh status` (and the panel) say
+   `not paired yet` on a server installed before its exit existed. Pair it with
+   `sudo simurgh join '<setup link>'` — the link is printed by `simurgh link` on
+   the exit — or paste it on the panel's **Pair** page. Nothing has to be
+   re-installed.
 1. `simurgh doctor` on **both** servers.
 2. The token must be byte-identical on both sides (copy the setup link again if
    unsure).

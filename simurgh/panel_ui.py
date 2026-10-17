@@ -305,15 +305,15 @@ def apply_plan(cfg, role: str, plan: dict) -> list[str]:
     return changes
 
 
-def backup_path(path: Path) -> Path:
-    return path.with_suffix(path.suffix + ".bak-wizard")
+def backup_path(path: Path, tag: str = "wizard") -> Path:
+    return path.with_suffix(path.suffix + f".bak-{tag}")
 
 
-def backup(path: Path) -> str:
+def backup(path: Path, tag: str = "wizard") -> str:
     """Copy the config aside; returns the backup path ('' if there is none)."""
     if not path.exists():
         return ""
-    target = backup_path(path)
+    target = backup_path(path, tag)
     shutil.copy2(path, target)
     try:
         target.chmod(0o600)

@@ -997,3 +997,155 @@ def test_the_panel_never_loads_anything_from_the_internet():
             assert word not in text, (name, word)
         assert "eval(" not in text, name
         assert not re.search(r"<script[^>]+src=\"(?!\/)", text), name
+
+
+# ---------------------------------------------------------------- pairing
+def _unpaired_cfg() -> RelayConfig:
+    """What `simurgh install --pair-later` leaves on disk."""
+    cfg = RelayConfig(name="ir-tehran", unpaired=True, panel_port=8787)
+    cfg.exit = ExitEndpoint(carrier="tls", address="", port=443)
+    return cfg
+
+
+PAIR_PAYLOAD = {
+    "token": "s3cret-token", "name": "de-frankfurt",
+    "exit": {"carrier": "tls", "address": "198.51.100.7", "port": 443},
+    "mappings": [{"port": 443, "target": 443}],
+}
+
+
+async def test_an_unpaired_relay_says_so(home, tmp_path):
+    """The panel must not pretend a server that waits for its exit is up."""
+    cfg = _unpaired_cfg()
+    save_relay(cfg, home.relay_cfg)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(cfg))
+    try:
+        status, data = await _request(port, "/api/status", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+        assert data["panel"]["paired"] is False
+        assert data["panel"]["pairing_required"] is True
+        status, layout = await _request(port, "/api/layout", auth=f"{USER}:{PASSWORD}")
+        assert status == 200
+        assert layout["panel"]["pairing_required"] is True
+    finally:
+        await panel.stop()
+
+
+async def test_pairing_from_the_panel_keeps_what_the_install_chose(
+        home, tmp_path, monkeypatch):
+    """The link brings the secret and the exit -- nothing else is replaced."""
+    from simurgh import links
+
+    cfg = _unpaired_cfg()
+    cfg.engine = "python"
+    cfg.mappings = [Mapping(name="mine", listen=8443, target_port=9000)]
+    save_relay(cfg, home.relay_cfg)
+    monkeypatch.setattr(links, "fetch_setup",
+                        lambda link, timeout=15.0: PAIR_PAYLOAD)
+    node = FakeRelayNode(cfg)
+    panel, port = await _panel(home, tmp_path, node=node)
+    try:
+        status, data = await _request(
+            port, "/api/pair", method="POST",
+            body={"link": "simurgh://198.51.100.7:8787/setup?u=a&p=c2VjcmV0"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and data["ok"] is True
+        assert data["applied"] == "live"
+        saved = load_relay(home.relay_cfg)
+        assert saved.token == "s3cret-token" and saved.unpaired is False
+        assert saved.paired is True
+        assert saved.exit.address == "198.51.100.7" and saved.exit.port == 443
+        # the port this install added stays, the exit's port is appended
+        assert [m.listen for m in saved.mappings] == [8443, 443]
+        assert saved.panel_port == 8787 and saved.engine == "python"
+        assert node.rebound == 1 and node.reconnected == 1
+        assert data["backup"].endswith(".bak-pair")
+        assert pathlib.Path(data["backup"]).is_file()
+        assert data["exit"].startswith("tls://198.51.100.7")
+    finally:
+        await panel.stop()
+
+
+async def test_pairing_refuses_a_second_pairing(home, tmp_path, monkeypatch):
+    from simurgh import links
+
+    cfg = RelayConfig(token="tok", name="ir",
+                      exit=ExitEndpoint(carrier="tls", address="203.0.113.9",
+                                        port=443))
+    save_relay(cfg, home.relay_cfg)
+    monkeypatch.setattr(links, "fetch_setup",
+                        lambda link, timeout=15.0: PAIR_PAYLOAD)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(cfg))
+    try:
+        status, data = await _request(
+            port, "/api/pair", method="POST",
+            body={"link": "simurgh://x:8787/setup?u=a&p=b"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 409 and data["ok"] is False
+        assert "already paired" in data["error"]
+        assert load_relay(home.relay_cfg).exit.address == "203.0.113.9"
+    finally:
+        await panel.stop()
+
+
+async def test_pairing_rejects_a_link_for_the_exit(home, tmp_path, monkeypatch):
+    """The exit's own link would make the relay dial itself: say no plainly."""
+    from simurgh import links
+
+    cfg = _unpaired_cfg()
+    save_relay(cfg, home.relay_cfg)
+
+    def refuse(link, timeout=15.0):
+        raise links.LinkError("that link is for the exit server, not for the relay")
+
+    monkeypatch.setattr(links, "fetch_setup", refuse)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(cfg))
+    try:
+        status, data = await _request(
+            port, "/api/pair", method="POST",
+            body={"link": "simurgh://x:8787/setup?u=a&p=b"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and data["ok"] is False
+        assert "exit server" in data["error"]
+        assert load_relay(home.relay_cfg).unpaired is True
+    finally:
+        await panel.stop()
+
+
+async def test_pairing_needs_a_link_and_a_relay(home, tmp_path):
+    cfg = _unpaired_cfg()
+    save_relay(cfg, home.relay_cfg)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(cfg))
+    try:
+        status, data = await _request(port, "/api/pair", method="POST",
+                                      body={}, auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and data["ok"] is False
+    finally:
+        await panel.stop()
+    exit_cfg = ExitConfig(token="tok", name="de")
+    exit_cfg.listen = [ListenSpec(carrier="tls", port=443)]
+    save_exit(exit_cfg, home.exit_cfg)
+    panel, port = await _panel(home, tmp_path, role="exit", node=FakeRelayNode(cfg))
+    try:
+        status, data = await _request(port, "/api/pair", method="POST",
+                                      body={"link": "simurgh://x/setup"},
+                                      auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and data["ok"] is False
+        assert "only the relay" in data["error"]
+    finally:
+        await panel.stop()
+
+
+async def test_a_reverse_relay_is_not_paired_this_way(home, tmp_path):
+    """In reverse mode the exit imports *our* link: nothing to paste here."""
+    cfg = RelayConfig(token="tok", name="ir", unpaired=True, dial="exit")
+    save_relay(cfg, home.relay_cfg)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(cfg))
+    try:
+        status, data = await _request(port, "/api/pair", method="POST",
+                                      body={"link": "simurgh://x/setup?u=a&p=b"},
+                                      auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and data["ok"] is False
+        assert "simurgh link" in data["error"]
+    finally:
+        await panel.stop()

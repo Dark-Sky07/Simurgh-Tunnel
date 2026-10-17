@@ -64,6 +64,9 @@ FINGERPRINT=""
 INSECURE=""
 # data plane: auto = build the compiled engine when a toolchain is available
 ENGINE="${SIMURGH_ENGINE:-auto}"
+# 1 when the relay is installed without its exit (paired later, from the panel
+# or with `simurgh join`); the summary at the end uses it
+PAIR_LATER=0
 
 say()  { printf '%s\n' "${CYAN}•${RESET} $*"; }
 ok()   { printf '%s\n' "${GREEN}✔${RESET} $*"; }
@@ -98,7 +101,10 @@ main options:
   --both                     run both services on one server (same as --role both)
   --name NAME                a name for this server
   --token TOKEN              shared secret token (generated/asked if missing)
-  --exit HOST:PORT           foreign server address and port (for the relay)
+  --exit HOST:PORT           foreign server address and port (for the relay);
+                             without it the relay installs unpaired and you
+                             pair it later with `simurgh join '<link>'` or the
+                             panel's Pair page — nothing is asked up front
   --dial relay|exit          who dials the tunnel (default relay = direct mode;
                              "exit" = reverse: this Iranian server listens)
   --carrier tls|wss|raw|plain  tunnel carrier
@@ -567,10 +573,13 @@ if [ -z "$TOKEN" ]; then
     TOKEN="$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
     [ -n "$TOKEN" ] || TOKEN="tok$(date +%s)$RANDOM"
     ARGS+=(--token "$TOKEN")
-ok "generated a shared token: $TOKEN"
-  elif [ "$ROLE" = "relay" ] && [ "$HAS_TTY" != "1" ]; then
-die "the relay needs the shared token:  --token XXX  (copy it from the exit,
-     or install the exit first and run:  sudo simurgh join '<setup link>')"
+    ok "generated a shared token: $TOKEN"
+  elif [ "$ROLE" = "relay" ] && [ "$DIAL" != "exit" ]; then
+    # The relay can be installed before its exit exists.  Nothing is asked
+    # here: the panel comes up, and `simurgh join '<link>'` (or the Pair page
+    # in the panel) completes the config later -- no re-install, no re-run.
+    PAIR_LATER=1
+    ARGS+=(--pair-later)
   fi
 else
   ARGS+=(--token "$TOKEN")
@@ -600,6 +609,13 @@ SHOW_PANEL=0; SHOW_LINK=0
 [ "$EFFECTIVE_ROLE" = "relay" ] && SHOW_PANEL=1
 [ "$EFFECTIVE_ROLE" = "exit" ] && SHOW_LINK=1
 if [ "$BOTH" = "1" ]; then SHOW_PANEL=1; SHOW_LINK=1; fi
+# read back what was actually written: `--pair-later` is also what a silent
+# install does, and the summary must not pretend otherwise
+if [ -f "$SIMHOME/relay.toml" ] && grep -q '^unpaired = true' "$SIMHOME/relay.toml" 2>/dev/null; then
+  PAIR_LATER=1
+else
+  PAIR_LATER=0
+fi
 if [ "$SHOW_PANEL" = "1" ]; then
   PANEL="$(SIMHOME="$SIMHOME" "$VENV_DIR/bin/python" - <<'PY' 2>/dev/null || echo 8787
 import os
@@ -624,6 +640,25 @@ printf '%s\n' "  ${BOLD}web panel:${RESET} ${CYAN}http://<IRAN-SERVER-IP>:$PANEL
 [ -n "$CREDS" ] && printf '%s\n' "  ${BOLD}login:${RESET} $CREDS"
 printf '%s\n' "  ${DIM}add a port: simurgh mapping add 443 443${RESET}"
 printf '%s\n' "  ${DIM}text menu: simurgh menu${RESET}"
+if [ "$PAIR_LATER" = "1" ]; then
+  echo
+  printf '%s\n' "  ${YELLOW}${BOLD}this server is not paired yet.${RESET} ${DIM}it is installed and${RESET}"
+  printf '%s\n' "  ${DIM}the panel is running; the tunnel starts the moment it is paired:${RESET}"
+  printf '%s\n' "  ${DIM}  1) on the FOREIGN (exit) server:${RESET}  sudo simurgh link"
+  printf '%s\n' "  ${DIM}  2) on this server:${RESET}                sudo simurgh join '<that link>'"
+  printf '%s\n' "  ${DIM}     ...or open the panel and paste the link on the Pair page.${RESET}"
+  if [ "$HAS_TTY" = "1" ]; then
+    printf '%s' "  paste the setup link now (leave empty to do it later): "
+    read -r _join_link </dev/tty || _join_link=""
+    if [ -n "${_join_link:-}" ]; then
+      if "$SIMURGH_BIN" join "$_join_link" </dev/tty; then
+        ok "paired — the tunnel is starting now."
+      else
+        warn "that link did not work; nothing changed. Pair later from the panel."
+      fi
+    fi
+  fi
+fi
 fi
 if [ "$SHOW_LINK" = "1" ]; then
   LINK="$("$SIMURGH_BIN" link --show 2>/dev/null || true)"
@@ -631,7 +666,7 @@ if [ "$SHOW_LINK" = "1" ]; then
   [ "$DIAL" = "exit" ] && LINK_LABEL="exit setup link"
 [ -n "$LINK" ] && printf '%s\n' "  ${BOLD}$LINK_LABEL:${RESET} ${CYAN}$LINK${RESET}"
   SHOW_TOKEN="$(sed -n 's/^token = "\(.*\)"/\1/p' "$SIMHOME/exit.toml" 2>/dev/null | head -n 1 || true)"
-  [ -n "$SHOW_TOKEN" ] && printf '%s\n' "  ${BOLD}token (the Iranian server asks for it):${RESET} ${CYAN}$SHOW_TOKEN${RESET}"
+  [ -n "$SHOW_TOKEN" ] && printf '%s\n' "  ${BOLD}token (only for a one-shot install):${RESET} ${CYAN}$SHOW_TOKEN${RESET}"
 printf '%s\n' "  ${DIM}active ports: ${PORTS:-443}${RESET}"
   if [ "$BOTH" = "1" ] && [ "$DIAL" = "exit" ]; then
     # reverse + both: the local exit has to be told to dial this relay. The

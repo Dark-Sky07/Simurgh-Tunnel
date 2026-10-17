@@ -129,6 +129,9 @@ const ANSWERS = [
   [/^\/api\/logs/, () => LOGS],
   [/^\/api\/action/, () => ({ ok: true, speedtest: SPEEDTEST, action: 'speedtest' })],
   [/^\/api\/mappings/, () => ({ ok: true, mappings: payload.mappings })],
+  [/^\/api\/pair/, () => ({ ok: true, exit: 'tls://198.51.100.7:443', applied: 'live',
+                            mappings: [443], added: [443],
+                            backup: '/etc/simurgh/relay.toml.bak-pair' })],
   [/^\/api\/tune/, () => ({ ok: true, profile: 'speed', changes: [{ key: 'chunk', old: 1, new: 2 }],
                             note: 'take effect after a restart' })],
   [/^\/api\/wizard/, () => ({ ok: true, changes: ['[exit] carrier tls -> wss'],
@@ -274,6 +277,22 @@ try {
   // and the speed test result, which is the most table-shaped thing on the page
   const speed = nodes.get('run-speedtest');
   if (speed && speed.onclick) { speed.disabled = false; speed.onclick(); await new Promise((r) => setTimeout(r, 80)); }
+
+  // an unpaired relay: the Pair page is the one thing the operator can do,
+  // and pressing the button must reach the endpoint with the pasted link
+  if (payload.panel && payload.panel.pairing_required) {
+    const field = nodes.get('pair-link');
+    const button = nodes.get('pair-btn');
+    if (!button) problems.push('an unpaired relay has no Pair button');
+    else {
+      if (field) field.value = 'simurgh://198.51.100.7:8787/setup?u=admin&p=c2VjcmV0#de-frankfurt';
+      button.onclick();
+      await new Promise((r) => setTimeout(r, 80));
+      if (!seen.some((url) => url.split('?')[0] === '/api/pair')) {
+        problems.push('the Pair button never called /api/pair');
+      }
+    }
+  }
 
   // the buttons the table rows built themselves (enable/disable, delete)
   for (const node of document.created) {

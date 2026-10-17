@@ -113,6 +113,14 @@ def header(home: Home, role: str) -> None:
     print(c("─" * 62, "dim"))
     print(f" service: {service_state(service)}   tunnel: {status}   rtt: {rtt_text}")
     print(f" target:  {extra}")
+    if role == "relay":
+        try:
+            relay_cfg = load_relay(home.relay_cfg)
+        except (ConfigError, OSError):
+            relay_cfg = None
+        if relay_cfg is not None and not relay_cfg.paired:
+            print(c(" pairing: not paired yet — choose 11) import a setup link",
+                    "yellow"))
     print(f" traffic: {human_bytes(totals.get('in_bytes', 0))} down / "
           f"{human_bytes(totals.get('out_bytes', 0))} ↑")
     print(f" rate:    {human_rate(rates.get('in_bps', 0))} down / "

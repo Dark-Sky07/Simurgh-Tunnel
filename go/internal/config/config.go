@@ -162,10 +162,14 @@ type Relay struct {
 	QuotaPeriod     string
 	QuotaAction     string
 	MaxConns        int
-	Exit            Endpoint
-	Pool            []Endpoint
-	Tunnel          Tunnel
-	Mappings        []Mapping
+	// Unpaired marks a relay that was installed before its exit existed
+	// (`simurgh install --pair-later`): the token and the exit address are
+	// still empty and the data plane waits for `simurgh join` / the panel.
+	Unpaired bool
+	Exit     Endpoint
+	Pool     []Endpoint
+	Tunnel   Tunnel
+	Mappings []Mapping
 }
 
 // Defaults, matching the Python engine.
@@ -262,12 +266,14 @@ func LoadRelay(path string) (*Relay, error) {
 		QuotaPeriod:     str(tree, "quota_period", "month"),
 		QuotaAction:     str(tree, "quota_action", "block"),
 		MaxConns:        integer(tree, "max_conns", 0),
+		Unpaired:        boolean(tree, "unpaired", false),
 	}
 	if cfg.MaxStreamWindow < cfg.StreamWindow {
 		cfg.MaxStreamWindow = cfg.StreamWindow
 	}
-	if cfg.Token == "" {
-		return nil, fmt.Errorf("relay config: 'token' is required")
+	if cfg.Token == "" && !cfg.Unpaired {
+		return nil, fmt.Errorf("relay config: 'token' is required " +
+			"(or `unpaired = true` for a server that is not paired yet)")
 	}
 	if t := table(tree, "exit"); t != nil {
 		cfg.Exit = endpoint(t)
@@ -313,7 +319,7 @@ func LoadRelay(path string) (*Relay, error) {
 			MaxConns:    integer(t, "max_conns", 0),
 		})
 	}
-	if cfg.Dial == "relay" && cfg.Exit.Address == "" {
+	if cfg.Dial == "relay" && cfg.Exit.Address == "" && !cfg.Unpaired {
 		return nil, fmt.Errorf("relay config: an [exit] block with an address is required")
 	}
 	if cfg.Dial == "exit" && cfg.Tunnel.Port == 0 {

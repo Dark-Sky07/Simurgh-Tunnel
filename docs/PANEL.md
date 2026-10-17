@@ -67,6 +67,7 @@ Everything on screen comes from one poll: `GET /api/layout` every two seconds
 | View | Notes |
 |---|---|
 | Dashboard | the map, the cards, the chart, the pool |
+| Pair | only while the relay is unpaired: paste the exit's setup link; the running node adopts it in place |
 | Ports | add/remove/enable/disable/re-point mappings; changes are written to the config and applied to the running node without a restart |
 | Wizard | preview → apply → rollback for a new tunnel; see below |
 | Speed test | download/upload against the exit, latency grades, session history in the browser |
@@ -75,6 +76,25 @@ Everything on screen comes from one poll: `GET /api/layout` every two seconds
 | Security | sessions, lockouts, failed logins, one-time links, the hardening rules |
 | Settings | the editable subset of the config, the engine in use, the tunnel token |
 | Tools | restart / stop / start / reconnect, export the config, download the log, `/metrics` and `/healthz`, update check |
+
+## Pairing a relay that was installed first
+
+`install.sh` on the Iranian server asks nothing: it writes `relay.toml` with
+`unpaired = true` and starts the panel. Until the server is paired the dashboard
+says so, and a **Pair** entry appears in the sidebar (it disappears the moment
+pairing succeeds). The page is three steps and one field:
+
+1. on the exit, `simurgh link` prints a line that starts with `simurgh://`;
+2. paste it into **Setup link**;
+3. press **Pair**.
+
+`POST /api/pair {"link": "simurgh://…"}` fetches the same payload
+`simurgh join` fetches, writes the config (a copy of the old file is kept at
+`relay.toml.bak-pair`), and applies it without a restart in the Python engine —
+the tunnel starts dialing in place. Everything the install chose survives: the
+panel port, the engine, the limits and the ports already added. The endpoint
+refuses a link meant for the exit, a second pairing (use `simurgh join --force`)
+and a relay that is not unpaired.
 
 ## The wizard
 
@@ -136,6 +156,7 @@ auth, or the session cookie a login hands out):
 | POST | `/api/speedtest` | run one |
 | POST | `/api/action` | restart / stop / start / reconnect / reload |
 | POST | `/api/tune` | apply a performance profile (`gaming`, `balanced`, `speed`) |
+| POST | `/api/pair` | pair an unpaired relay from the exit's setup link |
 | POST | `/api/wizard` | preview / apply / rollback a tunnel plan |
 | POST | `/api/login-token` | mint a one-time login link |
 | POST | `/api/join` | the one-line install payload for a new relay |

@@ -347,6 +347,7 @@ function renderStateBadge() {
 function renderAll() {
   if (!data) return;
   renderStateBadge();
+  renderPairing();
   renderMap();
   renderCards();
   renderChart();
@@ -647,6 +648,59 @@ function bindTools() {
   });
 }
 
+/* ---------------------------------------------------------------- pairing */
+/* A relay can be installed before its exit exists (`--pair-later`): the panel
+   then shows one page whose only job is "paste the link the exit printed".
+   Pairing keeps every choice this install already made — only the secret and
+   the exit's address arrive from the link. */
+function pairingRequired() {
+  return !!(data && data.panel && data.panel.pairing_required);
+}
+function renderPairing() {
+  const unpaired = pairingRequired();
+  const banner = $('pair-banner'), nav = $('nav-pair');
+  if (banner) banner.hidden = !unpaired;
+  if (nav) nav.hidden = !unpaired;
+  if (!unpaired && view === 'pair') show('dashboard');
+  const form = $('pair-form'), done = $('pair-done');
+  if (form && done) {
+    // a finished pairing keeps its receipt on the page, unless the relay is
+    // (still) unpaired, in which case the form is what matters
+    if (unpaired) { form.hidden = false; done.hidden = true; }
+  }
+}
+function bindPair() {
+  const btn = $('pair-btn');
+  if (btn) {
+    btn.onclick = async () => {
+      const field = $('pair-link');
+      const link = (field ? field.value : '').trim();
+      if (!link) { toast(t('pair_need_link'), 'warn'); return; }
+      btn.disabled = true;
+      const status = $('pair-status');
+      if (status) status.textContent = '…';
+      const res = await api('/api/pair', { method: 'POST', body: JSON.stringify({ link }) });
+      btn.disabled = false;
+      if (status) status.textContent = '';
+      if (!res.ok) {
+        if (status) status.textContent = res.error || '';
+        toast(t('toast_error', { msg: res.error || '' }), 'err');
+        return;
+      }
+      if (field) field.value = '';
+      if ($('pair-exit')) $('pair-exit').textContent = res.exit || '—';
+      if ($('pair-ports')) $('pair-ports').textContent = (res.mappings || []).join(', ') || '—';
+      if ($('pair-form')) $('pair-form').hidden = true;
+      if ($('pair-done')) $('pair-done').hidden = false;
+      toast(t('pair_ok'));
+      await load(true);
+      setTimeout(() => show('dashboard'), 1200);
+    };
+  }
+  const open = $('pair-open');
+  if (open) open.onclick = () => show('pair');
+}
+
 /* ---------------------------------------------------------- certificates */
 function renderCerts() {
   const body = $('certs-body');
@@ -670,6 +724,7 @@ async function load(quiet) {
   const body = await api('/api/layout');
   if (!body || body.ok === false) { if (!quiet) toast(t('toast_error', { msg: (body && body.error) || '' }), 'err'); return; }
   data = body;
+  renderPairing();
   if (view === 'dashboard') renderAll();
   if (view === 'ports') renderMappingTable();
   if (view === 'certs') renderCerts();
@@ -681,9 +736,10 @@ function boot() {
   applyTheme(localStorage.getItem(THEME_KEY) || 'night');
   applyLang();
   buildNav();
-  bindPorts(); bindLogs(); bindSpeed(); bindTune(); bindSecurity(); bindTools();
+  bindPorts(); bindLogs(); bindSpeed(); bindTune(); bindSecurity(); bindTools(); bindPair();
   if ($('lang-toggle')) $('lang-toggle').onclick = () => {
-    LANG = LANG === 'fa' ? 'en' : 'fa'; applyLang(); renderAll(); renderCerts(); loadSettings(); loadLogs();
+    LANG = LANG === 'fa' ? 'en' : 'fa'; applyLang(); renderAll(); renderCerts();
+    loadSettings(); loadLogs(); renderPairing();
   };
   if ($('theme-toggle')) $('theme-toggle').onclick = toggleTheme;
   document.querySelectorAll('.nav button').forEach((b) => b.addEventListener('click', () => {

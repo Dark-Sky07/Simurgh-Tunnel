@@ -25,6 +25,7 @@
 
     <nav class="nav">
       <button data-view="dashboard" aria-current="true"><span class="ico">◈</span><span data-i18n="nav_dashboard">Dashboard</span></button>
+      <button data-view="pair" id="nav-pair" hidden><span class="ico">⚭</span><span data-i18n="nav_pair">Pair</span></button>
       <button data-view="ports"><span class="ico">⇄</span><span data-i18n="nav_ports">Ports</span></button>
       <button data-view="wizard"><span class="ico">✧</span><span data-i18n="nav_wizard">Wizard</span></button>
       <button data-view="speed"><span class="ico">⚡</span><span data-i18n="nav_speed">Speed test</span></button>
@@ -57,6 +58,16 @@
     <!-- ------------------------------------------------------- dashboard -->
     <section class="view on" id="view-dashboard">
       <div class="cards" id="cards"></div>
+
+      <div class="card pairbanner" id="pair-banner" hidden>
+        <span class="ico">⚭</span>
+        <div>
+          <b data-i18n="pair_banner_title">This relay is not paired yet</b>
+          <div class="hint" data-i18n="pair_banner_hint">Paste the exit's setup link to bring the tunnel up.</div>
+        </div>
+        <span class="sp"></span>
+        <button class="primary" id="pair-open" data-i18n="pair_open">Pair now</button>
+      </div>
 
       <div class="grid-2" style="margin-top:16px">
         <div class="card mapcard">
@@ -91,6 +102,31 @@
           </tr></thead>
           <tbody id="mapping-body"></tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ pair -->
+    <section class="view" id="view-pair">
+      <div class="card" id="pair-form">
+        <h2 data-i18n="pair_title">Pair this relay</h2>
+        <p class="hint" data-i18n="pair_lead">This server is installed and its panel is running, but it is not paired with its exit yet — the tunnel stays idle until it is.</p>
+        <ol class="pairsteps">
+          <li data-i18n="pair_step1">On the foreign (exit) server run:  simurgh link</li>
+          <li data-i18n="pair_step2">It prints one line that starts with simurgh://</li>
+          <li data-i18n="pair_step3">Paste that line here and press Pair — nothing else to install.</li>
+        </ol>
+        <label for="pair-link" data-i18n="pair_label">Setup link</label>
+        <input id="pair-link" type="text" autocomplete="off" spellcheck="false" placeholder="simurgh://…" dir="ltr">
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="pair-btn" data-i18n="pair_btn">Pair</button>
+          <span class="sub" id="pair-status"></span>
+        </div>
+      </div>
+      <div class="card" id="pair-done" hidden style="margin-top:16px">
+        <h2 data-i18n="pair_done_title">Paired</h2>
+        <div class="kv"><span data-i18n="pair_exit">Exit</span><span class="v mono" id="pair-exit">—</span></div>
+        <div class="kv"><span data-i18n="pair_ports">Active ports</span><span class="v mono" id="pair-ports">—</span></div>
+        <div class="hint" data-i18n="pair_done_hint">The tunnel starts dialing immediately; traffic flows through this server from now on.</div>
       </div>
     </section>
 

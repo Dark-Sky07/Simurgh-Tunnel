@@ -683,18 +683,25 @@ func (r *Relay) supervisor(slot int) {
 		time.Sleep(time.Duration(slot) * 150 * time.Millisecond)
 	}
 	backoff := 500 * time.Millisecond
-	eps := r.endpoints()
-	if len(eps) == 0 {
-		r.cmu.Lock()
-		r.lastError = "no exit endpoint configured"
-		r.cmu.Unlock()
-		return
-	}
 	for {
 		select {
 		case <-r.stop:
 			return
 		default:
+		}
+		// re-read the endpoints every round: an unpaired relay gets its exit
+		// from `simurgh join` (the Python supervisor then restarts this engine)
+		eps := r.endpoints()
+		if len(eps) == 0 {
+			r.cmu.Lock()
+			r.lastError = "no exit endpoint configured -- pair this relay with a setup link"
+			r.cmu.Unlock()
+			select {
+			case <-r.stop:
+				return
+			case <-time.After(1500 * time.Millisecond):
+			}
+			continue
 		}
 		ep := eps[time.Now().UnixNano()%int64(len(eps))]
 		started := time.Now()

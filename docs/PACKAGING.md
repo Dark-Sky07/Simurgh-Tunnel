@@ -10,9 +10,9 @@ answer — and for the people who cannot run a script from the internet at all.
 | | Command | Covers |
 |---|---|---|
 | **one command** | `curl … \| sudo bash` | everything, builds the Go engine |
-| **`.deb`** | `sudo dpkg -i simurgh_3.0.0_amd64.deb` | Debian, Ubuntu, Proxmox |
-| **`.rpm`** | `sudo dnf install ./simurgh-3.0.0-1.x86_64.rpm` | RHEL, Fedora, Alma, Rocky, openSUSE |
-| **tarball** | `tar -xzf simurgh-3.0.0-noarch.tar.gz -C /` | anything with Python 3.9+ |
+| **`.deb`** | `sudo dpkg -i simurgh_3.1.0_amd64.deb` | Debian, Ubuntu, Proxmox |
+| **`.rpm`** | `sudo dnf install ./simurgh-3.1.0-1.x86_64.rpm` | RHEL, Fedora, Alma, Rocky, openSUSE |
+| **tarball** | `tar -xzf simurgh-3.1.0-noarch.tar.gz -C /` | anything with Python 3.9+ |
 | **container** | `docker compose up -d` | both roles, one machine, or one role per host |
 
 ## What is inside
@@ -29,9 +29,9 @@ leave behind:
 | `/usr/lib/systemd/system/simurgh-{relay,exit}.service` | one unit per role; the package enables a role only if **its** config already exists |
 | `/usr/share/doc/simurgh/` | this file, the README (both languages) and the configuration reference |
 
-The two variants are deliberate: `simurgh_3.0.0_all.deb` /
-`simurgh-3.0.0-1.noarch.rpm` are pure Python and run anywhere, while
-`simurgh_3.0.0_amd64.deb` / `…-1.x86_64.rpm` also carry the compiled engine —
+The two variants are deliberate: `simurgh_3.1.0_all.deb` /
+`simurgh-3.1.0-1.noarch.rpm` are pure Python and run anywhere, while
+`simurgh_3.1.0_amd64.deb` / `…-1.x86_64.rpm` also carry the compiled engine —
 which the CLI picks up from `/usr/bin/simurgh-go` by itself, so
 `engine = "go"` works with no path to configure.
 
@@ -60,7 +60,7 @@ the six engine binaries.
 ### Debian, Ubuntu, Proxmox
 
 ```bash
-sudo dpkg -i simurgh_3.0.0_amd64.deb      # apt -f install, if you skipped the deps
+sudo dpkg -i simurgh_3.1.0_amd64.deb      # apt -f install, if you skipped the deps
 sudo simurgh install --role exit --listen 443      # or --role relay --exit-host <ip>
 sudo systemctl enable --now simurgh-exit           # the unit for the role you configured
 ```
@@ -72,7 +72,7 @@ sudo systemctl enable --now simurgh-exit           # the unit for the role you c
 ### RHEL, Fedora, Alma, Rocky, openSUSE
 
 ```bash
-sudo dnf install ./simurgh-3.0.0-1.x86_64.rpm
+sudo dnf install ./simurgh-3.1.0-1.x86_64.rpm
 sudo simurgh install --role relay --exit-host 203.0.113.9 --exit-port 443 --token XXX
 sudo systemctl enable --now simurgh-relay
 ```
@@ -82,7 +82,7 @@ sudo systemctl enable --now simurgh-relay
 It is rooted at `/`, so it unpacks over a system that has Python 3.9+:
 
 ```bash
-sudo tar -xzf simurgh-3.0.0-noarch.tar.gz -C /
+sudo tar -xzf simurgh-3.1.0-noarch.tar.gz -C /
 sudo simurgh install --role exit --listen 443
 sudo simurgh exit          # no systemd? run the role by hand
 ```

@@ -14,6 +14,7 @@ Endpoints
 ``POST /api/action``      restart | start | stop | speedtest | reconnect
 ``GET  /api/logs``        tail of the log file
 ``GET  /api/join``        (exit only) the join payload for a new relay
+``POST /api/pair``        pair this relay with the exit's setup link
 ``GET  /healthz``         unauthenticated liveness probe
 """
 
@@ -318,6 +319,8 @@ class Panel:
             return self.create_login_token(req)
         if req.method == "POST" and path == "/api/tune":
             return self.set_profile(req.json())
+        if req.method == "POST" and path == "/api/pair":
+            return await self.pair(req.json())
         if req.method == "POST" and path == "/api/wizard":
             return self.wizard(req.json())
         if req.method == "GET" and path == "/api/update":
@@ -616,6 +619,87 @@ class Panel:
         self.last_layout = payload
         return payload
 
+    # --------------------------------------------------------------- pairing
+    def pairing_state(self) -> dict:
+        """Whether this server still waits for its other half.
+
+        A relay installed with ``--pair-later`` has no token and no exit yet;
+        the panel then shows the pairing page instead of pretending to be a
+        working tunnel.
+        """
+        if self.role != "relay":
+            return {"paired": True, "required": False, "exit": ""}
+        cfg = getattr(self.node, "cfg", None)
+        if cfg is None:
+            try:
+                cfg = load_relay(self.home.relay_cfg)
+            except (ConfigError, OSError):
+                return {"paired": True, "required": False, "exit": ""}
+        return {"paired": cfg.paired, "required": not cfg.paired,
+                "exit": cfg.exit.describe() if cfg.paired else ""}
+
+    async def pair(self, body: dict) -> bytes:
+        """Complete an unpaired relay from the exit's setup link.
+
+        The browser half of ``simurgh join '<link>'``: the link brings the
+        secret and the exit, while everything this install already chose (the
+        panel port, the engine, the limits, the ports added here) stays.  With
+        a live node the tunnel starts dialing immediately.
+        """
+        if self.role != "relay":
+            return json_response({"ok": False, "error": "only the relay is paired"}, 400)
+        try:
+            cfg = load_relay(self.home.relay_cfg)
+        except (ConfigError, OSError) as exc:
+            return json_response({"ok": False, "error": str(exc)}, 400)
+        if cfg.reverse:
+            return json_response(
+                {"ok": False, "error": "this relay waits for its exit; run "
+                                       "`simurgh link` here and import that link "
+                                       "on the foreign server"}, 400)
+        if cfg.paired:
+            return json_response(
+                {"ok": False, "error": "this relay is already paired; "
+                                       "`simurgh join --force` replaces the exit"},
+                409)
+        link = str((body or {}).get("link") or "").strip()
+        if not link:
+            return json_response({"ok": False, "error": "paste the setup link first"}, 400)
+        from .links import LinkError, merge_relay_payload, relay_payload_from_link
+
+        try:
+            payload = await asyncio.to_thread(relay_payload_from_link, link, 12.0)
+            merged = merge_relay_payload(cfg, payload)
+        except LinkError as exc:
+            return json_response({"ok": False, "error": str(exc)}, 400)
+        except (KeyError, ValueError, ConfigError) as exc:
+            return json_response({"ok": False, "error": f"the link is incomplete: {exc}"}, 400)
+        backup_file = backup(self.home.relay_cfg, "pair")
+        try:
+            save_relay(cfg, self.home.relay_cfg)
+        except OSError as exc:
+            return json_response({"ok": False, "error": str(exc)}, 500)
+        applied = "restart"
+        if self.node is not None:
+            self.node.cfg = cfg
+            supervisor = getattr(self.node, "supervisor", None)
+            if supervisor is not None:
+                supervisor.cfg = cfg
+            try:
+                await self.node.rebind()
+                self.node.reconnect()
+                applied = "live"
+            except Exception as exc:        # pragma: no cover - defensive
+                self.last_error = f"pairing applied on restart: {exc}"
+                applied = "restart"
+        self.last_layout = {}
+        return json_response({
+            "ok": True, "exit": merged["exit"], "mappings": merged["mappings"],
+            "added": merged["added"], "applied": applied, "backup": backup_file,
+            "note": ("the tunnel is dialing now" if applied == "live"
+                     else "restart the service to apply"),
+        })
+
     # ---------------------------------------------------------- status/data
     def status(self) -> dict:
         node_status: dict = {}
@@ -630,8 +714,11 @@ class Panel:
             except (OSError, ValueError):
                 node_status = {}
         alerts = getattr(self.node, "alerts", None)
+        pairing = self.pairing_state()
         panel = {
             "role": self.role,
+            "paired": pairing["paired"],
+            "pairing_required": pairing["required"],
             "uptime": time.time() - self.started_at,
             "requests": self.requests,
             "port": self.port,

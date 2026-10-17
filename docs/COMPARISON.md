@@ -180,6 +180,27 @@ limits; both are done now.
 | **Packaging (.deb / .rpm / tarball / container)** | `packaging/build-packages.sh` stages the tree and builds a `.deb` (`dpkg-deb`), an `.rpm` (`rpmbuild`, same layout through the spec's `%install`) and a portable tarball that unpacks at `/` — the compiled engine included when `--go-binary` is passed (`all`/`noarch` variants without it). The launcher carries its library path (`$SIMURGH_LIB` overrides), the units are the same two roles, the package creates `/etc/simurgh` with mode `0700` and never writes it (`remove` keeps it, `purge` drops it). `Dockerfile` is a two-stage build that compiles the engine with `GOPROXY=off`, `docker-compose.yml` runs the pair, and CI builds every artefact plus the image on each push. | `tests/test_packaging.py`: 15 tests — a real build, the tarball's contents and modes, the packaged launcher running the CLI, the build-time libdir substitution, `dpkg-deb -I/-c` (control fields, the three maintainer scripts, no `DEBIAN/` in the payload, `amd64` when the engine is inside), the RPM spec against the staging tree, the Dockerfile's `COPY` paths and offline engine build, the compose port map, and the compose recipe really run through `simurgh install` |
 | **The Go engine, supervised** | With `engine = "go"` the compiled engine runs as a child process instead of replacing the Python one, so the panel, `/metrics` and the alerts survive next to it (the engine opens no HTTP port of its own). `state.json` is followed for up/down and quota events, and a crashed engine is restarted with a growing backoff (0.5 s → 30 s) with the exit code in the alert. `simurgh relay --exec` keeps the old hand-off behaviour for the tiny VPS. | `tests/test_supervise.py`: 12 tests against a stand-in engine — start/announce, log redirection, up→down→up, quota fired once per period, crash → restart with a new pid and an `error` alert, clean SIGTERM shutdown, the panel facade, deliberate restarts not counting as crashes. Plus a live smoke run: real Go engine, real panel (25 metric series), real traffic through the tunnel, SIGKILL → restart → traffic again |
 
+### Install first, pair later (v3.1.0)
+
+The one-command installer no longer asks the Iranian server for the foreign
+token. That order (install the exit, copy its token, paste it on the relay) was
+the last place where Simurgh made the operator do what the software could do
+itself. Now:
+
+* **the relay installs with no questions at all** — `unpaired = true` in
+  `relay.toml`, the panel up, the tunnel idle;
+* **`simurgh join '<link>'` or the panel's Pair page** completes it whenever the
+  operator likes, keeps everything the install decided (panel port, engine,
+  limits, ports already added) and starts the tunnel in place — no re-install,
+  no service dance;
+* **order is free**: either server can be installed first, or the relay can be
+  installed before the foreign server even exists;
+* the state is honest everywhere: `simurgh status`, `simurgh doctor`, the menu
+  header and the panel all say *not paired yet* instead of "down".
+
+The Go engine learned the same state (`unpaired` in the config, supervisors that
+wait instead of exiting), so both data planes behave identically.
+
 ### The panel (v3.0.0 — done)
 
 The panel was the one place Simurgh was visibly behind Kariz. It is not any
