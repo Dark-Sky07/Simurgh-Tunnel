@@ -7,10 +7,11 @@ import asyncio
 import pytest
 
 from conftest import free_port
-from simurgh.config import (ExitConfig, ListenSpec, RelayConfig, load_exit,
-                            load_relay, save_exit, save_relay)
+from simurgh.config import (ExitConfig, ListenSpec, Mapping, RelayConfig,
+                            load_exit, load_relay, save_exit, save_relay)
 from simurgh.links import (LinkError, build_join_link, fetch_setup,
-                           parse_join_link, relay_config_from_payload,
+                           merge_relay_payload, parse_join_link,
+                           relay_config_from_payload, relay_payload_from_link,
                            reverse_payload)
 from simurgh.panel import Panel
 
@@ -192,3 +193,37 @@ def test_link_still_hands_the_relay_link_to_a_direct_exit(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "relay setup link" in out
     assert "Iranian server" in out
+
+
+async def test_merging_keeps_the_install_and_adds_the_exit():
+    """Pairing later: the link supplies the secret and the exit, nothing else."""
+    cfg = RelayConfig(name="ir-tehran", unpaired=True, panel_port=9911,
+                      engine="python")
+    cfg.exit.address = ""
+    cfg.mappings.append(Mapping(name="mine", listen=8443, target_port=9000))
+    info = merge_relay_payload(cfg, {
+        "token": "tok", "name": "de-frankfurt",
+        "exit": {"carrier": "tls", "address": "198.51.100.7", "port": 443},
+        "pool": [{"carrier": "wss", "address": "198.51.100.8", "port": 2053}],
+        "mappings": [{"port": 443, "target": 443},
+                     {"port": 8443, "target": 9000}],   # already here: no dupe
+    })
+    assert cfg.unpaired is False and cfg.paired is True
+    assert cfg.token == "tok" and cfg.name == "ir-tehran"
+    assert cfg.panel_port == 9911 and cfg.engine == "python"
+    assert cfg.exit.address == "198.51.100.7"
+    assert [e.address for e in cfg.pool] == ["198.51.100.8"]
+    assert [m.listen for m in cfg.mappings] == [8443, 443]
+    assert info["added"] == [443] and info["exit"].startswith("tls://")
+
+
+async def test_a_link_that_belongs_to_the_exit_is_refused(monkeypatch):
+    """`simurgh link` on a reverse relay prints an exit link; a direct relay
+    must not swallow it."""
+    from simurgh import links
+
+    monkeypatch.setattr(links, "fetch_setup",
+                        lambda link, timeout=15.0: {"role": "exit", "token": "t",
+                                                    "listen": {"address": "1.2.3.4"}})
+    with pytest.raises(LinkError, match="exit server"):
+        relay_payload_from_link("simurgh://x:8787/setup?u=a&p=b")

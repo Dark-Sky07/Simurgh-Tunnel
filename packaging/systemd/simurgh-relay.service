@@ -1,0 +1,25 @@
+[Unit]
+Description=Simurgh Tunnel (relay: this machine dials the foreign exit)
+Documentation=https://github.com/Dark-Sky07/Simurgh-Tunnel/blob/main/docs/PACKAGING.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SIMURGH_HOME=/etc/simurgh
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/simurgh relay
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+TimeoutStopSec=15
+KillMode=mixed
+# A busy relay keeps one session per user, so memory grows with the user
+# count: 1G/2G keeps a thousand users comfortable without hiding a leak.
+MemoryHigh=1G
+MemoryMax=2G
+TasksMax=8192
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

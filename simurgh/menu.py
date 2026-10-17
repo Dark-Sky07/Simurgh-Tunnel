@@ -113,6 +113,14 @@ def header(home: Home, role: str) -> None:
     print(c("─" * 62, "dim"))
     print(f" service: {service_state(service)}   tunnel: {status}   rtt: {rtt_text}")
     print(f" target:  {extra}")
+    if role == "relay":
+        try:
+            relay_cfg = load_relay(home.relay_cfg)
+        except (ConfigError, OSError):
+            relay_cfg = None
+        if relay_cfg is not None and not relay_cfg.paired:
+            print(c(" pairing: not paired yet — choose 11) import a setup link",
+                    "yellow"))
     print(f" traffic: {human_bytes(totals.get('in_bytes', 0))} down / "
           f"{human_bytes(totals.get('out_bytes', 0))} ↑")
     print(f" rate:    {human_rate(rates.get('in_bps', 0))} down / "
@@ -476,6 +484,9 @@ MENU_RELAY = {
     "11": "Import a setup link",
     "12": "Doctor (self-diagnostics)",
     "13": "Enable start on boot",
+    "14": "Alerts (Telegram / webhook)",
+    "15": "Certificates (Let's Encrypt)",
+    "16": "Performance profile (gaming / balanced / speed)",
 }
 
 
@@ -540,8 +551,74 @@ def menu_loop(home: Home, role: str) -> int:
             doctor(home, role)
         elif choice == "13":
             service_action(role, "enable")
+        elif choice == "14":
+            show_alerts(home, role)
+        elif choice == "15":
+            show_certificates(home, role)
+        elif choice == "16":
+            show_tuning(home, role)
         else:
             time.sleep(0.3)
+
+
+def show_alerts(home: Home, role: str) -> None:
+    """What the alerter is configured to do (see simurgh/alerts.py)."""
+    from .cli import cmd_alert
+
+    cmd_alert(type("A", (), {"home": str(home.path), "role": role,
+                             "action": "status", "extra": []})())
+    print()
+    print(c("  Setup:", "cyan"))
+    print("    telegram_token / telegram_chat  (or telegram_api for your own "
+          "Bot API server)")
+    print("    alert_webhook                   any endpoint that takes a JSON POST")
+    print("    alert_events = [\"all\"]            every event instead of the default set")
+    print(f"    in {home.exit_cfg.name if role == 'exit' else home.relay_cfg.name}, "
+          "then: simurgh restart")
+    print(c("  Test it once: simurgh alert test", "cyan"))
+    pause()
+
+
+def show_certificates(home: Home, role: str) -> None:
+    """Which certificate each endpoint serves, and how long it has left."""
+    from .cli import cmd_cert
+
+    cmd_cert(type("A", (), {"home": str(home.path), "role": role,
+                            "action": "status"})())
+    print()
+    print(c("  Let's Encrypt:", "cyan"))
+    print("    simurgh cert issue panel.example.com --webroot /var/www/html")
+    print("    simurgh cert issue panel.example.com --standalone")
+    print("    simurgh cert renew          # what the client's own cron runs")
+    pause()
+
+
+def show_tuning(home: Home, role: str) -> None:
+    """The three profiles, and what this server currently uses."""
+    from . import tune
+    from .cli import cmd_tune
+
+    cmd_tune(type("A", (), {"home": str(home.path), "role": role,
+                            "profile": None, "show": True, "json": False,
+                            "dry_run": False})())
+    print()
+    print(c("  Loaded keys:", "cyan"))
+    try:
+        cfg = (load_relay(home.relay_cfg) if role == "relay"
+               else load_exit(home.exit_cfg))
+    except Exception as exc:                       # pragma: no cover - unreadable
+        print(f"    {exc}")
+        pause()
+        return
+    for key in tune.STREAM_KEYS + tune.SOCKET_KEYS:
+        value = getattr(cfg, key, None)
+        match = ""
+        for profile in tune.describe():
+            if profile[role].get(key) == value:
+                match = profile["name"]
+                break
+        print(f"    {key} = {value}" + (f"   ({match})" if match else ""))
+    pause()
 
 
 def main(args=None) -> int:

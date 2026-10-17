@@ -161,17 +161,27 @@ def test_install_survives_a_systemctl_without_root(tmp_path):
     assert (tmp_path / "etc" / "exit.toml").exists(), output
 
 
-def test_relay_without_a_token_explains_what_to_do(tmp_path):
-    """A piped relay install cannot ask for the token — it must say so instead
-    of failing inside the CLI with an unclear message."""
+def test_a_relay_without_a_token_is_installed_and_paired_later(tmp_path):
+    """The relay can be installed before its exit exists.
+
+    Nothing may be asked (or demanded) up front: the config is written as
+    `unpaired`, the panel is installed, and the summary says exactly how to
+    finish it.  Piping the installer is the common case, so it must not abort.
+    """
     script = INSTALL.read_text(encoding="utf-8")
     proc = subprocess.run(
         ["bash", "-s", "--", "--yes", "--no-go", "--role", "relay"],
         input=script, env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
     )
     output = proc.stdout + proc.stderr
-    assert proc.returncode != 0
-    assert "--token" in output and "unbound variable" not in output, output
+    assert proc.returncode == 0, output
+    assert "unbound variable" not in output, output
+    relay = _config(tmp_path, "relay.toml")
+    assert "unpaired = true" in relay, relay
+    assert "token = \"\"" in relay, relay
+    # and the way out is printed, in order, with the command to run
+    assert "not paired yet" in output, output
+    assert "simurgh link" in output and "simurgh join" in output, output
 
 
 def test_role_both_writes_both_configs(tmp_path):
@@ -267,11 +277,11 @@ def test_iranian_address_gets_the_relay_without_any_role_flag(tmp_path):
     proc = _auto(tmp_path, "IR")
     output = proc.stdout + proc.stderr
     assert "role of this server: relay" in output, output
-    # without a terminal the relay cannot ask for the foreign address, and the
-    # error has to say so (with a terminal the installer asks for it instead)
-    assert proc.returncode != 0
-    assert "foreign server address" in output, output
+    assert proc.returncode == 0, output
+    # the country alone decides the role, and the token question is gone: a
+    # relay with no exit yet is installed as `unpaired` and paired afterwards
     assert not (tmp_path / "etc" / "exit.toml").exists()
+    assert "unpaired = true" in _config(tmp_path, "relay.toml")
 
 
 def test_other_country_gets_the_exit_without_any_role_flag(tmp_path):

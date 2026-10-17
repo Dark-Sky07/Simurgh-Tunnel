@@ -26,17 +26,36 @@ type ListenSpec struct {
 	InsecureSkipVerify bool
 	CertFile           string
 	KeyFile            string
+	MTU                int    // udp carrier: datagram budget
+	FEC                string // udp carrier: "off", "3" or "10:2"
+	Window             int    // udp carrier: packets in flight
 }
 
 // Mapping is one port forwarding on the relay.
 type Mapping struct {
-	Name       string
-	Listen     int
-	ListenHost string
-	TargetHost string
-	TargetPort int
-	UDP        bool
-	Enabled    bool
+	Name        string
+	Listen      int
+	ListenHost  string
+	TargetHost  string
+	TargetPort  int
+	UDP         bool
+	Enabled     bool
+	RateLimit   any    // "20M", a number of bytes/s, or {rate, burst}
+	Quota       any    // "200G" or {bytes, period, action}
+	QuotaPeriod string // day | month | total
+	QuotaAction string // block | throttle | warn
+	MaxConns    int    // concurrent user connections (0 = unlimited)
+}
+
+// Key is the ledger/limiter key of one mapping.  It matches the Python
+// engine's Mapping.key() so both engines write the same traffic.json rows.
+func (m Mapping) Key() string {
+	proto := "tcp"
+	if m.UDP {
+		proto = "udp"
+	}
+	return fmt.Sprintf("%s:%s:%d/%s:%d", proto, m.ListenHost, m.Listen,
+		m.TargetHost, m.TargetPort)
 }
 
 // Endpoint is a foreign server the relay can dial.
@@ -51,6 +70,15 @@ type Endpoint struct {
 	Padding            bool
 	Split              int // tls/wss: bytes in the first TCP segment of the ClientHello
 	Enabled            bool
+	TCPNoDelay         *bool  // nil = inherit the file's value
+	TCPKeepalive       *int   // nil = inherit; seconds, 0 = off
+	MTU                int    // udp carrier
+	FEC                string // udp carrier
+	Window             int    // udp carrier
+	// filled in by the parsers with the file-level values, so a dial can
+	// resolve an endpoint's overrides without carrying the whole config
+	FileNoDelay   bool
+	FileKeepalive int
 }
 
 // Tunnel is the relay's own listener in reverse mode.
@@ -66,6 +94,26 @@ type Tunnel struct {
 	DecoyFile string
 	Padding   bool
 	Enabled   bool
+	MTU       int    // udp carrier
+	FEC       string // udp carrier
+	Window    int    // udp carrier
+}
+
+// Token is one credential of a multi-tenant exit ([[token]] blocks).  The
+// per-token policy fields are parsed here; the relay keeps them for its own
+// accounting of which exit accepts what.
+type Token struct {
+	Value          string
+	Name           string
+	Ports          []int
+	Targets        []string
+	AllowAnyTarget bool
+	RateLimit      any
+	Quota          int64
+	QuotaPeriod    string
+	QuotaAction    string
+	MaxConns       int
+	Enabled        bool
 }
 
 // Exit is exit.toml.
@@ -87,6 +135,9 @@ type Exit struct {
 	Chunk           int
 	Connections     int
 	Keepalive       int
+	TCPNoDelay      bool // Nagle off (the Python engine's tcp_nodelay)
+	TCPKeepalive    int  // keepalive idle time in seconds, 0 = off
+	Tokens          []Token
 }
 
 // Relay is relay.toml.
@@ -103,10 +154,22 @@ type Relay struct {
 	Connections     int
 	SpeedtestPort   int
 	LogLevel        string
-	Exit            Endpoint
-	Pool            []Endpoint
-	Tunnel          Tunnel
-	Mappings        []Mapping
+	TCPNoDelay      bool // Nagle off (the Python engine's tcp_nodelay)
+	TCPKeepalive    int  // keepalive idle time in seconds, 0 = off
+	Tokens          []Token
+	RateLimit       any // node-wide fallback for a mapping without its own
+	Quota           any
+	QuotaPeriod     string
+	QuotaAction     string
+	MaxConns        int
+	// Unpaired marks a relay that was installed before its exit existed
+	// (`simurgh install --pair-later`): the token and the exit address are
+	// still empty and the data plane waits for `simurgh join` / the panel.
+	Unpaired bool
+	Exit     Endpoint
+	Pool     []Endpoint
+	Tunnel   Tunnel
+	Mappings []Mapping
 }
 
 // Defaults, matching the Python engine.
@@ -115,6 +178,8 @@ const (
 	DefaultMaxStreamWindow = 8 << 20
 	DefaultChunk           = 64 << 10
 	DefaultKeepalive       = 25
+	DefaultMTU             = 1200
+	DefaultUDPWindow       = 1024
 )
 
 // LoadExit reads exit.toml.
@@ -140,6 +205,9 @@ func LoadExit(path string) (*Exit, error) {
 		Chunk:           clampInt(integer(tree, "chunk", DefaultChunk), 4096, 1<<20),
 		Connections:     clampInt(integer(tree, "connections", 1), 1, 16),
 		Keepalive:       clampInt(integer(tree, "keepalive", DefaultKeepalive), 5, 3600),
+		TCPNoDelay:      boolean(tree, "tcp_nodelay", true),
+		TCPKeepalive:    maxInt(0, integer(tree, "tcp_keepalive", 0)),
+		Tokens:          tokenList(tree, str(tree, "token", "")),
 	}
 	if cfg.MaxStreamWindow < cfg.StreamWindow {
 		cfg.MaxStreamWindow = cfg.StreamWindow
@@ -163,6 +231,9 @@ func LoadExit(path string) (*Exit, error) {
 			InsecureSkipVerify: boolean(item, "insecure_skip_verify", false),
 			CertFile:           str(item, "cert_file", ""),
 			KeyFile:            str(item, "key_file", ""),
+			MTU:                clampInt(integer(item, "mtu", DefaultMTU), 512, 65000),
+			FEC:                fecSpec(str(item, "fec", "off")),
+			Window:             clampInt(integer(item, "window", DefaultUDPWindow), 32, 65536),
 		})
 	}
 	return cfg, nil
@@ -187,18 +258,32 @@ func LoadRelay(path string) (*Relay, error) {
 		Connections:     clampInt(integer(tree, "connections", 1), 1, 16),
 		SpeedtestPort:   integer(tree, "speedtest_port", 0),
 		LogLevel:        str(tree, "log_level", "info"),
+		TCPNoDelay:      boolean(tree, "tcp_nodelay", true),
+		TCPKeepalive:    maxInt(0, integer(tree, "tcp_keepalive", 0)),
+		Tokens:          tokenList(tree, str(tree, "token", "")),
+		RateLimit:       tree["rate_limit"],
+		Quota:           tree["quota"],
+		QuotaPeriod:     str(tree, "quota_period", "month"),
+		QuotaAction:     str(tree, "quota_action", "block"),
+		MaxConns:        integer(tree, "max_conns", 0),
+		Unpaired:        boolean(tree, "unpaired", false),
 	}
 	if cfg.MaxStreamWindow < cfg.StreamWindow {
 		cfg.MaxStreamWindow = cfg.StreamWindow
 	}
-	if cfg.Token == "" {
-		return nil, fmt.Errorf("relay config: 'token' is required")
+	if cfg.Token == "" && !cfg.Unpaired {
+		return nil, fmt.Errorf("relay config: 'token' is required " +
+			"(or `unpaired = true` for a server that is not paired yet)")
 	}
 	if t := table(tree, "exit"); t != nil {
 		cfg.Exit = endpoint(t)
 	}
+	// the endpoints inherit the file's socket options unless they set their own
+	cfg.Exit.FileNoDelay, cfg.Exit.FileKeepalive = cfg.TCPNoDelay, cfg.TCPKeepalive
 	for _, t := range tables(tree, "pool") {
-		cfg.Pool = append(cfg.Pool, endpoint(t))
+		ep := endpoint(t)
+		ep.FileNoDelay, ep.FileKeepalive = cfg.TCPNoDelay, cfg.TCPKeepalive
+		cfg.Pool = append(cfg.Pool, ep)
 	}
 	if t := table(tree, "tunnel"); t != nil {
 		cfg.Tunnel = Tunnel{
@@ -213,20 +298,28 @@ func LoadRelay(path string) (*Relay, error) {
 			DecoyFile: str(t, "decoy_file", ""),
 			Padding:   boolean(t, "padding", true),
 			Enabled:   boolean(t, "enabled", true),
+			MTU:       clampInt(integer(t, "mtu", DefaultMTU), 512, 65000),
+			FEC:       fecSpec(str(t, "fec", "off")),
+			Window:    clampInt(integer(t, "window", DefaultUDPWindow), 32, 65536),
 		}
 	}
 	for _, t := range tables(tree, "mapping") {
 		cfg.Mappings = append(cfg.Mappings, Mapping{
-			Name:       str(t, "name", ""),
-			Listen:     integer(t, "listen", 0),
-			ListenHost: str(t, "listen_host", "0.0.0.0"),
-			TargetHost: str(t, "target_host", "127.0.0.1"),
-			TargetPort: integer(t, "target_port", 0),
-			UDP:        boolean(t, "udp", false),
-			Enabled:    boolean(t, "enabled", true),
+			Name:        str(t, "name", ""),
+			Listen:      integer(t, "listen", 0),
+			ListenHost:  str(t, "listen_host", "0.0.0.0"),
+			TargetHost:  str(t, "target_host", "127.0.0.1"),
+			TargetPort:  integer(t, "target_port", 0),
+			UDP:         boolean(t, "udp", false),
+			Enabled:     boolean(t, "enabled", true),
+			RateLimit:   t["rate_limit"],
+			Quota:       t["quota"],
+			QuotaPeriod: str(t, "quota_period", "month"),
+			QuotaAction: str(t, "quota_action", "block"),
+			MaxConns:    integer(t, "max_conns", 0),
 		})
 	}
-	if cfg.Dial == "relay" && cfg.Exit.Address == "" {
+	if cfg.Dial == "relay" && cfg.Exit.Address == "" && !cfg.Unpaired {
 		return nil, fmt.Errorf("relay config: an [exit] block with an address is required")
 	}
 	if cfg.Dial == "exit" && cfg.Tunnel.Port == 0 {
@@ -234,6 +327,31 @@ func LoadRelay(path string) (*Relay, error) {
 	}
 	return cfg, nil
 }
+
+// NoDelayValue is the endpoint's effective `tcp_nodelay`: its own key when it
+// sets one, the file's value otherwise -- the same None means inherit rule the
+// Python engine applies to [exit] and [[pool]].
+func (e Endpoint) NoDelayValue() bool {
+	if e.TCPNoDelay != nil {
+		return *e.TCPNoDelay
+	}
+	return e.FileNoDelay
+}
+
+// KeepaliveValue is the effective `tcp_keepalive` in seconds (0 = off).
+func (e Endpoint) KeepaliveValue() int {
+	if e.TCPKeepalive != nil {
+		return *e.TCPKeepalive
+	}
+	return e.FileKeepalive
+}
+
+// FileNoDelayValue is only the file-level value, ignoring the endpoint's own
+// key: that is what a sibling endpoint inherits from the file.
+func (e Endpoint) FileNoDelayValue() bool { return e.FileNoDelay }
+
+// FileKeepaliveValue is only the file-level `tcp_keepalive` in seconds.
+func (e Endpoint) FileKeepaliveValue() int { return e.FileKeepalive }
 
 func endpoint(t map[string]any) Endpoint {
 	return Endpoint{
@@ -247,7 +365,109 @@ func endpoint(t map[string]any) Endpoint {
 		Padding:            boolean(t, "padding", true),
 		Split:              integer(t, "split", 0),
 		Enabled:            boolean(t, "enabled", true),
+		MTU:                clampInt(integer(t, "mtu", DefaultMTU), 512, 65000),
+		FEC:                fecSpec(str(t, "fec", "off")),
+		Window:             clampInt(integer(t, "window", DefaultUDPWindow), 32, 65536),
+		TCPNoDelay:         boolPtr(t, "tcp_nodelay"),
+		TCPKeepalive:       intPtr(t, "tcp_keepalive"),
 	}
+}
+
+// boolPtr and intPtr keep "not configured" apart from "configured as false/0",
+// which is what the Python engine's `None` does for the same keys.
+func boolPtr(t map[string]any, key string) *bool {
+	raw, ok := t[key]
+	if !ok {
+		return nil
+	}
+	switch value := raw.(type) {
+	case bool:
+		return &value
+	case string:
+		parsed := value == "true" || value == "1"
+		return &parsed
+	case int64:
+		parsed := value != 0
+		return &parsed
+	case float64:
+		parsed := value != 0
+		return &parsed
+	}
+	return nil
+}
+
+func intPtr(t map[string]any, key string) *int {
+	if _, ok := t[key]; !ok {
+		return nil
+	}
+	value := integer(t, key, 0)
+	return &value
+}
+
+// tokenList reads the exit's credentials: the plain `token` plus any
+// `[[token]]` block (the Python engine writes one per extra relay).
+func tokenList(tree map[string]any, primary string) []Token {
+	out := []Token{}
+	if primary != "" {
+		out = append(out, Token{Value: primary, Name: str(tree, "token_name", ""), Enabled: true})
+	}
+	for _, t := range tables(tree, "tokens") {
+		value := str(t, "token", str(t, "value", ""))
+		if value == "" {
+			continue
+		}
+		out = append(out, Token{
+			Value:          value,
+			Name:           str(t, "name", ""),
+			Ports:          intList(t, "ports"),
+			Targets:        strList(t, "targets"),
+			AllowAnyTarget: boolean(t, "allow_any_target", false),
+			RateLimit:      t["rate_limit"],
+			Quota:          int64(integer(t, "quota", 0)),
+			QuotaPeriod:    str(t, "quota_period", "monthly"),
+			QuotaAction:    str(t, "quota_action", "block"),
+			MaxConns:       integer(t, "max_conns", 0),
+			Enabled:        boolean(t, "enabled", true),
+		})
+	}
+	return out
+}
+
+// tokenValues is what the carriers authenticate against.
+func (e *Exit) TokenValues() []string {
+	out := make([]string, 0, len(e.Tokens))
+	for _, t := range e.Tokens {
+		if t.Enabled && t.Value != "" {
+			out = append(out, t.Value)
+		}
+	}
+	if len(out) == 0 && e.Token != "" {
+		out = append(out, e.Token)
+	}
+	return out
+}
+
+// TokenValues is what the carriers authenticate against.
+func (r *Relay) TokenValues() []string {
+	out := make([]string, 0, len(r.Tokens))
+	for _, t := range r.Tokens {
+		if t.Enabled && t.Value != "" {
+			out = append(out, t.Value)
+		}
+	}
+	if len(out) == 0 && r.Token != "" {
+		out = append(out, r.Token)
+	}
+	return out
+}
+
+// fecSpec keeps "off" verbatim and normalises the rest.
+func fecSpec(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || value == "off" || value == "none" || value == "false" {
+		return "off"
+	}
+	return value
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +634,13 @@ func tables(t map[string]any, key string) []map[string]any {
 		}
 	}
 	return out
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func clampInt(v, lo, hi int) int {

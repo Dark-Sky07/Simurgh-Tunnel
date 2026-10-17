@@ -1,0 +1,87 @@
+# A relay and an exit on one machine, the quickest way to try Simurgh before
+# touching a real server: the relay dials the exit over the compose network,
+# the exit forwards to a target, the panel shows what is happening.
+#
+#   docker compose build
+#   TOKEN=$(openssl rand -hex 24)
+#   docker compose run --rm exit  install --role exit  --listen 19443 --token "$TOKEN" --force
+#   docker compose run --rm relay install --role relay --exit-host exit --exit-port 19443 \
+#       --carrier tls --insecure --mapping 8443:9000 --token "$TOKEN" --force
+#   docker compose up -d
+#
+# `--insecure` is only for this local pair (the exit serves a self-signed
+# certificate); on two real servers pin it instead, `--fingerprint AB:CD:...`,
+# or get a real certificate with `simurgh cert`.
+#
+# Then: `docker compose run --rm relay status`, the panel on
+# http://localhost:8787 (the password is in /etc/simurgh/config.json inside the
+# relay container: `docker compose exec relay simurgh web --show`), and traffic
+# through 8443 reaches whatever listens on 9000 inside the exit's network.
+#
+# On real servers each role runs in its own container with `network_mode: host`
+# (a tunnel wants the host's ports and its whole network path) -- see the
+# example at the bottom.
+
+name: simurgh
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: simurgh:local
+    container_name: simurgh-relay
+    command: ["relay"]
+    restart: unless-stopped
+    volumes:
+      - relay-config:/etc/simurgh
+    ports:
+      - "8787:8787"   # web panel, /metrics
+      - "8443:8443"   # the mapping the recipe above creates
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  exit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: simurgh:local
+    container_name: simurgh-exit
+    command: ["exit"]
+    restart: unless-stopped
+    volumes:
+      - exit-config:/etc/simurgh
+    ports:
+      - "19443:19443" # the tunnel the relay dials
+    healthcheck:
+      test: ["CMD", "simurgh", "status", "--json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  relay-config:
+  exit-config:
+
+# ---------------------------------------------------------------------------
+# On separate servers, drop `build:`, keep one volume and use the host network
+# so the tunnel sees the real interfaces and ports:
+#
+# services:
+#   relay:
+#     image: ghcr.io/dark-sky07/simurgh-tunnel:latest
+#     network_mode: host
+#     command: ["relay"]
+#     volumes: ["/etc/simurgh:/etc/simurgh"]
+#     restart: unless-stopped
+#   exit:
+#     image: ghcr.io/dark-sky07/simurgh-tunnel:latest
+#     network_mode: host
+#     command: ["exit"]
+#     volumes: ["/etc/simurgh:/etc/simurgh"]
+#     restart: unless-stopped

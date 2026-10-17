@@ -29,6 +29,16 @@ jobs:
       - name: Install test tooling
         run: python -m pip install --quiet pytest "cryptography>=41"
 
+      # the web panel is half JavaScript: node runs that half against a stubbed
+      # DOM (tests/test_panel_js.py skips itself if node is missing)
+      - name: Show the node version the panel's tests will use
+        run: node --version
+
+      - name: Check the panel's JavaScript syntax
+        run: |
+          node --check simurgh/assets/app.js
+          node --check simurgh/assets/login.js
+
       - name: Run the test suite
         run: |
           set -o pipefail
@@ -79,3 +89,75 @@ jobs:
         run: |
           shellcheck --version
           shellcheck -S warning install.sh tools/build-go.sh
+
+  packages:
+    name: packages (.deb, .rpm, tarball, image)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache: false
+
+      - name: Build the compiled engine
+        run: bash tools/build-go.sh --release dist
+
+      - name: rpmbuild (dpkg-deb is already there)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq rpm
+
+      - name: Build every package from the same tree
+        run: |
+          bash packaging/build-packages.sh --out dist
+          bash packaging/build-packages.sh --out dist \
+               --go-binary dist/simurgh-go-linux-amd64
+          ls -l dist
+
+      - name: Inspect what was built
+        run: |
+          set -e
+          dpkg-deb -I dist/simurgh_*_all.deb
+          dpkg-deb -c dist/simurgh_*_amd64.deb | grep -E 'usr/bin/(simurgh|simurgh-go)$'
+          rpm -qip dist/simurgh-*.noarch.rpm
+          rpm -qlp dist/simurgh-*.x86_64.rpm | grep -E '^/usr/bin/simurgh(-go)?$'
+
+      - name: Run the tarball the way a user would
+        run: |
+          set -e
+          mkdir -p /tmp/root && tar -xzf dist/simurgh-*-noarch.tar.gz -C /tmp/root
+          SIMURGH_LIB=/tmp/root/usr/lib/simurgh /tmp/root/usr/bin/simurgh --version
+          SIMURGH_LIB=/tmp/root/usr/lib/simurgh /tmp/root/usr/bin/simurgh tune
+
+      - name: Build the image and the compose file
+        run: |
+          set -x
+          docker build -t simurgh:ci .
+          docker run --rm simurgh:ci --version
+          # the compiled engine, straight through the entrypoint's override
+          docker run --rm --entrypoint /usr/bin/simurgh-go simurgh:ci version
+          docker compose config -q
+          # a role with no config must refuse to start, and say why
+          if docker run --rm --entrypoint /bin/sh simurgh:ci -c \
+               'SIMURGH_HOME=/tmp/none simurgh-entrypoint relay'; then
+            echo "the entrypoint started an unconfigured role" >&2
+            exit 1
+          fi
+
+      - name: Keep the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/*.deb
+          retention-days: 7
+
+      - name: Keep the tarballs and rpms too
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-extra
+          path: |
+            dist/*.rpm
+            dist/*.tar.gz
+          retention-days: 7

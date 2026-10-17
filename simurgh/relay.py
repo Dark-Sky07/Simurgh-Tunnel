@@ -19,20 +19,30 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from pathlib import Path
 
+from .accounting import TrafficAccount, quota_from
+from .alerts import alerts_from_config
 from .bridge import Bridge, proxy_v1_header
-from .carriers import ServerCarrier, client_connect
+from .carriers import ServerCarrier, client_connect, create_tcp_server
 from .config import Mapping, RelayConfig
 from .mux import Mux, StreamOpenError
 from .protocol import MODE_TCP, encode_addr
+from .ratelimit import limiter_from
 from .stats import Stats
 from .udp import UdpRelayListener
-from .util import free_port, get_logger, is_ip
+from .certs import expiry_days
+from .util import free_port, get_logger, human_rate, is_ip
 
 log = get_logger("simurgh.relay")
 
 STREAM_WAIT = 12.0
 FAIL_COOLDOWN = 30.0
+#: when a mapping is over quota and its action is "throttle", the crawl it drops
+#: to until the period rolls over
+THROTTLE_RATE = 128 * 1024
+#: warn when a served certificate has this little life left
+CERT_ALERT_DAYS = 14
 STATS_INTERVAL = 5.0
 PING_INTERVAL = 10.0
 
@@ -42,12 +52,62 @@ class UserBridge(Bridge):
 
     def __init__(self, node: "RelayNode", mapping: Mapping, **kw):
         super().__init__(opener=lambda: node.open_stream(
-            encode_addr(mapping.target_host, mapping.target_port), MODE_TCP),
+            encode_addr(mapping.target_host, mapping.target_port), MODE_TCP,
+            mapping=mapping),
             counter=node.stats.mapping(mapping.key()), **kw)
         self.node = node
         self.mapping = mapping
+        self.limiter = node.limiter_for(mapping)
+        self.on_bytes = lambda direction, n: node.count_bytes(mapping, direction, n)
+        #: set once the mapping's connection slot is taken (see connection_made)
+        self._slot = False
+
+    def connection_lost(self, exc) -> None:
+        if self._slot:
+            self._slot = False
+            self.node.release_slot(self.mapping)
+        super().connection_lost(exc)
 
     def connection_made(self, transport) -> None:
+        if not self.node.get_slot(self.mapping):
+            self.node.stats.mapping(self.mapping.key()).errors += 1
+            self.node.stats.mapping(self.mapping.key()).last_error = "max_conns reached"
+            log.warning("mapping %s is at max_conns; refusing %s",
+                        self.mapping.name or self.mapping.key(), transport)
+            try:
+                transport.close()
+            except Exception:
+                pass
+            return
+        self._slot = True
+        quota = self.node.quota_for(self.mapping)
+        if self.node._over_quota(self.mapping):
+            action = getattr(quota, "action", "block")
+            if action == "throttle":
+                # keep the user online, but at a crawl until the window resets
+                self.limiter = limiter_from(THROTTLE_RATE, self.mapping.key())
+                self.node.alerts.notify(
+                    "throttle", f"mapping {self.mapping.name or self.mapping.key()} "
+                    f"is over its quota; throttled to "
+                    f"{human_rate(THROTTLE_RATE)}", level="warning",
+                    mapping=self.mapping.name or self.mapping.key())
+            else:
+                self.node.blocked += 1
+                self.node.stats.mapping(self.mapping.key()).errors += 1
+                self.node.stats.mapping(self.mapping.key()).last_error = "quota exceeded"
+                self.node.alerts.notify(
+                    "quota", f"mapping {self.mapping.name or self.mapping.key()} "
+                    f"is over its quota; refusing users",
+                    level="warning", mapping=self.mapping.name or self.mapping.key(),
+                    used=self.node.account.usage(self.mapping.key(), quota.period)
+                    if self.node.account else 0, limit=quota.limit)
+                log.warning("mapping %s is over its quota; refusing %s",
+                            self.mapping.name or self.mapping.key(), transport)
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+                return
         if self.mapping.proxy_protocol in ("v1", "v2"):
             peer = transport.get_extra_info("peername") or ("", 0)
             if isinstance(peer, tuple) and len(peer) >= 2 and is_ip(str(peer[0])):
@@ -67,10 +127,35 @@ class RelayNode:
         #: never steal the user-facing ports from the running service.
         self.listen_enabled = listen
         self.stats = Stats()
-        self.connected = asyncio.Event()
+        # `connected` is created on first use: on Python 3.9 an asyncio.Event
+        # built outside a running loop binds the thread's loop at construction
+        # and raises once an earlier asyncio.run() has closed it (a sync caller
+        # -- a test, a tool -- must be able to build a node).
+        self._connected: asyncio.Event | None = None
         #: every live tunnel connection (a pool: ``connections`` in the config)
         self._tunnels: list[Mux] = []
+        self._mux_endpoint: dict[int, ExitEndpoint] = {}
+        self._health: dict[str, dict] = {}
+        self._ping_sent: dict[int, float] = {}
         self.current: str = ""
+        #: per-mapping bandwidth buckets, quotas and their traffic history
+        self._limiters: dict[str, object] = {}
+        self._quotas: dict[str, object] = {}
+        #: concurrent user connections per mapping (``max_conns``)
+        self._active: dict[str, int] = {}
+        self._warned: dict[str, float] = {}
+        self.blocked = 0
+        #: telegram / webhook notifications (see simurgh/alerts.py)
+        self.alerts = alerts_from_config(cfg, name=cfg.name or "relay")
+        #: certificates this node serves, for the "expiring soon" alert
+        self._watched_certs: dict[str, str] = {}
+        self._cert_warned: dict[str, float] = {}
+        self.account: TrafficAccount | None = None
+        if home is not None:
+            # `home` is a util.Home in every real caller and a plain path in a
+            # few tools; both have to reach <home>/traffic.json
+            base = getattr(home, "path", home)
+            self.account = TrafficAccount(Path(base) / "traffic.json")
         self.rtt_ms: float | None = None
         self.exit_info: dict = {}
         self.last_error = ""
@@ -86,6 +171,13 @@ class RelayNode:
         self.connect_count = 0
 
     # ------------------------------------------------------------- lifecycle
+    @property
+    def connected(self) -> asyncio.Event:
+        """Set while a tunnel to the exit is up (created inside the loop)."""
+        if self._connected is None:
+            self._connected = asyncio.Event()
+        return self._connected
+
     @property
     def muxes(self) -> list[Mux]:
         """Live tunnel connections, oldest first."""
@@ -105,16 +197,41 @@ class RelayNode:
 
     async def start(self) -> None:
         await self.rebind()
+        if self.account is not None:
+            self.account.start()
+        await self.alerts.start()
+        self.alerts.notify("started", f"relay {self.cfg.name or ''} started "
+                           f"(engine: {self.cfg.engine})".strip(),
+                           mappings=len(self.cfg.mappings),
+                           exit=self.cfg.exit.describe() if self.cfg.exit.address else "")
         if self.cfg.reverse:
             await self._start_tunnel_listener()
             return
+        endpoints = self.cfg.endpoints()
         total = max(1, min(16, self.cfg.connections))
         if total > 1:
-            log.info("keeping %d tunnel connections to the exit", total)
-        for slot in range(total):
-            task = asyncio.ensure_future(self._supervisor(slot))
+            log.info("keeping %d tunnel connections to %d exit(s)",
+                     total, max(1, len(endpoints)))
+        if not endpoints:
+            plan = [(None, 0)]
+        else:
+            # every configured exit gets its own tunnel, then the extra
+            # connections of `connections` are spread round robin
+            plan = [(endpoint, index) for index, endpoint in enumerate(endpoints)]
+            for index in range(max(0, total - len(endpoints))):
+                plan.append((endpoints[index % len(endpoints)], len(plan)))
+        for endpoint, slot in plan:
+            task = asyncio.ensure_future(self._supervisor(slot, endpoint))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
+        # the health loop is harmless with no tunnel and useful the moment one
+        # appears (a server paired from the panel while it is already running)
+        health = asyncio.ensure_future(self.health_loop())
+        self._tasks.add(health)
+        health.add_done_callback(self._tasks.discard)
+        certs = asyncio.ensure_future(self.cert_loop())
+        self._tasks.add(certs)
+        certs.add_done_callback(self._tasks.discard)
 
     async def _start_tunnel_listener(self) -> None:
         """Reverse mode: wait for the foreign exit to connect to us."""
@@ -140,22 +257,40 @@ class RelayNode:
                                                      self.cfg.name or "simurgh.local")
             spec.cert_file, spec.key_file = cert_file, key_file
         loop = asyncio.get_running_loop()
+        tokens = self.cfg.token_list()
+        if not tokens:
+            self.last_error = f"{spec.endpoint()}: no token configured"
+            log.error("%s has no token to authenticate exits with", spec.endpoint())
+            return
         carrier = ServerCarrier(
-            spec.carrier, self.cfg.token,
+            spec.carrier, tokens[0].token, tokens=tokens,
             cert_file=cert_file, key_file=key_file,
             path=spec.path, fallback=spec.fallback,
             decoy_file=spec.decoy_file, padding=spec.padding,
+            chunk=self.cfg.chunk,
         )
-        factory = carrier.protocol_factory(self._accept_tunnel)
         try:
-            server = await loop.create_server(factory, spec.host, spec.port,
-                                              backlog=128)
+            if spec.carrier == "udp":
+                server, _proto = await carrier.create_udp_endpoint(
+                    loop, spec.host, spec.port, self._accept_tunnel,
+                    mtu=spec.mtu, fec=spec.fec, window=spec.window,
+                )
+            else:
+                factory = carrier.protocol_factory(self._accept_tunnel)
+                server = await create_tcp_server(
+                    loop, factory, spec.host, spec.port, backlog=128,
+                    dual_stack=self.cfg.dual_stack,
+                )
         except OSError as exc:
             self.last_error = f"{spec.endpoint()}: {exc}"
             self.bind_errors.append(self.last_error)
             log.error("cannot listen on %s: %s", spec.endpoint(), exc)
             return
         self._tunnel_servers.append(server)
+        if spec.carrier == "udp":
+            log.info("waiting for the exit on %s/udp (mtu %d, fec %s)",
+                     spec.endpoint(), spec.mtu, spec.fec)
+            return
         mode = "decoy website" if spec.carrier in ("tls", "wss") else "noise"
         log.info("waiting for the exit on %s (probers see: %s)",
                  spec.endpoint(), mode)
@@ -194,6 +329,10 @@ class RelayNode:
         self._tunnels.clear()
         self.current = ""
         self.connected.clear()
+        if self.account is not None:
+            await self.account.stop()
+        self.alerts.notify("stopped", f"relay {self.cfg.name or ''} stopped".strip())
+        await self.alerts.stop()
         await asyncio.sleep(0)
 
     def reconnect(self) -> None:
@@ -219,14 +358,25 @@ class RelayNode:
             "dial": self.cfg.dial,
             "tunnel_listen": ([self.cfg.tunnel.endpoint()] if self.cfg.reverse else []),
             "exit_info": self.exit_info,
-            "mappings": [
-                {"key": m.key(), "name": m.name, "listen": m.listen,
-                 "target": f"{m.target_host}:{m.target_port}",
-                 "udp": m.udp, "enabled": m.enabled,
-                 "bound": m.key() in self._servers or m.key() in self._udp}
-                for m in self.cfg.mappings
-            ],
+            "mappings": [self._mapping_row(m) for m in self.cfg.mappings],
+            "quotas": {m.key(): self.quota_state(m) for m in self.cfg.mappings},
             "stats": self.stats.snapshot(),
+            "health": self.health_snapshot(),
+            "traffic": (self.account.rows("month") if self.account else []),
+            "ledger": (self.account.snapshot() if self.account else {}),
+            "blocked": self.blocked,
+        }
+
+    def _mapping_row(self, m) -> dict:
+        """One panel/metrics row per mapping, with its own counters."""
+        counter = self.stats.mappings.get(m.key())
+        stats = counter.as_dict() if counter is not None else {}
+        return {
+            "key": m.key(), "name": m.name, "listen": m.listen,
+            "target": f"{m.target_host}:{m.target_port}",
+            "udp": m.udp, "enabled": m.enabled,
+            "bound": m.key() in self._servers or m.key() in self._udp,
+            "stats": stats,
         }
 
     # -------------------------------------------------------------- listeners
@@ -306,8 +456,44 @@ class RelayNode:
         return out
 
     # ---------------------------------------------------------------- tunnel
+    def _candidates(self, mapping=None):
+        """Tunnels this stream may use, least busy first.
+
+        A mapping may pin itself to one exit (``exit = "kharej-2"``, matching
+        the endpoint's label or address); otherwise every healthy tunnel is a
+        candidate and the least loaded one wins.
+        """
+        now = time.monotonic()
+        wanted = (getattr(mapping, "exit", "") or "").strip().lower()
+        out = []
+        for mux in self.muxes:
+            if mux.closed:
+                continue
+            endpoint = self._mux_endpoint.get(id(mux))
+            if wanted:
+                names = self._endpoint_names(endpoint) if endpoint else set()
+                if wanted not in names:
+                    continue
+            if endpoint is not None and self._fail_until.get(endpoint.describe(), 0) > now:
+                continue
+            out.append(mux)
+        out.sort(key=lambda m: len(m.streams))
+        if out or not wanted:
+            return out
+        # the pinned exit has no tunnel right now: better a working tunnel
+        # through another exit than a dead port
+        return sorted((m for m in self.muxes if not m.closed),
+                      key=lambda m: len(m.streams))
+
+    @staticmethod
+    def _endpoint_names(endpoint) -> set[str]:
+        if endpoint is None:
+            return set()
+        return {endpoint.address.lower(), (endpoint.label or "").lower(),
+                endpoint.describe().lower()}
+
     async def open_stream(self, addr: bytes, mode: int = MODE_TCP,
-                          timeout: float = STREAM_WAIT):
+                          timeout: float = STREAM_WAIT, mapping=None):
         """Open a stream on the least busy tunnel connection.
 
         With a pool, a user connection lands on whichever tunnel currently
@@ -320,7 +506,7 @@ class RelayNode:
             await asyncio.wait_for(self.connected.wait(), timeout)
         except asyncio.TimeoutError:
             raise ConnectionError("tunnel is not connected yet") from None
-        candidates = sorted(self.muxes, key=lambda m: len(m.streams))
+        candidates = self._candidates(mapping)
         if not candidates:
             raise ConnectionError("tunnel is down")
         last: Exception | None = None
@@ -339,17 +525,25 @@ class RelayNode:
                 last = exc
         raise last or ConnectionError("no tunnel connection could open the stream")
 
-    async def _supervisor(self, slot: int = 0) -> None:
+    async def _supervisor(self, slot: int = 0, pinned=None) -> None:
         backoff = 0.5
-        endpoints = self.cfg.endpoints()
-        if not endpoints:
-            self.last_error = "no exit endpoint configured"
-            return
         if slot:
             # stagger a pool so the tunnels do not all flap in lockstep
             await asyncio.sleep(0.15 * slot)
         while not self._stopping:
-            ep = self._pick(endpoints)
+            # re-read the config every time round: a relay installed unpaired
+            # gets its exit from `simurgh join`/the panel while this loop runs,
+            # and must start dialing without a service restart
+            endpoints = self.cfg.endpoints()
+            if not endpoints:
+                self.last_error = ("no exit endpoint configured -- pair this "
+                                   "relay with a setup link")
+                self._fail_until.clear()
+                await asyncio.sleep(1.5)
+                continue
+            ep = pinned
+            if ep is None or self._fail_until.get(ep.describe(), 0) > time.monotonic():
+                ep = self._pick(endpoints)
             if ep is None:
                 await asyncio.sleep(1.0)
                 if slot == 0:
@@ -365,6 +559,10 @@ class RelayNode:
                     split=ep.split,
                     connect_timeout=12.0,
                     chunk=self.cfg.chunk,
+                    # the datagram carrier's knobs and the upstream dial path
+                    mtu=ep.mtu, fec=ep.fec, window=ep.window,
+                    proxy=ep.proxy or self.cfg.proxy,
+                    net=self._net_opts(ep),
                 )
             except Exception as exc:
                 self.last_error = f"{ep.describe()}: {exc}"
@@ -378,6 +576,201 @@ class RelayNode:
             await self._run_tunnel(ep, channel, slot=slot)
             if not self._stopping:
                 await asyncio.sleep(0.4)
+
+    async def cert_loop(self, interval: float = 6 * 3600) -> None:
+        """Warn before a certificate dies (the certificate the exit pins).
+
+        Runs on the relay in reverse mode and on the exit otherwise; it only
+        looks at the files this node actually serves.  One alert a day per
+        certificate, because the operator cannot do anything faster than that.
+        """
+        if self.cfg.reverse:
+            cert_file = self.cfg.tunnel.cert_file
+            if cert_file and not self.cfg.tunnel.cert_auto:
+                self._watch_certificate("tunnel", cert_file)
+        self._check_certs()
+        while not self._stopping:
+            await asyncio.sleep(interval)
+            self._check_certs()
+
+    def _check_certs(self) -> list[str]:
+        """Alert for every served certificate that is close to expiry.
+
+        Returns the labels that were just alerted for, which keeps the loop
+        testable without waiting six hours for the first pass.
+        """
+        alerted: list[str] = []
+        for label, cert_file in list(self._watched_certs.items()):
+            days = expiry_days(cert_file)
+            if days is None:
+                continue
+            if days > CERT_ALERT_DAYS:
+                self._cert_warned.pop(label, None)
+                continue
+            last = self._cert_warned.get(label)
+            if last is not None and time.monotonic() - last <= 86400:
+                continue
+            self._cert_warned[label] = time.monotonic()
+            alerted.append(label)
+            self.alerts.notify(
+                "cert", f"certificate {cert_file} expires in "
+                f"{days:.0f} day(s)", level="warning",
+                cert=cert_file, days=round(days, 1))
+        return alerted
+
+    def _watch_certificate(self, label: str, cert_file: str) -> None:
+        if cert_file:
+            self._watched_certs[label] = cert_file
+
+    async def health_loop(self, interval: float = 10.0) -> None:
+        """Measure each tunnel's round trip and skip exits that stop answering.
+
+        This is the exit side of the 'which exit is alive' question: the panel
+        shows the latency, and three missed probes in a row take the endpoint
+        out of the candidate list until its tunnel reconnects.
+        """
+        while not self._stopping:
+            await asyncio.sleep(interval)
+            now = time.time()
+            for mux in list(self.muxes):
+                endpoint = self._mux_endpoint.get(id(mux))
+                if endpoint is None:
+                    continue
+                row = self._health.setdefault(endpoint.describe(), {
+                    "up": True, "rtt_ms": None, "fails": 0, "since": now,
+                    "label": endpoint.label or endpoint.address,
+                })
+                sent = self._ping_sent.get(id(mux))
+                if sent is not None:
+                    # no pong since the last round
+                    row["fails"] = int(row.get("fails", 0)) + 1
+                    if row["fails"] >= 3:
+                        row["up"] = False
+                        self._fail_until[endpoint.describe()] = time.monotonic() + 15.0
+                        log.warning("exit %s stopped answering its probes",
+                                    endpoint.describe())
+                        try:
+                            mux.close()
+                        except Exception:
+                            pass
+                        continue
+                try:
+                    mux.ctrl({"kind": "ping", "t": now})
+                    self._ping_sent[id(mux)] = now
+                except Exception:
+                    row["fails"] = int(row.get("fails", 0)) + 1
+
+    def health_snapshot(self) -> list[dict]:
+        out = []
+        for name, row in self._health.items():
+            item = dict(row)
+            item["endpoint"] = name
+            item["failed_until"] = max(0.0, self._fail_until.get(name, 0) - time.monotonic())
+            out.append(item)
+        return out
+
+    # ------------------------------------------------------------- limits
+    def limiter_for(self, mapping) -> object:
+        """The bandwidth bucket of one mapping (created on first use)."""
+        key = mapping.key()
+        limiter = self._limiters.get(key)
+        if limiter is None:
+            limiter = limiter_from(getattr(mapping, "rate_limit", 0)
+                                   or self.cfg.rate_limit, key)
+            self._limiters[key] = limiter
+        return limiter
+
+    def quota_for(self, mapping):
+        """The traffic quota of one mapping (created on first use)."""
+        key = mapping.key()
+        quota = self._quotas.get(key)
+        if quota is None:
+            quota = quota_from(getattr(mapping, "quota", 0) or self.cfg.quota,
+                               getattr(mapping, "quota_period", self.cfg.quota_period),
+                               getattr(mapping, "quota_action", self.cfg.quota_action),
+                               key)
+            self._quotas[key] = quota
+        return quota
+
+    def quota_state(self, mapping) -> dict:
+        quota = self.quota_for(mapping)
+        if self.account is None or not quota.enabled:
+            return {"enabled": False}
+        return quota.state(self.account, mapping.key())
+
+    def count_bytes(self, mapping, direction: str, nbytes: int) -> None:
+        """Count one chunk of a mapping's traffic.
+
+        Both the panel's live counter and the persistent ledger are fed here,
+        which is also what the quota checks and `/metrics` read.
+        """
+        if not nbytes:
+            return
+        key = mapping.key()
+        counter = self.stats.mapping(key)
+        up = direction == "up"
+        if up:
+            counter.in_bytes += nbytes
+        else:
+            counter.out_bytes += nbytes
+        if self.account is not None:
+            if up:
+                self.account.add(key, in_bytes=nbytes)
+            else:
+                self.account.add(key, out_bytes=nbytes)
+
+    def max_conns(self, mapping) -> int:
+        """The concurrent-connection ceiling of one mapping (0 = unlimited)."""
+        return max(0, int(getattr(mapping, "max_conns", 0)
+                          or getattr(self.cfg, "max_conns", 0) or 0))
+
+    def get_slot(self, mapping) -> bool:
+        """Reserve one of the mapping's connection slots."""
+        limit = self.max_conns(mapping)
+        if not limit:
+            return True
+        key = mapping.key()
+        if self._active.get(key, 0) >= limit:
+            return False
+        self._active[key] = self._active.get(key, 0) + 1
+        return True
+
+    def release_slot(self, mapping) -> None:
+        if not self.max_conns(mapping):
+            return
+        key = mapping.key()
+        self._active[key] = max(0, self._active.get(key, 0) - 1)
+
+    def _over_quota(self, mapping) -> bool:
+        """Has this mapping used up its allowance?  Warns once per 5 minutes."""
+        quota = self.quota_for(mapping)
+        if self.account is None or not quota.enabled:
+            return False
+        if not quota.exceeded(self.account, mapping.key()):
+            return False
+        action = getattr(quota, "action", "block")
+        if action == "warn":
+            now = time.monotonic()
+            if now - self._warned.get(mapping.key(), 0) > 300:
+                self._warned[mapping.key()] = now
+                used = self.account.usage(mapping.key(), quota.period)
+                log.warning("mapping %s is over its quota (%d/%d this %s)",
+                            mapping.name or mapping.key(), used, quota.limit,
+                            quota.period)
+            return False
+        return True
+
+    def _net_opts(self, ep) -> dict:
+        """Socket options for the outgoing tunnel (endpoint first, node second)."""
+        return {
+            "nodelay": ep.tcp_nodelay if ep.tcp_nodelay is not None
+            else self.cfg.tcp_nodelay,
+            "keepalive": ep.tcp_keepalive if ep.tcp_keepalive is not None
+            else self.cfg.tcp_keepalive,
+            "so_mark": ep.so_mark if ep.so_mark is not None else self.cfg.so_mark,
+            "prefer": ep.prefer_ipv6 if ep.prefer_ipv6 is not None
+            else self.cfg.prefer_ipv6,
+        }
 
     def _pick(self, endpoints):
         now = time.monotonic()
@@ -397,11 +790,22 @@ class RelayNode:
             chunk=self.cfg.chunk,
         )
         self._tunnels.append(mux)
+        if ep is not None:
+            self._mux_endpoint[id(mux)] = ep
+            self._health.setdefault(ep.describe(), {
+                "up": True, "rtt_ms": None, "fails": 0,
+                "since": time.time(), "label": ep.label or ep.address,
+            })
+            self._health[ep.describe()]["up"] = True
+            self._health[ep.describe()]["fails"] = 0
         primary = self.mux is mux
         self.current = label
         self.connect_count += 1
         self._refresh_connected()
         self.last_error = ""
+        self.alerts.notify("connected", f"tunnel up via {label} "
+                           f"({len(self.muxes)} live)", endpoint=label,
+                           carrier=getattr(channel, "name", ""))
         log.info("tunnel up via %s%s", label,
                  f" [{len(self.muxes)}/{max(1, self.cfg.connections)}]" if self.cfg.connections > 1 else "")
         tasks = [asyncio.ensure_future(mux.keepalive(self.cfg.keepalive))]
@@ -426,6 +830,11 @@ class RelayNode:
             if not remaining:
                 self.connected.clear()
                 self.current = ""
+                if not self._stopping:
+                    self.alerts.notify("disconnected",
+                                       f"tunnel to {label} is down "
+                                       f"({self.last_error or 'connection closed'})",
+                                       level="warning", endpoint=label)
             elif self.current == label:
                 # the primary left; promote whatever is still up
                 self.current = label
@@ -476,6 +885,27 @@ class RelayNode:
             t = msg.get("t")
             if isinstance(t, (int, float)):
                 self.rtt_ms = round((time.time() - t) * 1000, 1)
+            for mux in self.muxes:
+                if self._ping_sent.pop(id(mux), None) is not None:
+                    endpoint = self._mux_endpoint.get(id(mux))
+                    if endpoint is not None:
+                        row = self._health.setdefault(endpoint.describe(), {})
+                        row["rtt_ms"] = self.rtt_ms
+                        row["up"] = True
+                        row["fails"] = 0
+                        row["checked"] = time.time()
+                    break
+            return
+        if kind == "hello":
+            # the exit introduces itself: its name, its uptime and where its
+            # localhost-only speed endpoint listens
+            self.exit_info["name"] = msg.get("name") or self.exit_info.get("name") or ""
+            if isinstance(msg.get("uptime"), (int, float)):
+                self.exit_info["uptime"] = float(msg["uptime"])
+            if isinstance(msg.get("speedtest_port"), int):
+                self.exit_info["speedtest_port"] = int(msg["speedtest_port"])
+            if msg.get("version"):
+                self.exit_info["version"] = str(msg["version"])
             return
         if kind == "mappings":
             if not self.cfg.accept_push:

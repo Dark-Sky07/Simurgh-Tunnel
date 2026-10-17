@@ -14,6 +14,7 @@ Endpoints
 ``POST /api/action``      restart | start | stop | speedtest | reconnect
 ``GET  /api/logs``        tail of the log file
 ``GET  /api/join``        (exit only) the join payload for a new relay
+``POST /api/pair``        pair this relay with the exit's setup link
 ``GET  /healthz``         unauthenticated liveness probe
 """
 
@@ -31,8 +32,18 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import __product__, __version__
 from .config import (ConfigError, ExitConfig, Mapping, load_exit, load_relay,
                      save_exit, save_relay)
+from .layout import History, RateTracker, build as build_layout
+from .panel_i18n import EN as I18N_EN, FA as I18N_FA
+from .panel_ui import (CSP, LOGIN_TOKEN_TTL, LoginTokens, apply_plan, backup,
+                       dashboard_html, login_error, login_page, plan_changes,
+                       read_asset, rollback)
 from .stats import Stats
 from .util import Home, clamp, get_logger
+
+#: the dashboard's words, in both languages (see simurgh/panel_i18n.py)
+PANEL_I18N = {"en": I18N_EN, "fa": I18N_FA}
+#: what the panel may be told to load: no other carrier is a legal config
+CARRIERS = ("tls", "wss", "raw", "plain", "udp")
 
 log = get_logger("simurgh.panel")
 
@@ -61,21 +72,39 @@ class Request:
             return {}
         return data if isinstance(data, dict) else {}
 
+    def form(self) -> dict:
+        """Form fields of a POST (the login page posts the old-fashioned way)."""
+        from urllib.parse import parse_qs
+
+        if not self.body:
+            return {}
+        try:
+            fields = parse_qs(self.body.decode("utf-8", "replace"), keep_blank_values=True)
+        except Exception:                                      # pragma: no cover
+            return {}
+        return {key: value[0] for key, value in fields.items()}
+
 
 def http_response(body: bytes, status: int = 200, ctype: str = "text/html; charset=utf-8",
-                  extra: dict | None = None) -> bytes:
-    reason = {200: "OK", 204: "No Content", 400: "Bad Request", 401: "Unauthorized",
-              403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
-              409: "Conflict", 500: "Internal Server Error"}.get(status, "OK")
+                  extra: dict | None = None, cache: str = "no-store") -> bytes:
+    reason = {200: "OK", 204: "No Content", 302: "Found", 303: "See Other",
+              400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
+              404: "Not Found", 405: "Method Not Allowed", 409: "Conflict",
+              429: "Too Many Requests", 500: "Internal Server Error"}.get(status, "OK")
     head = [
         f"HTTP/1.1 {status} {reason}",
         f"Content-Type: {ctype}",
         f"Content-Length: {len(body)}",
-        "Cache-Control: no-store",
+        f"Cache-Control: {cache}",
         "X-Content-Type-Options: nosniff",
         "Referrer-Policy: no-referrer",
         "Connection: close",
     ]
+    if ctype.startswith("text/html"):
+        # the panel is a page an operator opens through the tunnel: it may not
+        # pull anything in, and nothing may frame it
+        head.append(f"Content-Security-Policy: {CSP}")
+        head.append("X-Frame-Options: DENY")
     for key, value in (extra or {}).items():
         head.append(f"{key}: {value}")
     return ("\r\n".join(head) + "\r\n\r\n").encode("latin-1") + body
@@ -148,6 +177,17 @@ class Panel:
         self.last_error = ""
         self._server: asyncio.AbstractServer | None = None
         self._tasks: set[asyncio.Task] = set()
+        #: the map and the chart need a little history of their own
+        self.history = History()
+        self.rates = RateTracker()
+        #: single-use login links (simurgh web --link, Security page)
+        self.login_tokens = LoginTokens()
+        self.last_layout: dict = {}
+        #: brute-force protection: failed logins per peer, and when they are
+        #: blocked until (see _register_failure / _locked_out)
+        self.failed: dict[str, int] = {}
+        self.locked: dict[str, float] = {}
+        self.lockouts = 0
 
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -208,6 +248,30 @@ class Panel:
                                   "version": __version__, "role": self.role})
         if not self._allowed(peer_ip):
             return json_response({"ok": False, "error": "forbidden"}, 403)
+        # ---- the page, its assets and the login form: no password needed
+        if req.method == "GET" and (req.path.startswith("/assets/") or req.path in
+                                    ("/app.css", "/app.js", "/login.js",
+                                     "/manifest.webmanifest", "/favicon.ico",
+                                     "/assets/simurgh.png")):
+            return self.asset_response(req.path)
+        if req.method == "GET" and req.path.rstrip("/") in ("/login", ""):
+            if req.path.startswith("/login"):
+                lang = "fa" if (req.query.get("lang") or "").lower().startswith("fa") else "en"
+                return http_response(login_page(lang, version=__version__,
+                                                product=__product__).encode("utf-8"))
+        if req.method == "POST" and req.path == "/login":
+            return self.handle_login(req, peer_ip)
+        if req.method == "GET" and req.path == "/logout":
+            return http_response(
+                b"<html><body>signed out</body></html>", 200,
+                extra={"Set-Cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly"})
+        # a one-time link signs this browser in and dies right here
+        if req.method == "GET" and req.query.get("t") \
+                and self.login_tokens.consume(req.query["t"]):
+            return http_response(b"", 303, extra={
+                "Location": "/",
+                "Set-Cookie": (f"{SESSION_COOKIE}={self._session_value()}; "
+                               "Path=/; HttpOnly; SameSite=Lax")})
         if req.path == "/api/join":
             if self.role != "exit" and not self._relay_is_reverse():
                 return json_response(
@@ -215,11 +279,22 @@ class Panel:
                                            "(or by a relay that listens: dial = \"exit\")"},
                     400)
             # the other server presents the credentials from its link (POST body)
+            if self._locked_out(peer_ip):
+                return json_response(
+                    {"ok": False, "error": "too many failed logins; try again later"},
+                    429)
             body = req.json() if req.method == "POST" else {}
             if not self._credentials_ok(body.get("user"), body.get("password"), req):
+                if req.method == "POST":
+                    self._register_failure(peer_ip, req)
                 return json_response({"ok": False, "error": "bad credentials"}, 401)
             return self.join_payload(req)
+        if self._locked_out(peer_ip):
+            return json_response(
+                {"ok": False, "error": "too many failed logins; try again later"},
+                429)
         if not self._authorised(req):
+            self._register_failure(peer_ip, req)
             return http_response(
                 b"<html><body><h3>Simurgh Tunnel</h3><p>Login required.</p></body></html>",
                 401, extra={"WWW-Authenticate": 'Basic realm="simurgh"'})
@@ -233,8 +308,23 @@ class Panel:
             return http_response(self.dashboard().encode("utf-8"), extra=extra)
         if req.method == "GET" and path == "/api/status":
             return json_response(self.status())
+        if req.method == "GET" and path == "/metrics":
+            return http_response(self.metrics().encode("utf-8"), 200,
+                                 ctype="text/plain; version=0.0.4; charset=utf-8")
         if req.method == "GET" and path == "/api/config":
             return json_response(self.config_dict())
+        if req.method == "GET" and path == "/api/layout":
+            return json_response(self.layout_payload())
+        if req.method == "POST" and path == "/api/login-token":
+            return self.create_login_token(req)
+        if req.method == "POST" and path == "/api/tune":
+            return self.set_profile(req.json())
+        if req.method == "POST" and path == "/api/pair":
+            return await self.pair(req.json())
+        if req.method == "POST" and path == "/api/wizard":
+            return self.wizard(req.json())
+        if req.method == "GET" and path == "/api/update":
+            return await self.update_check()
         if req.method == "POST" and path == "/api/config":
             return await self.update_config(req.json())
         if req.method == "POST" and path == "/api/mappings":
@@ -244,6 +334,44 @@ class Panel:
         if req.method == "GET" and path == "/api/logs":
             return json_response(self.logs(req.query.get("lines", "120")))
         return json_response({"ok": False, "error": "not found"}, 404)
+
+    # brute-force protection: a handful of wrong passwords from one address
+    # earns that address a quiet few minutes, and the operator gets told
+    MAX_FAILURES = 5
+    LOCKOUT_SECONDS = 300.0
+
+    def _locked_out(self, peer_ip: str) -> bool:
+        until = self.locked.get(peer_ip, 0.0)
+        if not until:
+            return False
+        if time.monotonic() < until:
+            return True
+        self.locked.pop(peer_ip, None)
+        self.failed.pop(peer_ip, None)
+        return False
+
+    def _register_failure(self, peer_ip: str, req: Request | None = None) -> None:
+        """Count a failed login; lock the address and alert after too many."""
+        count = self.failed.get(peer_ip, 0) + 1
+        self.failed[peer_ip] = count
+        if count < self.MAX_FAILURES:
+            return
+        self.locked[peer_ip] = time.monotonic() + self.LOCKOUT_SECONDS
+        self.failed.pop(peer_ip, None)
+        self.lockouts += 1
+        log.warning("panel: %d failed logins from %s; blocked for %.0f s",
+                    count, peer_ip, self.LOCKOUT_SECONDS)
+        alerts = getattr(self.node, "alerts", None)
+        if alerts is not None:
+            try:
+                alerts.notify(
+                    "login",
+                    f"panel: {count} failed logins from {peer_ip}; "
+                    f"address blocked for {int(self.LOCKOUT_SECONDS / 60)} minutes",
+                    level="warning", peer=peer_ip,
+                    path=getattr(req, "path", "") if req is not None else "")
+            except Exception:                                  # pragma: no cover
+                pass
 
     def _allowed(self, peer_ip: str) -> bool:
         if not self.allow_ips:
@@ -290,6 +418,288 @@ class Panel:
         return (hmac.compare_digest(user, self.user)
                 and hmac.compare_digest(password, self.password))
 
+    # ------------------------------------------------------------- assets
+    def asset_response(self, path: str) -> bytes:
+        """Serve one file that ships inside the package."""
+        name = "simurgh.png" if path.endswith("simurgh.png") else \
+            "favicon.png" if path == "/favicon.ico" else path.lstrip("/").split("/")[-1]
+        found = read_asset(name)
+        if found is None:
+            return json_response({"ok": False, "error": "not found"}, 404)
+        body, ctype = found
+        # the image never changes: let the browser keep it, the API never
+        cache = "public, max-age=86400" if name.endswith(".png") else "no-store"
+        return http_response(body, ctype=ctype, cache=cache)
+
+    def login_page(self, lang: str = "en", error: str = "") -> str:
+        return login_page(lang, error=error, version=__version__, product=__product__)
+
+    # ------------------------------------------------------- login handling
+    def handle_login(self, req: Request, peer_ip: str) -> bytes:
+        """A real form login; the Basic-auth prompt stays for scripts."""
+        if self._locked_out(peer_ip):
+            return http_response(
+                self.login_page(str(req.query.get("lang") or "en"),
+                                login_error(str(req.query.get("lang") or "en"),
+                                            "locked")).encode("utf-8"),
+                429)
+        form = req.form()
+        if not self.password:
+            return http_response(b"", 303, extra={"Location": "/"})
+        user, password = form.get("user", ""), form.get("password", "")
+        if not (hmac.compare_digest(str(user), self.user)
+                and hmac.compare_digest(str(password), self.password)):
+            self._register_failure(peer_ip, req)
+            return http_response(
+                self.login_page(str(form.get("lang") or "en"),
+                                login_error(str(form.get("lang") or "en"))).encode("utf-8"),
+                401)
+        return http_response(b"", 303, extra={
+            "Location": "/",
+            "Set-Cookie": (f"{SESSION_COOKIE}={self._session_value()}; "
+                           "Path=/; HttpOnly; SameSite=Lax")})
+
+    def create_login_token(self, req: Request) -> bytes:
+        """Mint a single-use link for this panel (the Kariz-style hand-off)."""
+        body = req.json()
+        ttl = clamp(float(body.get("ttl") or LOGIN_TOKEN_TTL), 30.0, 86400.0)
+        made = self.login_tokens.create(str(body.get("label") or "panel"), ttl)
+        host = req.headers.get("host") or f"{self.host}:{self.port}"
+        return json_response({"ok": True, "url": f"http://{host}/?t={made['token']}",
+                              "expires_in": made["expires_in"],
+                              "tokens": self.login_tokens.snapshot()})
+
+    # ------------------------------------------------------- profile/tuning
+    def set_profile(self, body: dict) -> bytes:
+        """`simurgh tune <profile>` from the panel."""
+        from . import tune
+
+        cfg = self.load_config()
+        if cfg is None:
+            return json_response({"ok": False, "error": "no readable config"}, 400)
+        try:
+            profile = tune.get(str(body.get("profile") or ""))
+        except KeyError as exc:
+            return json_response({"ok": False,
+                                  "error": str(exc.args[0] if exc.args else exc)}, 400)
+        changes = tune.apply(cfg, self.role, profile.name)
+        if changes:
+            try:
+                save_exit(cfg, self.home.exit_cfg) if self.role == "exit" \
+                    else save_relay(cfg, self.home.relay_cfg)
+            except OSError as exc:
+                return json_response({"ok": False, "error": str(exc)}, 500)
+            if self.node is not None:
+                self.node.cfg = cfg
+        return json_response({"ok": True, "profile": profile.name, "changes": changes,
+                              "note": "take effect after a restart"})
+
+    # ----------------------------------------------------------- the wizard
+    def wizard(self, body: dict) -> bytes:
+        """Preview, apply (with a backup) or roll back a configuration plan."""
+        step = str(body.get("step") or "preview")
+        plan = body.get("plan") or {}
+        if not isinstance(plan, dict):
+            return json_response({"ok": False, "error": "the plan must be an object"}, 400)
+        path = self.home.exit_cfg if self.role == "exit" else self.home.relay_cfg
+        if step == "rollback":
+            ok, info = rollback(path, str(body.get("backup") or ""))
+            if ok and self.node is not None:
+                reloaded = self.load_config()
+                if reloaded is not None:
+                    self.node.cfg = reloaded
+            return json_response({"ok": ok, "from": info,
+                                  "error": "" if ok else info})
+        cfg = self.load_config()
+        if cfg is None:
+            return json_response({"ok": False, "error": "no readable config"}, 400)
+        problem = self.plan_problem(plan)
+        if step == "preview":
+            return json_response({"ok": not problem, "error": problem,
+                                  "changes": [] if problem else plan_changes(cfg, self.role, plan)})
+        if step != "apply":
+            return json_response({"ok": False, "error": f"unknown step {step!r}"}, 400)
+        if problem:
+            return json_response({"ok": False, "error": problem}, 400)
+        saved = backup(path)
+        changes = apply_plan(cfg, self.role, plan)
+        try:
+            save_exit(cfg, path) if self.role == "exit" else save_relay(cfg, path)
+        except OSError as exc:
+            return json_response({"ok": False, "error": str(exc)}, 500)
+        if self.node is not None:
+            self.node.cfg = cfg
+        return json_response({"ok": True, "changes": changes, "backup": saved})
+
+    def plan_problem(self, plan: dict) -> str:
+        """The first thing wrong with a wizard plan, or '' when it is sane."""
+        carrier = str(plan.get("carrier") or "").strip().lower()
+        if carrier and carrier not in CARRIERS:
+            return f"unknown carrier {carrier!r}"
+        try:
+            port = int(plan.get("port") or 0)
+        except (TypeError, ValueError):
+            return "the tunnel port must be a number"
+        if port and not (1 <= port <= 65535):
+            return "the tunnel port is outside 1-65535"
+        mapping = str(plan.get("mapping") or "").strip()
+        if mapping:
+            listen, _, target = mapping.partition(":")
+            try:
+                listen_port = int(listen)
+                target_port = int(target or listen)
+            except ValueError:
+                return "the first port must look like listen:target"
+            if not (1 <= listen_port <= 65535 and 1 <= target_port <= 65535):
+                return "the first port is outside 1-65535"
+        try:
+            if int(plan.get("split") or 0) < 0:
+                return "the split must be 0 or more"
+        except (TypeError, ValueError):
+            return "the split must be a number"
+        if self.role == "relay" and not str(plan.get("host") or "").strip() \
+                and not mapping and not str(plan.get("carrier") or "").strip():
+            return "the foreign server address is required"
+        return ""
+
+    # ------------------------------------------------------------ updates
+    async def update_check(self) -> bytes:
+        from . import update as updater
+
+        loop = asyncio.get_running_loop()
+        try:
+            info = await loop.run_in_executor(None, updater.check)
+        except Exception as exc:
+            return json_response({"ok": False, "error": str(exc)}, 502)
+        return json_response({"ok": True, "update_available": bool(info.get("available")),
+                              "version": info.get("current"), "latest": info.get("latest"),
+                              "tag": info.get("tag"), "notes_url": info.get("notes_url")})
+
+    # ---------------------------------------------------------- status/data
+    def load_config(self):
+        """This role's config, or None when it cannot be read."""
+        path = self.home.exit_cfg if self.role == "exit" else self.home.relay_cfg
+        try:
+            return load_exit(path) if self.role == "exit" else load_relay(path)
+        except (ConfigError, OSError):
+            return None
+
+    def engine_name(self) -> str:
+        """Which data plane is actually going to run (see simurgh/engines.py)."""
+        from . import engines
+
+        cfg = self.load_config()
+        declared = str(getattr(cfg, "engine", "") or "")
+        found = engines.find_binary(self.home)
+        if declared == "python":
+            return "python"
+        if declared == "go" and found:
+            return "go"
+        return "go" if found else "python"
+
+    def certificates(self) -> list[dict]:
+        """Every certificate this role serves, with days left (see simurgh/acme)."""
+        from .acme import status as cert_status
+
+        cfg = self.load_config()
+        if cfg is None:
+            return []
+        try:
+            return cert_status(cfg, self.role)
+        except Exception:                                      # pragma: no cover
+            return []
+
+    def layout_payload(self) -> dict:
+        """The map, the cards and the chart in one payload."""
+        payload = build_layout(self.status(), self.role, self.history, self.rates,
+                               certificates=self.certificates(),
+                               engine=self.engine_name())
+        payload["ok"] = True
+        payload["panel"]["tokens"] = self.login_tokens.snapshot()
+        self.last_layout = payload
+        return payload
+
+    # --------------------------------------------------------------- pairing
+    def pairing_state(self) -> dict:
+        """Whether this server still waits for its other half.
+
+        A relay installed with ``--pair-later`` has no token and no exit yet;
+        the panel then shows the pairing page instead of pretending to be a
+        working tunnel.
+        """
+        if self.role != "relay":
+            return {"paired": True, "required": False, "exit": ""}
+        cfg = getattr(self.node, "cfg", None)
+        if cfg is None:
+            try:
+                cfg = load_relay(self.home.relay_cfg)
+            except (ConfigError, OSError):
+                return {"paired": True, "required": False, "exit": ""}
+        return {"paired": cfg.paired, "required": not cfg.paired,
+                "exit": cfg.exit.describe() if cfg.paired else ""}
+
+    async def pair(self, body: dict) -> bytes:
+        """Complete an unpaired relay from the exit's setup link.
+
+        The browser half of ``simurgh join '<link>'``: the link brings the
+        secret and the exit, while everything this install already chose (the
+        panel port, the engine, the limits, the ports added here) stays.  With
+        a live node the tunnel starts dialing immediately.
+        """
+        if self.role != "relay":
+            return json_response({"ok": False, "error": "only the relay is paired"}, 400)
+        try:
+            cfg = load_relay(self.home.relay_cfg)
+        except (ConfigError, OSError) as exc:
+            return json_response({"ok": False, "error": str(exc)}, 400)
+        if cfg.reverse:
+            return json_response(
+                {"ok": False, "error": "this relay waits for its exit; run "
+                                       "`simurgh link` here and import that link "
+                                       "on the foreign server"}, 400)
+        if cfg.paired:
+            return json_response(
+                {"ok": False, "error": "this relay is already paired; "
+                                       "`simurgh join --force` replaces the exit"},
+                409)
+        link = str((body or {}).get("link") or "").strip()
+        if not link:
+            return json_response({"ok": False, "error": "paste the setup link first"}, 400)
+        from .links import LinkError, merge_relay_payload, relay_payload_from_link
+
+        try:
+            payload = await asyncio.to_thread(relay_payload_from_link, link, 12.0)
+            merged = merge_relay_payload(cfg, payload)
+        except LinkError as exc:
+            return json_response({"ok": False, "error": str(exc)}, 400)
+        except (KeyError, ValueError, ConfigError) as exc:
+            return json_response({"ok": False, "error": f"the link is incomplete: {exc}"}, 400)
+        backup_file = backup(self.home.relay_cfg, "pair")
+        try:
+            save_relay(cfg, self.home.relay_cfg)
+        except OSError as exc:
+            return json_response({"ok": False, "error": str(exc)}, 500)
+        applied = "restart"
+        if self.node is not None:
+            self.node.cfg = cfg
+            supervisor = getattr(self.node, "supervisor", None)
+            if supervisor is not None:
+                supervisor.cfg = cfg
+            try:
+                await self.node.rebind()
+                self.node.reconnect()
+                applied = "live"
+            except Exception as exc:        # pragma: no cover - defensive
+                self.last_error = f"pairing applied on restart: {exc}"
+                applied = "restart"
+        self.last_layout = {}
+        return json_response({
+            "ok": True, "exit": merged["exit"], "mappings": merged["mappings"],
+            "added": merged["added"], "applied": applied, "backup": backup_file,
+            "note": ("the tunnel is dialing now" if applied == "live"
+                     else "restart the service to apply"),
+        })
+
     # ---------------------------------------------------------- status/data
     def status(self) -> dict:
         node_status: dict = {}
@@ -303,18 +713,204 @@ class Panel:
                 node_status = json.loads(self.state_path.read_text()).get(self.role, {})
             except (OSError, ValueError):
                 node_status = {}
+        alerts = getattr(self.node, "alerts", None)
+        pairing = self.pairing_state()
         panel = {
             "role": self.role,
+            "paired": pairing["paired"],
+            "pairing_required": pairing["required"],
             "uptime": time.time() - self.started_at,
             "requests": self.requests,
             "port": self.port,
             "user": self.user,
             "error": self.last_error,
+            "lockouts": self.lockouts,
+            "failed_logins": sum(self.failed.values()),
+            "alerts": alerts.snapshot() if alerts is not None else None,
         }
         return {
             "ok": True, "product": __product__, "version": __version__,
             "now": time.time(), "panel": panel, "node": node_status,
         }
+
+    # ------------------------------------------------------------- metrics
+    def metrics(self) -> str:
+        """Prometheus exposition text for the node behind this panel.
+
+        Everything here comes from the same status the panel shows, so it works
+        for either engine: with the Python engine the numbers are read live, and
+        with the Go engine they come from the ``state.json`` that engine keeps
+        up to date.  Scrapers can authenticate with Basic auth (or the session
+        cookie), exactly like the rest of the API.
+        """
+        status = self.status()
+        node = status.get("node") or {}
+        panel = status.get("panel") or {}
+        role = str(status.get("role") or self.role)
+
+        def esc(value) -> str:
+            text = str(value if value is not None else "")
+            return (text.replace("\\", "\\\\").replace('"', '\\"')
+                    .replace("\n", " "))
+
+        def labels(**pairs) -> str:
+            items = [f'{k}="{esc(v)}"' for k, v in pairs.items()
+                     if v is not None and v != ""]
+            return "{" + ",".join(items) + "}" if items else ""
+
+        def number(value) -> str:
+            try:
+                if isinstance(value, bool):
+                    return "1" if value else "0"
+                if isinstance(value, int):
+                    return str(value)
+                return repr(float(value))
+            except (TypeError, ValueError):
+                return "0"
+
+        lines: list[str] = []
+        meta = labels(role=role, version=__version__, product=__product__)
+
+        def emit(name: str, help_text: str, kind: str = "gauge") -> None:
+            lines.append(f"# HELP {name} {help_text}")
+            lines.append(f"# TYPE {name} {kind}")
+
+        emit("simurgh_up", "1 while this node is serving.")
+        lines.append(f"simurgh_up{meta} 1")
+
+        emit("simurgh_uptime_seconds", "Seconds since the node started.", "counter")
+        lines.append(f"simurgh_uptime_seconds{meta} "
+                     f"{number(node.get('uptime', panel.get('uptime', 0)))}")
+
+        emit("simurgh_panel_requests_total", "Panel requests served.", "counter")
+        lines.append(f"simurgh_panel_requests_total{meta} "
+                     f"{number(panel.get('requests', 0))}")
+
+        emit("simurgh_panel_lockouts_total",
+             "Addresses blocked after too many failed logins.", "counter")
+        lines.append(f"simurgh_panel_lockouts_total{meta} "
+                     f"{number(panel.get('lockouts', 0))}")
+        emit("simurgh_panel_failed_logins",
+             "Wrong passwords currently counted against an address.")
+        lines.append(f"simurgh_panel_failed_logins{meta} "
+                     f"{number(panel.get('failed_logins', 0))}")
+
+        alerts = panel.get("alerts") or {}
+        emit("simurgh_alerts_sent_total", "Alerts delivered.", "counter")
+        lines.append(f"simurgh_alerts_sent_total{meta} "
+                     f"{number(alerts.get('sent', 0))}")
+        emit("simurgh_alerts_failed_total", "Alerts that could not be delivered.",
+             "counter")
+        lines.append(f"simurgh_alerts_failed_total{meta} "
+                     f"{number(alerts.get('failed', 0))}")
+        emit("simurgh_alerts_enabled",
+             "1 when a telegram/webhook alert channel is configured.")
+        lines.append(f"simurgh_alerts_enabled{meta} "
+                     f"{number(bool(alerts.get('enabled')))}")
+
+        emit("simurgh_tunnel_connected", "1 when a tunnel to the other side is up.")
+        lines.append(f"simurgh_tunnel_connected{meta} "
+                     f"{number(bool(node.get('connected')))}")
+        emit("simurgh_tunnel_connections", "Live tunnel connections.")
+        lines.append(f"simurgh_tunnel_connections{meta} "
+                     f"{number(node.get('connections', 0))}")
+        emit("simurgh_tunnel_rtt_seconds", "RTT of the first live tunnel.")
+        lines.append(f"simurgh_tunnel_rtt_seconds{meta} "
+                     f"{number(float(node.get('rtt_ms') or 0) / 1000.0)}")
+        emit("simurgh_reconnects_total", "Tunnel (re)connections since start.",
+             "counter")
+        lines.append(f"simurgh_reconnects_total{meta} "
+                     f"{number(node.get('reconnects', 0))}")
+        emit("simurgh_streams", "Live multiplexed streams.")
+        lines.append(f"simurgh_streams{meta} {number(node.get('streams', 0))}")
+
+        totals = ((node.get("stats") or {}).get("totals") or {})
+        emit("simurgh_bytes_in_total", "Bytes received from users.", "counter")
+        lines.append(f"simurgh_bytes_in_total{meta} "
+                     f"{number(totals.get('in', totals.get('in_bytes', 0)))}")
+        emit("simurgh_bytes_out_total", "Bytes sent to users.", "counter")
+        lines.append(f"simurgh_bytes_out_total{meta} "
+                     f"{number(totals.get('out', totals.get('out_bytes', 0)))}")
+        emit("simurgh_blocked_total",
+             "Connections refused because a mapping was over its quota.",
+             "counter")
+        lines.append(f"simurgh_blocked_total{meta} {number(node.get('blocked', 0))}")
+
+        mappings = node.get("mappings") or []
+        if mappings:
+            emit("simurgh_mapping_bytes_in_total", "Bytes per mapping (users).",
+                 "counter")
+            emit("simurgh_mapping_bytes_out_total", "Bytes per mapping (answers).",
+                 "counter")
+            emit("simurgh_mapping_connections_total",
+                 "Connections accepted per mapping.", "counter")
+            emit("simurgh_mapping_active", "Live connections per mapping.")
+            emit("simurgh_mapping_errors_total", "Errors per mapping.", "counter")
+            emit("simurgh_mapping_up", "1 when the mapping is bound.")
+            stats_by_key = ((node.get("stats") or {}).get("mappings") or {})
+            for mapping in mappings:
+                stats = mapping.get("stats") or stats_by_key.get(mapping.get("key")) or {}
+                name = labels(key=mapping.get("key"), name=mapping.get("name"),
+                              listen=mapping.get("listen"),
+                              target=mapping.get("target"), role=role)
+                lines.append("simurgh_mapping_bytes_in_total"
+                             f"{name} {number(stats.get('in_bytes', 0))}")
+                lines.append("simurgh_mapping_bytes_out_total"
+                             f"{name} {number(stats.get('out_bytes', 0))}")
+                lines.append("simurgh_mapping_connections_total"
+                             f"{name} {number(stats.get('conns', 0))}")
+                lines.append("simurgh_mapping_active"
+                             f"{name} {number(stats.get('active', 0))}")
+                lines.append("simurgh_mapping_errors_total"
+                             f"{name} {number(stats.get('errors', 0))}")
+                lines.append("simurgh_mapping_up"
+                             f"{name} {number(bool(mapping.get('bound', True)))}")
+
+        # traffic ledger (day / month / all time) -- both engines write it
+        rows = node.get("traffic") or []
+        if rows:
+            emit("simurgh_traffic_bytes_total",
+                 "Ledger traffic per key and period.", "counter")
+            for row in rows:
+                key = row.get("key")
+                for period in ("today", "month", "total"):
+                    lines.append("simurgh_traffic_bytes_total"
+                                 f'{labels(key=key, period=period, role=role)} '
+                                 f"{number(row.get(period, 0))}")
+
+        # quotas, when the node reports them
+        quotas = node.get("quotas") or {}
+        if isinstance(quotas, dict) and quotas:
+            emit("simurgh_quota_limit_bytes", "Configured quota per mapping.")
+            emit("simurgh_quota_used_bytes", "Quota already used per mapping.")
+            emit("simurgh_quota_exceeded", "1 when a mapping is over its quota.")
+            for key, state in quotas.items():
+                if not isinstance(state, dict):
+                    continue
+                name = labels(key=key, period=state.get("period"), role=role)
+                lines.append("simurgh_quota_limit_bytes"
+                             f"{name} {number(state.get('limit', 0))}")
+                lines.append("simurgh_quota_used_bytes"
+                             f"{name} {number(state.get('used', 0))}")
+                lines.append("simurgh_quota_exceeded"
+                             f"{name} {number(bool(state.get('exceeded')))}")
+
+        health = node.get("health") or {}
+        if isinstance(health, dict) and health:
+            emit("simurgh_exit_up", "1 when a pool endpoint answers.")
+            emit("simurgh_exit_rtt_seconds", "RTT per pool endpoint.")
+            for endpoint, state in health.items():
+                if not isinstance(state, dict):
+                    continue
+                name = labels(endpoint=endpoint, role=role)
+                lines.append("simurgh_exit_up"
+                             f"{name} {number(bool(state.get('up', True)))}")
+                rtt = state.get("rtt_ms")
+                if rtt is not None:
+                    lines.append("simurgh_exit_rtt_seconds"
+                                 f"{name} {number(float(rtt) / 1000.0)}")
+
+        return "\n".join(lines) + "\n"
 
     def config_dict(self) -> dict:
         path = self.home.exit_cfg if self.role == "exit" else self.home.relay_cfg
@@ -447,8 +1043,11 @@ class Panel:
             if self.role != "relay" or self.node is None:
                 return json_response({"ok": False, "error": "speed test runs on the relay"}, 400)
             seconds = clamp(float(body.get("seconds") or 6), 2, 20)
+            streams = int(clamp(float(body.get("streams") or 1), 1, 8))
             try:
-                result = await run_speedtest(self.node, seconds=seconds)
+                result = await run_speedtest(self.node, seconds=seconds,
+                                             streams=streams,
+                                             udp=bool(body.get("udp")))
             except Exception as exc:
                 return json_response({"ok": False, "error": str(exc)}, 500)
             return json_response({"ok": True, "speedtest": result})
@@ -588,11 +1187,8 @@ class Panel:
 
     # ------------------------------------------------------------ dashboard
     def dashboard(self) -> str:
-        """Serve the dashboard; the UI language is chosen in the browser."""
-        return DASHBOARD_HTML.replace("__ROLE__", self.role) \
-                             .replace("__VERSION__", __version__) \
-                             .replace("__PRODUCT__", __product__) \
-                             .replace("__I18N__", json.dumps(PANEL_I18N, ensure_ascii=False))
+        """Serve the shell; the UI language is chosen in the browser."""
+        return dashboard_html(self.role, __version__, __product__)
 
 
 def _mask(token: str) -> str:
@@ -615,422 +1211,3 @@ def _fingerprint(cfg: ExitConfig) -> str | None:
 # ------------------------------------------------------------------- html
 # UI strings for the dashboard: the panel ships English and Persian.
 # Keys are shared by the HTML (data-i18n attributes) and the JavaScript (t()).
-PANEL_I18N = {
-    "en": {
-        "state_connecting": "connecting…",
-        "refresh": "Refresh",
-        "card_tunnel": "Tunnel status",
-        "lbl_exit": "current exit",
-        "lbl_rtt": "round-trip time",
-        "lbl_uptime": "uptime",
-        "lbl_reconnects": "reconnects",
-        "lbl_tunnels": "tunnel connections",
-        "lbl_engine": "data engine",
-        "lbl_last_error": "last error",
-        "card_speed": "Live speed",
-        "download": "download",
-        "upload": "upload",
-        "lbl_total_down": "total download",
-        "lbl_total_up": "total upload",
-        "lbl_active": "active connections",
-        "card_tools": "Tools",
-        "btn_speedtest": "Speed test through the tunnel",
-        "btn_reconnect": "Reconnect",
-        "btn_restart": "Restart service",
-        "lbl_panel_port": "panel port",
-        "lbl_panel_requests": "panel requests",
-        "card_mappings": "Port forwardings (mappings)",
-        "th_name": "name",
-        "th_iran_port": "Iranian port",
-        "th_target": "target",
-        "th_type": "type",
-        "th_state": "state",
-        "form_listen": "Iranian port",
-        "form_target": "target port (foreign)",
-        "form_name": "name (optional)",
-        "btn_add": "Add",
-        "hint_mappings": "A new mapping starts working right away and is saved to the config file.",
-        "card_logs": "Live log",
-        "btn_load_logs": "Load the log",
-        "footer": "transparent tunnel between an Iranian and a foreign server",
-        "no": "no",
-        "yes": "yes",
-        "state_connected": "connected",
-        "state_down": "down",
-        "state_error": "cannot reach the panel",
-        "role_relay": "Iranian server (relay)",
-        "role_exit": "Foreign server (exit)",
-        "up": "up",
-        "down": "down",
-        "waiting_exit": "waiting for the foreign server",
-        "waiting_relay": "waiting for a relay",
-        "relays_connected": "connected relays: {n}",
-        "no_error": "none",
-        "dur_days": "{d} days and {h} h",
-        "dur_hours": "{h} h and {m} min",
-        "dur_minutes": "{m} min",
-        "dur_seconds": "{s} s",
-        "state_on": "on",
-        "state_off": "off",
-        "btn_turn_off": "turn off",
-        "btn_turn_on": "turn on",
-        "btn_delete": "delete",
-        "confirm_delete": "Delete this mapping?",
-        "toast_done": "done",
-        "toast_error": "error: {msg}",
-        "toast_conflict": "port conflict: {list}",
-        "toast_need_listen": "enter the Iranian port",
-        "toast_speed": "download: {down} Mbps / upload: {up} Mbps",
-        "logs_empty": "no log yet"
-    },
-    "fa": {
-        "state_connecting": "در حال اتصال…",
-        "refresh": "به‌روزرسانی",
-        "card_tunnel": "وضعیت تونل",
-        "lbl_exit": "اکسای مقصد",
-        "lbl_rtt": "پینگ",
-        "lbl_uptime": "مدت اتصال",
-        "lbl_reconnects": "تعداد اتصال‌ها",
-        "lbl_tunnels": "اتصال‌های تونل",
-        "lbl_engine": "موتور داده",
-        "lbl_last_error": "آخرین خطا",
-        "card_speed": "سرعت لحظه‌ای",
-        "download": "دانلود",
-        "upload": "آپلود",
-        "lbl_total_down": "کل دانلود",
-        "lbl_total_up": "کل آپلود",
-        "lbl_active": "اتصال‌های فعال",
-        "card_tools": "ابزارها",
-        "btn_speedtest": "تست سرعت از تونل",
-        "btn_reconnect": "اتصال مجدد",
-        "btn_restart": "ری‌استارت سرویس",
-        "lbl_panel_port": "پورت پنل",
-        "lbl_panel_requests": "درخواست‌های پنل",
-        "card_mappings": "پورت‌های فوروارد (مپینگ‌ها)",
-        "th_name": "نام",
-        "th_iran_port": "پورت ایران",
-        "th_target": "مقصد",
-        "th_type": "نوع",
-        "th_state": "وضعیت",
-        "form_listen": "پورت ایران",
-        "form_target": "پورت مقصد (خارج)",
-        "form_name": "نام (اختیاری)",
-        "btn_add": "افزودن",
-        "hint_mappings": "مپینگ‌ها پس از افزودن، بلافاصله فعال می‌شوند و در فایل تنظیمات ذخیره می‌شوند.",
-        "card_logs": "لاگ زنده",
-        "btn_load_logs": "بارگذاری لاگ",
-        "footer": "تونل شفاف بین سرور ایران و سرور خارج",
-        "no": "خیر",
-        "yes": "بله",
-        "state_connected": "متصل",
-        "state_down": "قطع",
-        "state_error": "خطا در اتصال به پنل",
-        "role_relay": "سرور ایران (رله)",
-        "role_exit": "سرور خارج (اگزیت)",
-        "up": "برقرار",
-        "down": "قطع",
-        "waiting_exit": "در انتظار اتصال به سرور خارج",
-        "waiting_relay": "در انتظار اتصال رله",
-        "relays_connected": "رله‌های متصل: {n}",
-        "no_error": "بدون خطا",
-        "dur_days": "{d} روز و {h} ساعت",
-        "dur_hours": "{h} ساعت و {m} دقیقه",
-        "dur_minutes": "{m} دقیقه",
-        "dur_seconds": "{s} ثانیه",
-        "state_on": "فعال",
-        "state_off": "غیرفعال",
-        "btn_turn_off": "خاموش",
-        "btn_turn_on": "روشن",
-        "btn_delete": "حذف",
-        "confirm_delete": "حذف شود؟",
-        "toast_done": "انجام شد",
-        "toast_error": "خطا: {msg}",
-        "toast_conflict": "هشدار پورت تکراری: {list}",
-        "toast_need_listen": "پورت ایران را وارد کنید",
-        "toast_speed": "دانلود: {down} Mbps / آپلود: {up} Mbps",
-        "logs_empty": "لاگی موجود نیست"
-    }
-}
-
-DASHBOARD_HTML = r"""<!DOCTYPE html>
-<html lang="en" dir="ltr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__PRODUCT__</title>
-<style>
-:root{
-  --bg:#0b1020; --card:#141b31; --card2:#1b2440; --line:#26324f;
-  --fg:#e8edf7; --dim:#93a0bd; --ok:#3ddc97; --warn:#ffb454; --err:#ff6b81;
-  --accent:#5b8cff; --accent2:#22d3ee;
-}
-*{box-sizing:border-box}
-body{margin:0;background:linear-gradient(180deg,#0b1020,#0e1428 60%);color:var(--fg);
-  font-family:Vazirmatn,Tahoma,"Segoe UI",system-ui,sans-serif;font-size:15px}
-header{display:flex;align-items:center;gap:14px;padding:16px 22px;border-bottom:1px solid var(--line);
-  background:rgba(20,27,49,.7);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5;flex-wrap:wrap}
-header .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));
-  display:grid;place-items:center;font-weight:700}
-header h1{font-size:17px;margin:0;font-weight:600}
-header .sp{flex:1}
-.badge{padding:4px 10px;border-radius:999px;font-size:12px;border:1px solid var(--line);color:var(--dim)}
-.badge.ok{color:var(--ok);border-color:rgba(61,220,151,.4);background:rgba(61,220,151,.1)}
-.badge.err{color:var(--err);border-color:rgba(255,107,129,.4);background:rgba(255,107,129,.1)}
-main{padding:20px;max-width:1200px;margin:0 auto;display:grid;gap:16px;
-  grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
-.card h2{font-size:14px;margin:0 0 12px;color:var(--dim);font-weight:600}
-.big{font-size:26px;font-weight:700}
-.sub{color:var(--dim);font-size:12px;margin-top:4px}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.kv{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px dashed var(--line)}
-.kv:last-child{border-bottom:0}
-.kv span:first-child{color:var(--dim)}
-table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{padding:8px 6px;text-align:start;border-bottom:1px solid var(--line)}
-th{color:var(--dim);font-weight:600;font-size:12px}
-button{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:10px;
-  padding:8px 14px;cursor:pointer;font-family:inherit;font-size:14px}
-button:hover{border-color:var(--accent)}
-button.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));border:0;color:#04122b;font-weight:700}
-button.danger{color:var(--err);border-color:rgba(255,107,129,.4)}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-input,select{background:#0f1730;border:1px solid var(--line);border-radius:10px;color:var(--fg);
-  padding:8px 10px;font-family:inherit;font-size:14px;width:100%}
-label{display:block;color:var(--dim);font-size:12px;margin:8px 0 4px}
-pre{background:#0d1428;border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto;
-  max-height:320px;font-size:12px;direction:ltr;text-align:left}
-canvas{width:100%;height:70px}
-.muted{color:var(--dim)}
-.pill{padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line)}
-.pill.on{color:var(--ok);border-color:rgba(61,220,151,.4)}
-.pill.off{color:var(--dim)}
-.toast{position:fixed;inset-inline-start:20px;bottom:20px;background:var(--card2);border:1px solid var(--line);
-  padding:10px 16px;border-radius:12px;opacity:0;transition:.25s;z-index:9}
-.toast.show{opacity:1}
-footer{color:var(--dim);text-align:center;padding:24px;font-size:12px}
-</style>
-</head>
-<body>
-<header>
-  <div class="logo">S</div>
-  <h1>__PRODUCT__ <span class="muted">v__VERSION__</span></h1>
-  <span class="badge" id="role">__ROLE__</span>
-  <span class="badge" id="state" data-i18n="state_connecting">connecting…</span>
-  <div class="sp"></div>
-  <button id="lang" onclick="toggleLang()" title="Switch language">فا</button>
-  <button onclick="load()" data-i18n="refresh">Refresh</button>
-</header>
-
-<main>
-  <div class="card">
-    <h2 data-i18n="card_tunnel">Tunnel status</h2>
-    <div class="big" id="tunnel">—</div>
-    <div class="sub" id="tunnel_sub">—</div>
-    <div class="kv"><span data-i18n="lbl_exit">current exit</span><span id="exit">—</span></div>
-    <div class="kv"><span data-i18n="lbl_rtt">round-trip time</span><span id="rtt">—</span></div>
-    <div class="kv"><span data-i18n="lbl_uptime">uptime</span><span id="uptime">—</span></div>
-    <div class="kv"><span data-i18n="lbl_reconnects">reconnects</span><span id="reconnects">—</span></div>
-    <div class="kv"><span data-i18n="lbl_tunnels">tunnel connections</span><span id="tunnels">—</span></div>
-    <div class="kv"><span data-i18n="lbl_engine">data engine</span><span id="engine">—</span></div>
-    <div class="kv"><span data-i18n="lbl_last_error">last error</span><span id="last_error">—</span></div>
-  </div>
-
-  <div class="card">
-    <h2 data-i18n="card_speed">Live speed</h2>
-    <div class="grid2">
-      <div><div class="big" id="down">0</div><div class="sub" data-i18n="download">download</div></div>
-      <div><div class="big" id="up">0</div><div class="sub" data-i18n="upload">upload</div></div>
-    </div>
-    <canvas id="spark" width="600" height="140"></canvas>
-    <div class="kv"><span data-i18n="lbl_total_down">total download</span><span id="tot_in">0</span></div>
-    <div class="kv"><span data-i18n="lbl_total_up">total upload</span><span id="tot_out">0</span></div>
-    <div class="kv"><span data-i18n="lbl_active">active connections</span><span id="active">0</span></div>
-  </div>
-
-  <div class="card">
-    <h2 data-i18n="card_tools">Tools</h2>
-    <div class="row">
-      <button class="primary" onclick="act('speedtest',{seconds:6})" data-i18n="btn_speedtest">Speed test through the tunnel</button>
-      <button onclick="act('reconnect')" data-i18n="btn_reconnect">Reconnect</button>
-      <button onclick="act('restart')" data-i18n="btn_restart">Restart service</button>
-    </div>
-    <div style="margin-top:12px">
-      <div class="kv"><span data-i18n="lbl_panel_port">panel port</span><span id="panel_port">—</span></div>
-      <div class="kv"><span data-i18n="lbl_panel_requests">panel requests</span><span id="panel_req">—</span></div>
-    </div>
-  </div>
-
-  <div class="card" style="grid-column:1/-1">
-    <h2 data-i18n="card_mappings">Port forwardings (mappings)</h2>
-    <table id="mappings"><thead><tr>
-      <th data-i18n="th_name">name</th><th data-i18n="th_iran_port">Iranian port</th>
-      <th data-i18n="th_target">target</th><th data-i18n="th_type">type</th>
-      <th data-i18n="th_state">state</th><th></th>
-    </tr></thead><tbody></tbody></table>
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1;min-width:120px"><label data-i18n="form_listen">Iranian port</label><input id="m_listen" placeholder="443"></div>
-      <div style="flex:1;min-width:120px"><label data-i18n="form_target">target port (foreign)</label><input id="m_target" placeholder="443"></div>
-      <div style="flex:1;min-width:120px"><label data-i18n="form_name">name (optional)</label><input id="m_name" placeholder="panel"></div>
-      <div style="min-width:110px"><label>UDP</label><select id="m_udp"><option value="no">no</option><option value="yes">yes</option></select></div>
-      <button class="primary" style="align-self:flex-end" onclick="addMapping()" data-i18n="btn_add">Add</button>
-    </div>
-    <div class="sub" id="mapping_hint" data-i18n="hint_mappings"></div>
-  </div>
-
-  <div class="card" style="grid-column:1/-1">
-    <h2 data-i18n="card_logs">Live log</h2>
-    <pre id="logs">…</pre>
-    <div class="row"><button onclick="loadLogs()" data-i18n="btn_load_logs">Load the log</button></div>
-  </div>
-</main>
-<div class="toast" id="toast"></div>
-<footer>__PRODUCT__ v__VERSION__ — <span data-i18n="footer"></span></footer>
-
-<script>
-const I18N = __I18N__;
-const $ = (id) => document.getElementById(id);
-let series = [];
-let LANG = localStorage.getItem('simurgh_lang');
-if(!LANG){
-  LANG = ((navigator.language||navigator.userLanguage||'en').toLowerCase().startsWith('fa')) ? 'fa' : 'en';
-}
-if(!I18N[LANG]){ LANG = 'en'; }
-function t(key, vars){
-  const table = I18N[LANG] || {};
-  let s = (key in table) ? table[key] : (I18N.en[key] || key);
-  if(vars){ for(const k in vars){ s = s.split('{'+k+'}').join(vars[k]); } }
-  return s;
-}
-function applyLang(){
-  document.documentElement.lang = LANG;
-  document.documentElement.dir = (LANG === 'fa') ? 'rtl' : 'ltr';
-  document.querySelectorAll('[data-i18n]').forEach(el=>{ el.textContent = t(el.dataset.i18n); });
-  document.querySelectorAll('[data-i18n-ph]').forEach(el=>{ el.placeholder = t(el.dataset.i18nPh); });
-  const btn = $('lang'); if(btn){ btn.textContent = (LANG === 'fa') ? 'EN' : 'فا'; }
-  const sel = $('m_udp');
-  if(sel){ sel.options[0].textContent = t('no'); sel.options[1].textContent = t('yes'); }
-}
-function toggleLang(){
-  LANG = (LANG === 'fa') ? 'en' : 'fa';
-  localStorage.setItem('simurgh_lang', LANG);
-  applyLang(); load(); loadLogs();
-}
-function fmtBytes(n){
-  n = Number(n)||0; const u=['B','KB','MB','GB','TB']; let i=0;
-  while(n>=1024 && i<u.length-1){n/=1024;i++;}
-  return n.toFixed(n<10&&i>0?1:0)+' '+u[i];
-}
-function nTunnels(n){var t=n.tunnels;return Array.isArray(t)?t.length:(Number(t)||0);}
-function fmtRate(bps){ return fmtBytes(bps)+'/s'; }
-function fmtDuration(s){
-  s=Math.max(0,Math.floor(Number(s)||0));
-  const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
-  if(d) return t('dur_days', {d:d, h:h});
-  if(h) return t('dur_hours', {h:h, m:m});
-  if(m) return t('dur_minutes', {m:m});
-  return t('dur_seconds', {s:s});
-}
-function toast(msg, bad){
-  const el=$('toast'); el.textContent=msg; el.style.borderColor = bad? 'var(--err)':'var(--line)';
-  el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),2600);
-}
-async function load(){
-  try{
-    const r = await fetch('/api/status', {cache:'no-store'});
-    const d = await r.json();
-    const n = d.node || {}, rates = (n.stats && n.stats.rates) || {}, tot = (n.stats && n.stats.totals) || {};
-    const nTunnels = Array.isArray(n.tunnels) ? n.tunnels.length : (Number(n.tunnels)||0);
-    const connected = (d.panel.role==='relay') ? !!n.connected : (nTunnels > 0);
-    $('state').textContent = connected ? t('state_connected') : t('state_down');
-    $('state').className = 'badge ' + (connected ? 'ok' : 'err');
-    $('role').textContent = d.panel.role==='relay' ? t('role_relay') : t('role_exit');
-    $('tunnel').textContent = connected ? t('up') : t('down');
-    $('tunnel').style.color = connected ? 'var(--ok)' : 'var(--err)';
-    $('tunnel_sub').textContent = (d.panel.role==='relay')
-       ? (n.current_exit || t('waiting_exit'))
-       : (nTunnels ? t('relays_connected', {n:nTunnels}) : t('waiting_relay'));
-    $('exit').textContent = (d.panel.role==='relay')
-       ? (n.current_exit || (n.tunnel_listen && n.tunnel_listen[0]) || '—')
-       : ((n.exit_info && (n.exit_info.name||'-')) || '—');
-    $('rtt').textContent = n.rtt_ms ? (n.rtt_ms.toFixed(1)+' ms') : '—';
-    $('uptime').textContent = fmtDuration(n.uptime);
-    $('reconnects').textContent = (n.reconnects!=null?n.reconnects:'—');
-    $('tunnels').textContent = (n.connections!=null?n.connections:(n.tunnel_count!=null?n.tunnel_count:'—'));
-    $('last_error').textContent = n.last_error || (n.error||'') || t('no_error');
-    const down = rates.in_rate||rates.in_bps||0, up = rates.out_rate||rates.out_bps||0;
-    $('down').textContent = fmtRate(down); $('up').textContent = fmtRate(up);
-    $('tot_in').textContent = fmtBytes(tot.in!=null?tot.in:(rates.in_total||tot.in_bytes||0));
-    $('tot_out').textContent = fmtBytes(tot.out!=null?tot.out:(rates.out_total||tot.out_bytes||0));
-    $('active').textContent = (tot.conns!=null?tot.conns:(tot.active!=null?tot.active:(n.streams||0)));
-    $('panel_port').textContent = d.panel.port; $('panel_req').textContent = d.panel.requests;
-    if($('engine')){ $('engine').textContent = (n.engine||'python').toUpperCase(); }
-    series.push(down); if(series.length>90) series.shift();
-    draw();
-    renderMappings(n.mappings||[]);
-  }catch(e){ $('state').textContent = t('state_error'); $('state').className='badge err'; }
-}
-function draw(){
-  const c = $('spark'), ctx = c.getContext('2d');
-  const w = c.width, h = c.height; ctx.clearRect(0,0,w,h);
-  const max = Math.max(1, ...series);
-  ctx.strokeStyle='#26324f'; ctx.beginPath(); ctx.moveTo(0,h-1); ctx.lineTo(w,h-1); ctx.stroke();
-  const g = ctx.createLinearGradient(0,0,w,0); g.addColorStop(0,'#5b8cff'); g.addColorStop(1,'#22d3ee');
-  ctx.strokeStyle=g; ctx.lineWidth=2; ctx.beginPath();
-  series.forEach((v,i)=>{ const x = series.length<2?0:(i/(series.length-1))*w; const y = h-4-(v/max)*(h-12);
-    i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
-  ctx.stroke();
-}
-function renderMappings(rows){
-  const tb = $('mappings').querySelector('tbody'); tb.innerHTML='';
-  rows.forEach(m=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${m.name||'—'}</td><td>${m.listen}</td>
-      <td>${m.target_host||'127.0.0.1'}:${m.target_port}</td>
-      <td>${m.udp?'UDP':'TCP'}</td>
-      <td><span class="pill ${m.enabled?'on':'off'}">${m.enabled?t('state_on'):t('state_off')}</span></td>
-      <td></td>`;
-    const cell = tr.lastElementChild;
-    const tog = document.createElement('button'); tog.textContent = m.enabled? t('btn_turn_off') : t('btn_turn_on');
-    tog.onclick = ()=>mapping({action:'toggle', key:m.key});
-    const del = document.createElement('button'); del.textContent = t('btn_delete'); del.className='danger';
-    del.style.marginInlineStart='6px';
-    del.onclick = ()=>{ if(confirm(t('confirm_delete'))) mapping({action:'remove', key:m.key}); };
-    cell.append(tog, del); tb.appendChild(tr);
-  });
-}
-async function mapping(payload){
-  const r = await fetch('/api/mappings',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(payload)});
-  const d = await r.json();
-  toast(d.ok ? t('toast_done') : t('toast_error', {msg:(d.error||'')}), !d.ok);
-  if(d.port_conflicts && d.port_conflicts.length){ toast(t('toast_conflict', {list:d.port_conflicts.join(', ')}), true); }
-  load();
-}
-function addMapping(){
-  const listen = parseInt($('m_listen').value||'0',10);
-  if(!listen){ toast(t('toast_need_listen'), true); return; }
-  mapping({action:'add', listen, target_port: parseInt($('m_target').value||listen,10),
-           name:$('m_name').value, udp: $('m_udp').value==='yes'});
-  $('m_listen').value=''; $('m_target').value=''; $('m_name').value='';
-}
-async function act(name, extra){
-  const body = Object.assign({name}, extra||{});
-  const r = await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(body)});
-  const d = await r.json();
-  if(name==='speedtest' && d.ok){
-    toast(t('toast_speed', {down:d.speedtest.download_mbps.toFixed(1), up:d.speedtest.upload_mbps.toFixed(1)}));
-  } else { toast(d.ok ? t('toast_done') : t('toast_error', {msg:(d.error||'')}), !d.ok); }
-  load();
-}
-async function loadLogs(){
-  const r = await fetch('/api/logs?lines=150'); const d = await r.json();
-  $('logs').textContent = (d.lines||[]).join('\n') || t('logs_empty');
-}
-applyLang();
-load(); loadLogs(); setInterval(load, 2000);
-</script>
-</body>
-</html>
-"""

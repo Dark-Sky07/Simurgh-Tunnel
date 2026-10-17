@@ -253,9 +253,10 @@ func Fingerprint(cert tls.Certificate) (string, error) {
 type Server struct {
 	Carrier   string
 	Token     string
-	Fallback  string // "decoy", "close" or "site:host:port"
-	DecoyFile string // optional page to serve instead of the nginx default
-	Padding   bool   // raw carrier: hide exact frame sizes
+	Tokens    []string // extra credentials, for a multi-tenant exit
+	Fallback  string   // "decoy", "close" or "site:host:port"
+	DecoyFile string   // optional page to serve instead of the nginx default
+	Padding   bool     // raw carrier: hide exact frame sizes
 	Cert      tls.Certificate
 	replay    *proto.ReplayCache
 }
@@ -267,6 +268,16 @@ func NewServer(name, token string, cert tls.Certificate, fallback, decoyFile str
 	}
 	return &Server{Carrier: strings.ToLower(name), Token: token, Fallback: fallback,
 		DecoyFile: decoyFile, Cert: cert, replay: proto.NewReplayCache()}
+}
+
+// accept verifies a client header against every configured token and reports
+// which one signed it.
+func (s *Server) accept(header []byte) (int64, string, bool) {
+	if len(s.Tokens) == 0 {
+		ts, ok := proto.CheckClientHeader(header, s.Token)
+		return ts, s.Token, ok
+	}
+	return proto.MatchClientHeader(header, s.Tokens)
 }
 
 // Serve handles one accepted connection. onChannel is called only when the
@@ -304,14 +315,14 @@ func (s *Server) servePlain(conn net.Conn, onChannel func(mux.Channel)) {
 		conn.Close()
 		return
 	}
-	ts, ok := proto.CheckClientHeader(hdr, s.Token)
+	ts, token, ok := s.accept(hdr)
 	if !ok || !s.replay.Add(hdr[9:25]) {
 		// Not our token: behave like the web server this port pretends to be.
 		serveDecoy(conn, nil, decoyOptions{fallback: s.Fallback, decoyFile: s.DecoyFile}, replayHead(hdr, br))
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
-	if _, err := conn.Write(proto.ServerHeader(s.Token, ts, time.Now().Unix())); err != nil {
+	if _, err := conn.Write(proto.ServerHeader(token, ts, time.Now().Unix())); err != nil {
 		conn.Close()
 		return
 	}
@@ -340,7 +351,7 @@ func (s *Server) serveTLS(conn net.Conn, onChannel func(mux.Channel)) {
 		conn.Close()
 		return
 	}
-	ts, ok := proto.CheckClientHeader(hdr, s.Token)
+	ts, token, ok := s.accept(hdr)
 	if !ok || !s.replay.Add(hdr[9:25]) {
 		// a real website would answer here; so do we
 		_ = tlsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -349,7 +360,7 @@ func (s *Server) serveTLS(conn net.Conn, onChannel func(mux.Channel)) {
 		return
 	}
 	_ = tlsConn.SetReadDeadline(time.Time{})
-	if _, err := tlsConn.Write(proto.ServerHeader(s.Token, ts, time.Now().Unix())); err != nil {
+	if _, err := tlsConn.Write(proto.ServerHeader(token, ts, time.Now().Unix())); err != nil {
 		conn.Close()
 		return
 	}
@@ -387,13 +398,13 @@ func (s *Server) serveWSS(conn net.Conn, onChannel func(mux.Channel)) {
 		conn.Close()
 		return
 	}
-	ts, ok := proto.CheckClientHeader(frame, s.Token)
+	ts, token, ok := s.accept(frame)
 	if !ok || !s.replay.Add(frame[9:25]) {
 		ws.closeWithCode(1008)
 		conn.Close()
 		return
 	}
-	if err := ws.writeMessage(proto.ServerHeader(s.Token, ts, time.Now().Unix())); err != nil {
+	if err := ws.writeMessage(proto.ServerHeader(token, ts, time.Now().Unix())); err != nil {
 		conn.Close()
 		return
 	}
@@ -417,6 +428,8 @@ type ClientOptions struct {
 	Split       int // tls/wss: bytes in the first TCP segment of the ClientHello
 	Timeout     time.Duration
 	Token       string
+	NoDelay     bool // Nagle off (config `tcp_nodelay`, default true)
+	Keepalive   int  // keepalive idle time in seconds, 0 = off
 }
 
 // Dial opens an authenticated channel to the other side.
@@ -432,7 +445,7 @@ func Dial(opt ClientOptions) (mux.Channel, error) {
 		return dialRaw(opt)
 
 	case "plain":
-		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout)
+		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout, opt)
 		if err != nil {
 			return nil, err
 		}
@@ -478,7 +491,7 @@ func Dial(opt ClientOptions) (mux.Channel, error) {
 				return nil
 			}
 		}
-		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout)
+		conn, err := dialTCP(opt.Address, opt.Port, opt.Timeout, opt)
 		if err != nil {
 			return nil, err
 		}
@@ -575,14 +588,35 @@ func splitFirst(conn net.Conn, first int) net.Conn {
 	return &splitConn{Conn: conn, first: first}
 }
 
-func dialTCP(host string, port int, timeout time.Duration) (net.Conn, error) {
+// ApplySocketOptions is the one place the config's socket-option keys
+// (`tcp_nodelay`, `tcp_keepalive`) reach a socket, for the tunnel dials and for
+// the user/service connections a node accepts or opens.  It matches the Python
+// engine's simurgh.util.apply_socket_opts: Nagle is off unless asked otherwise,
+// and a keepalive of 0 means "off" rather than the runtime's default.
+func ApplySocketOptions(conn net.Conn, noDelay bool, keepalive int) {
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tc.SetNoDelay(noDelay)
+	if keepalive > 0 {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(time.Duration(keepalive) * time.Second)
+		return
+	}
+	_ = tc.SetKeepAlive(false)
+}
+
+func dialTCP(host string, port int, timeout time.Duration, opt ...ClientOptions) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprint(port)), timeout)
 	if err != nil {
 		return nil, err
 	}
-	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)
+	noDelay, keepalive := true, 0
+	if len(opt) > 0 {
+		noDelay, keepalive = opt[0].NoDelay, opt[0].Keepalive
 	}
+	ApplySocketOptions(conn, noDelay, keepalive)
 	return conn, nil
 }
 

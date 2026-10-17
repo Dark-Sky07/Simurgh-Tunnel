@@ -1,6 +1,6 @@
 # 🕊️ Simurgh Tunnel
 
-**English** · [فارسی](README.fa.md) &nbsp;|&nbsp; [Install](#install) · [Configuration](docs/CONFIGURATION.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Security](#security)
+**English** · [فارسی](README.fa.md) &nbsp;|&nbsp; [Install](#install) · [Packages](docs/PACKAGING.md) · [Panel](docs/PANEL.md) · [Configuration](docs/CONFIGURATION.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Security](#security)
 
 A transparent, multiplexed **TCP/UDP port-forwarding tunnel** between one or more
 Iranian servers (relay) and one or more foreign servers (exit) — the same class
@@ -24,7 +24,7 @@ customer ──same config, Iran IP──► [Iran relay] ══one disguised tu
 | Speed and stability | One multiplexed connection (`mux`) serves every user and every port; no re-encryption of user traffic, credit-based flow control instead of buffering. The per-stream window **grows itself** on long paths (bandwidth-delay product), and `connections = 2..16` keeps a pool of tunnels so one TCP flow — or one dropped tunnel — is never the ceiling for everyone. |
 | Easy install | One command per server, one link to move the config across. |
 | Minimal resources | Pure Python 3.9+ + asyncio, no Node/Go/database (on 3.9/3.10 the TOML reader is bundled, so installing needs no PyPI access). Idle memory ≈ 25–40 MB per role. |
-| Text menu + web panel | Full-featured **English text menu** (`simurgh menu`) and a **bilingual (EN/FA) web panel** with live graphs. |
+| Text menu + web panel | Full-featured **English text menu** (`simurgh menu`) and a **bilingual (EN/FA) web panel** with a live map of the tunnel, per-port charts, a wizard with rollback and one-time login links. |
 
 ## Two directions
 
@@ -49,15 +49,46 @@ The script installs everything it needs (Python environment, the compiled engine
 when it can be built, systemd service, kernel tuning) and works out the role by
 itself:
 
-* **Iranian address → relay (Iranian server).** It asks for the foreign server's
-  address (`IP:port`) and the token that the foreign server printed at the end of
-  its install.
 * **Any other country → exit (foreign server).** It prints the token and the
-  setup link at the end. Copy the token to the Iranian server when it asks.
+  one-string setup link at the end.
+* **Iranian address → relay (Iranian server).** It installs **without asking
+  anything** — no token, no foreign address. The panel comes up straight away
+  and says it is not paired yet; pair it whenever you like, in either of two
+  ways:
+
+  ```bash
+  sudo simurgh join 'simurgh://<exit-ip>:8787/setup?u=admin&p=…#de-frankfurt'
+  # ...or open the panel → Pair, paste the same line, press Pair
+  ```
+
+  The tunnel starts the moment the link is accepted; nothing is re-installed.
+  Order does not matter: the foreign server can be installed first, later, or
+  even after the Iranian one. A one-shot install still works if you already
+  have the token: `--token XXX --exit-host 203.0.113.9`.
 
 Running the command again keeps the role the server already has. Options such as
 `--role`, `--name`, `--listen` or `--mapping` are optional overrides; see
 `bash install.sh --help`.
+
+### Packages and containers
+
+Every release also carries a **`.deb`**, an **`.rpm`** (each in an `all`/`noarch`
+variant and one with the compiled engine) and a portable **`.tar.gz`**, and the
+repository ships a **`Dockerfile`** + **`docker-compose.yml`** that run the pair
+in containers. They install the same CLI, panel, metrics, alerts and systemd
+units, the package never writes `/etc/simurgh` itself, and `simurgh update`
+understands all of them. Details: **[docs/PACKAGING.md](docs/PACKAGING.md)**.
+
+```bash
+sudo dpkg -i simurgh_3.1.0_amd64.deb            # Debian / Ubuntu / Proxmox
+sudo dnf install ./simurgh-3.1.0-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
+sudo tar -xzf simurgh-3.1.0-noarch.tar.gz -C /  # any system with Python 3.9+
+docker compose up -d                            # relay + exit, one machine
+```
+
+Build them from a checkout with `bash packaging/build-packages.sh` (no network,
+no packaging tools: it also produces the tarball on a machine without
+`dpkg-deb`/`rpmbuild`).
 
 ### Iranian server (relay), reverse mode
 
@@ -100,9 +131,10 @@ simurgh menu                     # English text menu (recommended first run)
 simurgh status                   # tunnel, traffic, RTT, ports
 simurgh mapping add 443 443      # Iranian port -> foreign port
 simurgh mapping list | remove | toggle
-simurgh speedtest                # real speed through the tunnel
+simurgh speedtest --udp           # throughput, latency under load, UDP loss
 simurgh logs -f                  # live log
 simurgh doctor                   # self-diagnosis with hints
+simurgh update --check           # is a newer release out?  (--force to reinstall)
 simurgh link --show              # setup link for the *other* server
 simurgh join '<link>'            # build the config from a link
 simurgh start | stop | restart   # systemd control
@@ -113,12 +145,36 @@ Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Web panel (bilingual)
 
-`http://<iran-ip>:8787` — English **and** Persian (`EN / فا` switch, choice
-remembered per browser, RTL/LTR automatic). Live tunnel state, throughput
-graphs, add/remove/toggle port mappings **without restarting**, speed test, log
-tail, service restart, and the setup link. One-click login:
-`http://<iran-ip>:8787/?k=<panel-password>`. Everything is served locally — no
-CDN, no external fonts.
+`http://<iran-ip>:8787` — the panel is a **map of the bird**: the Iranian relay
+is its left wing, the foreign exit its right wing, the tunnel body between them,
+and every user port a tail feather whose ring shows its quota and whose glow
+shows its live traffic. English **and** Persian (`EN / فا` switch, remembered
+per browser, RTL/LTR automatic), a half-hour throughput chart, per-port
+sparklines, and a `night`/`dawn` theme switch.
+
+Ten views, all of them served from the panel itself (no CDN, no external
+fonts, strict CSP):
+
+| View | What it does |
+|---|---|
+| **Dashboard** | the Simurgh map, the state cards, the live chart and the exit pool with its failover state |
+| **Pair** | shown while the relay is installed but not paired yet: paste the exit's setup link, press Pair, and the running node adopts it in place |
+| **Ports** | add, remove, enable, disable and re-point mappings **without a restart**, with quota rings, byte totals and per-port sparklines |
+| **Wizard** | a **plan** for a tunnel you have not built yet: carrier, port, path, split and the first mapping — previewed as a diff, applied with a backup, undoable with one click |
+| **Speed test** | the same engine as `simurgh speedtest`, with this session's runs kept in the browser |
+| **Certificates** | every certificate in use: days left, fingerprint, `(self-signed)` marker, renewal hint |
+| **Logs** | the last lines of the node's log, filterable, auto-refreshing |
+| **Security** | the panel's own state: sessions, lockouts, failed logins, the one-time links you have minted |
+| **Settings** | the node's editable settings, the data plane in use, and the tunnel token |
+| **Tools** | restart / stop / start / reconnect, config export, log download, `/metrics` and `/healthz` links, `--check` for updates |
+
+Signing in: the password prompt (or `?k=<panel-password>`), a real login form at
+`/login`, or a **one-time link** — `simurgh web --link` prints one, and the
+Security page can mint one for a phone. A link is single-use and dies after
+10 minutes; a session cookie is `HttpOnly`, five wrong passwords from one
+address lock it out for 300 s.
+
+Full reference: [docs/PANEL.md](docs/PANEL.md).
 
 > Everything a server operator sees outside the panel — text menu, CLI,
 > installer output — is **English only**.
@@ -187,7 +243,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **126 passed** (protocol, mux, config, panel, links, e2e for all carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting) |
+| `python -m pytest -q` | **365 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, tuning profiles, the web panel (the map, the wizard, one-time links, the assets), the packages (a real .deb/.rpm/tarball build, the container image files), and the cross-engine tests below) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -197,7 +253,17 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 | Go engine, short path | **383 MB/s (3.07 Gbit/s)** single stream |
 | Go engine, many users | **430 MB/s (3.4 Gbit/s) for 64 simultaneous users on one tunnel connection**, 503 MB/s (4.0 Gbit/s) over two — 2 vCPUs |
 | Go engine, CPU | **0.6-0.8 CPU-second per 256 MB** moved, relay + exit + test client in the same 2 vCPU process |
-| Engine interop | Go relay ⇄ Python exit and Python relay ⇄ Go exit, both verified |
+| Engine interop | Go relay ⇄ Python exit and Python relay ⇄ Go exit, verified for `plain` and `udp`: `python -m pytest tests/test_udp_cross_engine.py` starts one engine as a relay and the other as an exit, then checks a real HTTP answer byte for byte. Both directions. |
+| Go `udp` carrier | the compiled engine speaks the datagram carrier byte for byte with Python: hello HMAC, ChaCha20-Poly1305, SACK retransmit, FEC (`fec = "8:2"` really repairs a dropped datagram), mux over UDP; **80 MB/s** on loopback in the Go tests |
+| Go limits | `rate_limit`, `quota` / `quota_period` / `quota_action` (`block`, `throttle`, `warn`) and `max_conns` are enforced in the Go data plane exactly like the Python one, from the same `relay.toml`, and the Go engine writes the same `traffic.json` ledger — the panel and `simurgh traffic` read one history whichever engine ran |
+| Prometheus `/metrics` | the panel port serves Prometheus text (node, tunnel, per-mapping, ledger and quota series, plus pool health), authenticated like the panel and fed from the same status — so it works with the Python *and* the Go engine (`state.json`) |
+| Alerts | Telegram and/or a JSON webhook on the events that matter: tunnel up/down, a mapping reaching its quota, a mapping being throttled, a **certificate expiring within 14 days**, an address the panel locked out after five failed logins, and the Go engine crashing (`simurgh alert status\|test\|events`). Queued to a worker thread with a 20-second per-event cooldown, so a flapping tunnel cannot flood the chat and a dead endpoint cannot slow the data plane |
+| Go engine, supervised | with `engine = "go"` the compiled engine runs as a child of the Python process, so the panel, `/metrics` and the alerts stay up next to it, `state.json` is followed for up/down/quota events, and an engine that dies is restarted with a growing backoff (0.5 s → 30 s) and reported. `simurgh relay --exec` keeps the old hand-off behaviour |
+| Certificates | `simurgh cert issue panel.example.com --webroot /var/www/html` drives `acme.sh` (preferred: one shell script, installs on a filtered server) or `certbot`, finds what it produced, writes `cert_file`/`key_file` into the right config (the exit's, the relay's `[tunnel]`, or one `[[listen]]` with `--port`), switches `cert_auto` off so a real certificate is never replaced by a self-signed one, and installs the client's renewal hook (`--reloadcmd "systemctl restart simurgh-exit"`, or `--apply` to run it at once). `simurgh cert` shows every certificate in use with days left, fingerprint and a `(self-signed)` mark, `simurgh cert status --json` is the same for a script (exit 1 when something is missing or inside 14 days), `simurgh cert renew` runs the client's own cron, and `--staging`/`--no-write` are there for dry runs |
+| Speed test | `simurgh speedtest` measures download/upload through the tunnel **and** the two numbers users actually feel: the round trip while the link is saturated (idle → under load, jitter, a bufferbloat grade A–F) and, with `--udp`, datagram loss/jitter through the same tunnel. `--streams N` sums several tunnel streams, `--json` is for scripts, and the exit's localhost-only endpoint now exists in **both** engines, so a Go exit answers it too |
+| Tuning profiles | `simurgh tune gaming|balanced|speed` sets the whole data path in one word — stream windows, frame size, tunnel connections, ping interval and the socket options — and writes only the keys that really differ, so `balanced` also means "undo". `--dry-run` prints the difference, `--json` is for scripts, bare `simurgh tune` documents the three choices without needing an installation, and the menu shows the same page as **[16] Performance profile**. Every key is one both engines read, so a mixed Python/Go pair stays in step |
+| Panel hardening | five wrong passwords from one address lock that address out for 300 s (`429`, counted in `simurgh_panel_lockouts_total`) and fire the `login` alert; tokens are masked everywhere they are printed |
+| `simurgh update` | works out what kind of install it is: a git checkout moves to the newest tag (and rebuilds the engine), a packaged install downloads this machine's asset, verifies its SHA-256 against `SHA256SUMS.txt` and swaps it in (old one kept as `.bak`), a pip install upgrades through pip. `--check [--json]` reports without touching anything, and with no network nothing changes |
 | Pool | 8 user connections over 4 tunnels: 13.0 MB/s vs 3.6 MB/s on one tunnel with the same per-flow cap, load spread 1/1/1/1 |
 | Memory | 33-41 MB peak RSS for relay + exit + test target on a single fat stream; 95 MB moving 200 MB over 4 tunnels |
 | Decoy | plain HTTP or TLS + HTTP → real nginx page (200), unknown path → 404, HTTP/2 → `GOAWAY(HTTP_1_1_REQUIRED)` like a normal site, `fallback = "site:host:port"` → the port really serves that site, wrong token → 400/binary-noise or a silent close |
@@ -210,8 +276,10 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 ## Documentation
 
+* [docs/PANEL.md](docs/PANEL.md) — the web panel: the map, the ten views (the Pair page appears until the relay is paired), the wizard, themes, hardening and the whole API
 * [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — every key of `exit.toml` / `relay.toml`, carriers, mappings, pool, systemd units
 * [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — symptoms, causes, fixes
+* [docs/COMPARISON.md](docs/COMPARISON.md) — how Simurgh compares with rathole, frp, wstunnel, chisel, gost, Kariz, FRPulse and the Azumi67 recipes, and what it is still missing
 * [tools/latency_bench.py](tools/latency_bench.py) — reproduce every throughput number above on your own machine (`python tools/latency_bench.py 60 40 tls --connections 4`)
 * [README.fa.md](README.fa.md) — the Persian version of this page (توضیح فارسی)
 
@@ -222,7 +290,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 126 tests, no test-only dependencies
+python -m pytest -q                 # 365 tests (Python 3.11), no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
@@ -235,12 +303,13 @@ cd go && go test -race ./...        # the same under the race detector
 
 Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
 which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
-existing release manually, run `gh workflow run release-binaries.yml -f tag=v2.2.0`.
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v3.1.0`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,
 `bridge.py` (socket ↔ stream), `exit.py` / `relay.py` (the two roles), `udp.py`,
-`speedtest.py`, `panel.py` (web UI), `menu.py`/`cli.py`/`systemd.py`,
+`speedtest.py`, `tune.py` (the performance profiles), `panel.py` + `panel_ui.py` + `panel_i18n.py` + `layout.py` + `assets/` (the web panel),
+`menu.py`/`cli.py`/`systemd.py`,
 `config.py`, `links.py` (setup links), `certs.py`.
 
 The Go engine mirrors that layout: `go/internal/proto`, `mux`, `carrier`,

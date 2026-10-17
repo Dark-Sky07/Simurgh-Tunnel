@@ -59,3 +59,74 @@ def test_a_remote_exit_is_left_alone(tmp_path):
     after = load_relay(home.relay_cfg)
     assert after.accept_push is True
     assert after.exit.fingerprint is None
+
+
+PAIR_PAYLOAD = {
+    "token": "tok-from-exit", "name": "de-frankfurt",
+    "exit": {"carrier": "tls", "address": "198.51.100.7", "port": 443},
+    "mappings": [{"port": 443, "target": 443}],
+}
+
+
+def _install_later(tmp_path, *extra):
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "install", "--role", "relay", "--pair-later", "--engine", "python",
+        "--no-units", "--no-start", "--no-enable", *extra,
+    ])
+    args.home = str(tmp_path)
+    return args
+
+
+def test_install_pair_later_writes_an_unpaired_config(tmp_path):
+    """The Iranian server can be installed before the foreign one exists."""
+    assert cli.cmd_install(_install_later(tmp_path)) == 0
+
+    cfg = load_relay(tmp_path / "relay.toml")
+    assert cfg.unpaired is True and cfg.paired is False
+    assert cfg.token == "" and cfg.exit.address == ""
+    assert cfg.panel_port == 8787          # still a normal, reachable panel
+
+
+def test_join_completes_a_server_that_was_installed_unpaired(tmp_path, monkeypatch):
+    """Pairing later must not throw away what the install already decided."""
+    assert cli.cmd_install(_install_later(
+        tmp_path, "--name", "ir-tehran", "--mapping", "8443:9000")) == 0
+
+    from simurgh import links
+
+    monkeypatch.setattr(links, "fetch_setup",
+                        lambda link, timeout=15.0: PAIR_PAYLOAD)
+    parser = cli.build_parser()
+    join = parser.parse_args(["join", "simurgh://198.51.100.7:8787/setup?u=a&p=b",
+                              "--no-restart"])
+    join.home = str(tmp_path)
+    assert cli.cmd_join(join) == 0
+
+    cfg = load_relay(tmp_path / "relay.toml")
+    assert cfg.paired is True and cfg.token == "tok-from-exit"
+    assert cfg.exit.address == "198.51.100.7"
+    assert cfg.name == "ir-tehran"                     # kept
+    assert [m.listen for m in cfg.mappings] == [8443, 443]   # kept + added
+    assert (tmp_path / "relay.toml.bak-pair").is_file()
+
+
+def test_join_keeps_refusing_a_paired_config_without_force(tmp_path, monkeypatch):
+    from simurgh import links
+
+    assert cli.cmd_install(_install_later(tmp_path)) == 0
+    monkeypatch.setattr(links, "fetch_setup",
+                        lambda link, timeout=15.0: PAIR_PAYLOAD)
+    parser = cli.build_parser()
+    for attempt in range(2):
+        join = parser.parse_args(["join", "simurgh://x:8787/setup?u=a&p=b",
+                                  "--no-restart"])
+        join.home = str(tmp_path)
+        code = cli.cmd_join(join)
+    assert attempt == 1            # the loop really ran twice
+    assert code == 2               # the second pairing needs --force
+
+    forced = parser.parse_args(["join", "simurgh://x:8787/setup?u=a&p=b",
+                                "--no-restart", "--force"])
+    forced.home = str(tmp_path)
+    assert cli.cmd_join(forced) == 0

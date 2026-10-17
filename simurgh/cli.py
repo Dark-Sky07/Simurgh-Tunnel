@@ -246,17 +246,30 @@ def _init_exit(home: Home, args) -> int:
 
 
 def _init_relay(home: Home, args) -> int:
+    """Write ``relay.toml``.
+
+    A relay can be installed *before* its exit exists: with ``--pair-later``
+    (which is what the one-command installer passes) no token and no address
+    are asked for, the file is marked ``unpaired``, the panel starts, and
+    ``simurgh join '<link>'`` (or the panel) completes it later.  Without the
+    flag nothing changes: an interactive install still asks, and a silent one
+    writes the same unpaired file instead of failing at the last step.
+    """
     if home.relay_cfg.exists() and not args.force:
         _warn(f"relay config already exists: {home.relay_cfg} (use --force to overwrite)")
         return 1
     dial = getattr(args, "dial", "relay") or "relay"
-    carrier = (args.carrier or _ask("carrier (tls/wss/raw/plain)", "tls")).lower()
-    token = args.token or _ask("token (copy it from the foreign server)")
-    if not token:
-        return _fail("token is required: --token XXX")
+    pair_later = bool(getattr(args, "pair_later", False))
+    # a "pair later" install must not ask anything either: tls is the carrier
+    # the exit serves on its first port, and it is what `join` will find
+    carrier = (args.carrier or ("tls" if pair_later
+                                else _ask("carrier (tls/wss/raw/plain)", "tls"))).lower()
     name = args.name or socket.gethostname()[:32]
     panel_port = args.panel_port or RELAY_DEFAULT_PANEL
     if dial == "exit":
+        # reverse mode: this relay is the one that defines the secret, so it
+        # never has to be told a token from the other side
+        token = args.token or new_token()
         # reverse mode: we listen, the foreign exit connects to us
         exit_host = ""
         exit_port = args.exit_port or int(_ask("tunnel port on THIS server", "8443"))
@@ -275,18 +288,27 @@ def _init_relay(home: Home, args) -> int:
         # `--both` means the exit runs on this machine too, so its address needs
         # no question: it is the loopback address (the tunnel port stays the
         # first of --listen / the default 443)
-        exit_host = args.exit_host or ("127.0.0.1" if both else
-                                       _ask("foreign server address (IP or domain)"))
-        if not exit_host:
-            return _fail("foreign server address is required: --exit-host 203.0.113.9")
-        exit_port = args.exit_port or (443 if both else
-                                       int(_ask("tunnel port on the foreign server", "443")))
+        can_ask = _interactive() and not pair_later
+        token = args.token or ""
+        if not token and both:
+            # one box, two services: the secret is ours to make
+            token = new_token()
+        elif not token and can_ask:
+            token = _ask("token (copy it from the foreign server)")
+        exit_host = args.exit_host or ("127.0.0.1" if both else "")
+        if not exit_host and can_ask:
+            exit_host = _ask("foreign server address (IP or domain)")
+        exit_port = args.exit_port or 443
+        if not both and not args.exit_port and can_ask and exit_host:
+            exit_port = int(_ask("tunnel port on the foreign server", "443"))
+        unpaired = not (token and exit_host)
         domain = args.domain or None
-        if carrier in ("tls", "wss") and not domain and _interactive():
+        if carrier in ("tls", "wss") and not domain and can_ask and not unpaired:
             if _ask_yes("do you have a domain name for the SNI?", False):
                 domain = _ask("domain name")
         cfg = RelayConfig(
             token=token, name=name, panel_port=panel_port,
+            unpaired=unpaired,
             exit=ExitEndpoint(carrier=carrier, address=exit_host, port=exit_port,
                               domain=domain, path=args.path or "/ws",
                               insecure_skip_verify=args.insecure,
@@ -310,6 +332,11 @@ def _init_relay(home: Home, args) -> int:
         print("   mode:           reverse (the exit dials us)")
         print(f"   tunnel listen:  {cfg.tunnel.endpoint()}")
         _info("run `simurgh link` on this server and paste the link on the exit")
+    elif cfg.unpaired:
+        print("   pairing:        not paired yet (the tunnel stays idle)")
+        _info("on the FOREIGN (exit) server run:  simurgh link")
+        _info("then here:                        simurgh join '<that link>'")
+        _info("or open the panel and paste the link there")
     else:
         print(f"   foreign server: {carrier}://{exit_host}:{exit_port}")
         split = _split_arg(args)
@@ -578,8 +605,13 @@ async def _run_relay(home: Home, args) -> int:
     stop = asyncio.Event()
     _install_signal_handlers(stop)
     writer = asyncio.ensure_future(_state_writer(home, "relay", node, panel))
-    where = (f"tunnel listen: {cfg.tunnel.endpoint()}" if cfg.reverse
-             else f"target: {cfg.exit.describe()}")
+    if cfg.reverse:
+        where = f"tunnel listen: {cfg.tunnel.endpoint()}"
+    elif cfg.unpaired:
+        where = ("not paired yet -- the panel is up, the tunnel waits for "
+                 "`simurgh join '<link>'`")
+    else:
+        where = f"target: {cfg.exit.describe()}"
     _ok(f"relay \"{cfg.name or 'relay'}\" is up. {where}")
     await stop.wait()
     writer.cancel()
@@ -667,15 +699,23 @@ def cmd_run(args) -> int:
     engine = _configured_engine(home, args.role)
     if engine == "go":
         binary = go_binary(home)
-        if binary:
-            _ok(f"engine: go ({binary})")
+        if binary and getattr(args, "exec_engine", False):
+            # the old, hand-off behaviour: the engine replaces this process and
+            # the panel/metrics/alerts go with it
+            _ok(f"engine: go ({binary}), exec")
             argv = [str(binary), args.role, "--home", str(home.path)]
             if args.verbose:
                 argv.append("--verbose")
             try:
-                os.execv(str(binary), argv)      # the go engine takes over
-            except OSError as exc:  # pragma: no cover - depends on the install
+                os.execv(str(binary), argv)
+            except OSError as exc:              # pragma: no cover - install
                 _warn(f"cannot start the go engine ({exc}); using python")
+        elif binary:
+            _ok(f"engine: go ({binary}), supervised")
+            try:
+                return asyncio.run(_run_go(home, args, binary))
+            except KeyboardInterrupt:
+                return 0
         else:
             _warn("engine is 'go' but no simurgh-go binary was found; "
                   "run tools/build-go.sh (or set SIMURGH_GO_BIN). Using python.")
@@ -685,6 +725,49 @@ def cmd_run(args) -> int:
         return asyncio.run(_run_relay(home, args))
     except KeyboardInterrupt:
         return 0
+
+
+async def _run_go(home: Home, args, binary: str) -> int:
+    """Supervise the compiled engine: it does the packets, we do the operator.
+
+    The Go engine has no HTTP listener of its own, so this keeps the panel,
+    `/metrics` and the alert channels alive next to it, follows the state file
+    it writes every three seconds and restarts it if it falls over.
+    """
+    from .panel import Panel
+    from .supervise import EngineSupervisor
+
+    role = args.role
+    cfg = _load_exit_or_fail(home) if role == "exit" else _load_relay_or_fail(home)
+    logfile = home.exit_log if role == "exit" else home.relay_log
+    setup_logging(args.verbose, logfile=str(logfile))
+    supervisor = EngineSupervisor(home, role, binary, cfg, verbose=args.verbose)
+    try:
+        await supervisor.start()
+    except OSError:
+        return 1
+    panel = None
+    if not args.no_panel:
+        port = args.panel_port or (RELAY_DEFAULT_PANEL if role == "exit"
+                                   else cfg.panel_port or RELAY_DEFAULT_PANEL)
+        panel = Panel(home, role, node=supervisor.node, host=args.panel_host,
+                      port=port, user=_load_panel_user(home),
+                      password=_load_panel_password(home),
+                      allow_ips=tuple(getattr(cfg, "allow_ips", ()) or ()),
+                      on_action=lambda name: _service_action(name, role))
+        try:
+            await panel.start()
+        except OSError as exc:
+            _warn(f"the panel did not start ({exc}); the tunnel keeps running.")
+            panel = None
+    stop = asyncio.Event()
+    _install_signal_handlers(stop)
+    _ok(f"{role} \"{cfg.name or role}\" is up (engine: go, pid {supervisor.pid}).")
+    await stop.wait()
+    if panel is not None:
+        await panel.stop()
+    await supervisor.stop()
+    return 0
 
 
 def go_binary(home: Home) -> str | None:
@@ -823,6 +906,14 @@ def cmd_status(args) -> int:
     print(f"\033[1m{__product__} v{__version__}\033[0m — {home.path}")
     cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
     print(f"  config: {cfg_path} {'✔' if cfg_path.exists() else '✘'}")
+    if role == "relay" and cfg_path.exists():
+        try:
+            relay_cfg = load_relay(cfg_path)
+        except (ConfigError, OSError):
+            relay_cfg = None
+        if relay_cfg is not None and not relay_cfg.paired:
+            print("  pairing:  \033[33mnot paired yet\033[0m — on the exit run "
+                  "`simurgh link`, then here: simurgh join '<link>'")
     if not node:
         _warn(f"no live data for {role}. Is the service running? (simurgh status/up)")
         return cmd_service(argparse.Namespace(role=role, service_action="status",
@@ -923,23 +1014,150 @@ def cmd_speedtest(args) -> int:
             _err("the tunnel is not up; check `simurgh status` first.")
             return 3
         try:
-            result = await run_speedtest(node, seconds=args.seconds)
+            result = await run_speedtest(
+                node, seconds=args.seconds, streams=args.streams,
+                udp=args.udp, latency=not args.no_latency)
         finally:
             await node.stop()
         if args.json:
             print(json.dumps(result, ensure_ascii=False))
         else:
-            print(f"  download: \033[32m{result['download_mbps']:.1f} Mbps\033[0m "
-                  f"({human_bytes(result['download_bytes'])})")
-            print(f"  upload:   \033[32m{result['upload_mbps']:.1f} Mbps\033[0m "
-                  f"({human_bytes(result['upload_bytes'])})")
-            print(f"  test time: {result['seconds']:.1f} s")
+            _print_speedtest(result)
         return 0
 
     try:
         return asyncio.run(go())
     except KeyboardInterrupt:
         return 0
+
+
+def cmd_tune(args) -> int:
+    """`simurgh tune [gaming|balanced|speed]` -- the behaviour in one word."""
+    from . import tune
+
+    if args.show or not args.profile:
+        # listing the profiles needs no installation: it is documentation
+        rows = tune.describe(args.profile or None)
+        if args.json:
+            print(json.dumps({"profiles": rows}, indent=2))
+            return 0
+        for row in rows:
+            print(f"  {row['name']}  --  {row['title']}")
+            print(f"    {row['summary']}")
+            shared = [(key, value) for key, value in row["relay"].items()
+                      if row["exit"].get(key) == value]
+            print("    both files: " + ", ".join(
+                f"{key}={_tune_value(value)}" for key, value in shared))
+            relay_only = [(key, value) for key, value in row["relay"].items()
+                          if row["exit"].get(key) != value]
+            if relay_only:
+                print("    relay only: " + ", ".join(
+                    f"{key}={_tune_value(value)}" for key, value in relay_only))
+        if not args.profile:
+            print()
+            print("  use it: simurgh tune gaming      (add --dry-run to look first)")
+        return 0
+
+    home = _home_or_fail(args)
+
+    try:
+        profile = tune.get(args.profile)
+    except KeyError as exc:
+        _err(str(exc.args[0] if exc.args else exc))
+        return 2
+
+    role = _detect_role(home, args.role)
+    if role == "relay":
+        cfg = _load_relay_or_fail(home)
+        path = home.relay_cfg
+    else:
+        cfg = _load_exit_or_fail(home)
+        path = home.exit_cfg
+
+    changes = tune.apply(cfg, role, profile.name)
+    # `wrote` must only turn true once the file is really on disk, so the JSON
+    # is printed once, on the way out
+    payload = {"profile": profile.name, "role": role, "config": str(path),
+               "changes": changes, "wrote": False}
+    if not args.json:
+        print(f"  profile: {profile.name} -- {profile.title}")
+        for change in changes:
+            print(f"  {path.name}: {change['key']} "
+                  f"{_tune_value(change['old'])} -> {_tune_value(change['new'])}")
+    if not changes:
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            _ok(f"{path.name} already matches the {profile.name} profile")
+        return 0
+    if args.dry_run:
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            _warn("nothing was written (--dry-run)")
+        return 0
+    try:
+        save_exit(cfg, path) if role == "exit" else save_relay(cfg, path)
+    except OSError as exc:
+        _err(f"cannot write {path}: {exc}")
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        return 1
+    payload["wrote"] = True
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        _ok(f"{path.name}: {len(changes)} key(s) written")
+        print("apply it now: simurgh restart")
+    return 0
+
+
+def _tune_value(value) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
+def _print_speedtest(result: dict) -> None:
+    """Human output: throughput first, then what users actually feel."""
+    print(f"  download: \033[32m{result['download_mbps']:.1f} Mbps\033[0m "
+          f"({human_bytes(result['download_bytes'])})")
+    print(f"  upload:   \033[32m{result['upload_mbps']:.1f} Mbps\033[0m "
+          f"({human_bytes(result['upload_bytes'])})")
+    latency = result.get("latency")
+    if latency and latency.get("idle_ms") is not None:
+        loaded = latency.get("loaded_ms")
+        grade = latency.get("grade") or "?"
+        if loaded is None:
+            print(f"  latency:  {latency['idle_ms']:.1f} ms idle "
+                  "(the load phase produced no samples)")
+        else:
+            colour = {"A": "\033[32m", "B": "\033[32m", "C": "\033[33m",
+                      "D": "\033[33m", "F": "\033[31m"}.get(grade, "")
+            print(f"  latency:  {latency['idle_ms']:.1f} ms idle -> "
+                  f"{colour}{loaded:.1f} ms\033[0m under load "
+                  f"({latency['increase_ms']:+.1f} ms, bufferbloat "
+                  f"{colour}{grade}\033[0m)")
+            print(f"  jitter:   {latency.get('jitter_ms') or 0:.1f} ms under load "
+                  f"({latency.get('jitter_idle_ms') or 0:.1f} ms idle, "
+                  f"p95 {latency.get('loaded_p95_ms') or 0:.1f} ms)")
+    udp = result.get("udp")
+    if udp:
+        if udp.get("error"):
+            print(f"  udp:      \033[33mnot measured\033[0m ({udp['error']})")
+        else:
+            loss = udp.get("loss_percent") or 0.0
+            colour = "\033[32m" if loss < 1 else (
+                "\033[33m" if loss < 5 else "\033[31m")
+            print(f"  udp:      {colour}{loss:.2f}% loss\033[0m of "
+                  f"{udp['sent']} datagrams, "
+                  f"{udp.get('rtt_ms') or 0:.1f} ms rtt, "
+                  f"jitter {udp.get('jitter_ms') or 0:.1f} ms")
+    streams = result.get("streams") or 1
+    extra = f", {streams} streams" if streams > 1 else ""
+    print(f"  test time: {result['seconds']:.1f} s{extra}")
 
 
 def _join_exit(home: Home, payload: dict, args) -> int:
@@ -1018,8 +1236,16 @@ def cmd_link(args) -> int:
 
 
 def cmd_join(args) -> int:
+    """Complete a server from the other side's one-string setup link.
+
+    On a relay this is also how a server that was installed with
+    ``--pair-later`` is paired: an unpaired config is completed in place (no
+    ``--force`` needed, and nothing the install chose is thrown away), then the
+    service is restarted so the tunnel comes up right away.
+    """
     home = Home(args.home).ensure()
-    from .links import LinkError, fetch_setup, relay_config_from_payload
+    from .links import (LinkError, fetch_setup, merge_relay_payload,
+                        relay_config_from_payload)
 
     try:
         payload = fetch_setup(args.link, timeout=args.timeout)
@@ -1031,18 +1257,80 @@ def cmd_join(args) -> int:
         return 2
     if str(payload.get("role") or "") == "exit":
         return _join_exit(home, payload, args)
-    cfg = relay_config_from_payload(payload)
-    if home.relay_cfg.exists() and not args.force:
+    existing = None
+    if home.relay_cfg.exists():
+        try:
+            existing = load_relay(home.relay_cfg)
+        except (ConfigError, OSError):
+            existing = None
+    if existing is not None and existing.paired and not args.force:
         _err(f"the relay config already exists ({home.relay_cfg}); use --force to overwrite.")
         return 2
-    if args.host:
-        cfg.exit.address = args.host
-    save_relay(cfg, home.relay_cfg)
-    _ok(f"relay config built from the link: {home.relay_cfg}")
+    if existing is not None:
+        # installed but never paired: keep the panel port, the engine, the
+        # limits and the ports this server already forwards
+        try:
+            merged = merge_relay_payload(existing, payload)
+        except (KeyError, ValueError, ConfigError) as exc:
+            _err(f"the link is incomplete: {exc}")
+            return 2
+        if args.host:
+            existing.exit.address = args.host
+        backup = _backup_config(home.relay_cfg, "pair")
+        save_relay(existing, home.relay_cfg)
+        cfg = existing
+        _ok(f"relay paired with {merged['exit']}")
+        if backup:
+            _info(f"previous config kept at {backup}")
+    else:
+        cfg = relay_config_from_payload(payload)
+        if args.host:
+            cfg.exit.address = args.host
+        save_relay(cfg, home.relay_cfg)
+        _ok(f"relay config built from the link: {home.relay_cfg}")
     print(f"   target: {cfg.exit.describe()}")
     for m in cfg.mappings:
         print(f"   mapping: {m.listen} → {m.target_host}:{m.target_port}")
+    _restart_after_pairing(home, "relay", args)
     return 0
+
+
+def _backup_config(path, tag: str) -> str:
+    """Copy a config aside before pairing; returns the backup path ('' if none)."""
+    if not path.exists():
+        return ""
+    target = path.with_suffix(path.suffix + f".bak-{tag}")
+    try:
+        shutil.copy2(path, target)
+        target.chmod(0o600)
+        return str(target)
+    except OSError:
+        return ""
+
+
+def _restart_after_pairing(home: Home, role: str, args) -> None:
+    """Make the new config live now, not at the next reboot.
+
+    Only touches systemd when the unit is actually running, and never fails the
+    pairing because of it: the config is already on disk either way.
+    """
+    if getattr(args, "no_restart", False):
+        return
+    from . import systemd
+
+    if not systemd.available():
+        _info("apply it with: simurgh restart")
+        return
+    service = f"simurgh-{role}"
+    state = systemd.service_state(service)
+    if state.get("ActiveState") != "active":
+        _info("apply it with: simurgh restart")
+        return
+    answer = systemd.control("restart", (service,)).get(service)
+    if answer == "ok":
+        _ok(f"{service}: restarted with the new config")
+    else:
+        _warn(f"{service}: {answer}")
 
 
 def _detect_role(home: Home, role: str | None) -> str:
@@ -1147,7 +1435,11 @@ def cmd_doctor(args) -> int:
         return 0 if problems == 0 else 1
 
     cfg = _load_relay_or_fail(home)
-    if not cfg.token:
+    if cfg.unpaired:
+        _warn("this relay is not paired yet — that is a state, not a fault:")
+        _info("on the exit run `simurgh link`, then here: simurgh join '<link>'")
+        _info("(or paste the link on the panel's Pair page)")
+    elif not cfg.token:
         _err("the token is empty (copy it from the foreign server).")
         problems += 1
     else:
@@ -1180,7 +1472,10 @@ def cmd_doctor(args) -> int:
                       "(it is created when the service starts)")
     else:
         addresses = [(ep.address, ep.port, ep.describe()) for ep in cfg.endpoints()]
-        if not addresses:
+        if cfg.unpaired:
+            _info("the exit address arrives with the setup link, so there is "
+                  "nothing to dial yet")
+        elif not addresses:
             _err("no foreign server is configured.")
             problems += 1
         for host, port, desc in addresses:
@@ -1215,6 +1510,7 @@ def cmd_web(args) -> int:
     port = args.port or (cfg.panel_port if role == "relay" else RELAY_DEFAULT_PANEL)
     host = args.host
     user, password = _panel_credentials(home)
+    link_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
     from .panel import Panel
 
     async def go():
@@ -1223,7 +1519,14 @@ def cmd_web(args) -> int:
         stop = asyncio.Event()
         _install_signal_handlers(stop)
         await panel.start()
-        print(f"  panel: http://{host}:{port}   user: {user}   pass: {password}")
+        print(f"  panel: http://{link_host}:{port}   user: {user}   pass: {password}")
+        if args.link:
+            # one link, one login: hand it to the operator instead of a password
+            ttl = float(args.link_ttl or 600)
+            made = panel.login_tokens.create("cli", ttl)
+            _ok(f"one-time link (valid {int(ttl)}s, single use): "
+                f"http://{link_host}:{port}/?t={made['token']}")
+            _info("open it in the browser; the password prompt is skipped")
         _info("Ctrl+C to quit")
         await stop.wait()
         await panel.stop()
@@ -1251,6 +1554,251 @@ def cmd_uninstall(args) -> int:
     else:
         _info(f"config kept in {home.path} (delete it with: --purge)")
     return 0
+
+
+def cmd_cert(args) -> int:
+    """`simurgh cert [status|issue|renew]` -- Let's Encrypt, wired in."""
+    from . import acme
+
+    home = _home_or_fail(args)
+    role = _detect_role(home, args.role)
+    if role == "relay":
+        cfg = _load_relay_or_fail(home)
+        path = home.relay_cfg
+    else:
+        cfg = _load_exit_or_fail(home)
+        path = home.exit_cfg
+
+    if args.action == "issue":
+        if not args.domain:
+            _err("a domain is required: simurgh cert issue panel.example.com "
+                 "[--webroot DIR | --standalone]")
+            return 2
+        reload_cmd = args.reload or (
+            f"systemctl restart simurgh-{role}"
+            if shutil.which("systemctl") else "simurgh restart")
+        try:
+            result = acme.issue(
+                args.domain, email=args.email or "", webroot=args.webroot or "",
+                standalone=bool(args.standalone), staging=bool(args.staging),
+                prefer=args.client, reload_cmd=reload_cmd,
+                config_dir=args.config_dir or "", binary=args.acme_sh or "")
+        except acme.AcmeError as exc:
+            _err(str(exc))
+            return 1
+        for step in result.steps:
+            _info(step)
+        if args.no_write:
+            _warn("certificate obtained; the config was left alone (--no-write)")
+            return 0
+        try:
+            changed = acme.wire(cfg, role, result.cert_file, result.key_file,
+                                port=args.port or None)
+        except acme.AcmeError as exc:
+            _err(str(exc))
+            return 1
+        try:
+            save_exit(cfg, path) if role == "exit" else save_relay(cfg, path)
+        except OSError as exc:
+            _err(f"cannot write {path}: {exc}")
+            return 1
+        if args.port:
+            _ok(f"{path.name}: [[listen]] port {args.port} now serves "
+                f"{result.cert_file}")
+        else:
+            _ok(f"{path.name}: {', '.join(changed)} -> {result.cert_file}")
+        _info("the certificate is renewed by the client itself; the reload hook "
+              f"runs `{reload_cmd}` after each renewal")
+        if args.apply:
+            _info(f"applying now: {reload_cmd}")
+            ok, output = acme.reload_now(reload_cmd)
+            for line in output.splitlines():
+                print(f"  {line}")
+            (_ok if ok else _warn)(
+                f"reload hook: {reload_cmd} "
+                + ("ran" if ok else "failed -- run it yourself"))
+            return 0 if ok else 1
+        print("apply it now: simurgh restart")
+        return 0
+
+    if args.action == "renew":
+        try:
+            name, ok, output = acme.renew(prefer=args.client,
+                                          config_dir=args.config_dir or "")
+        except acme.AcmeError as exc:
+            _err(str(exc))
+            return 1
+        for line in output.splitlines():
+            print(f"  {line}")
+        if ok:
+            _ok(f"{name} renewed everything that was due")
+            return 0
+        _err(f"{name} reported a problem (see above)")
+        return 1
+
+    # status
+    found = acme.describe_clients()
+    rows = acme.status(cfg, role)
+    if getattr(args, "json", False):
+        print(json.dumps({"role": role, "config": str(path), "client": found,
+                          "ok": all(r["exists"] and (r["days"] or 0) > 14
+                                    for r in rows) if rows else True,
+                          "certificates": rows}, indent=2))
+        return 0 if all(r["exists"] and (r["days"] or 0) > 14
+                         for r in rows) else 1
+    print(f"{__product__} v{__version__}   role={role}   "
+          f"acme client: {found or 'none'}")
+    if not found:
+        print("  " + acme.install_hint().replace("\n", "\n  "))
+    if not rows:
+        print(f"  no tls/wss listener in {path.name}; nothing to certify")
+        return 0
+    problems = 0
+    self_signed = 0
+    for row in rows:
+        days = row["days"]
+        if not row["cert_file"]:
+            _warn(f"{row['endpoint']}: no certificate configured "
+                  "(cert_auto generates a self-signed one at start)")
+            problems += 1
+            continue
+        if not row["exists"]:
+            _warn(f"{row['endpoint']}: {row['cert_file']} is missing")
+            problems += 1
+            continue
+        if days is None:
+            _warn(f"{row['endpoint']}: no certificate could be read from "
+                  f"{row['cert_file']}")
+            problems += 1
+            continue
+        state = "ok" if days > 14 else "expiring"
+        if state == "expiring":
+            problems += 1
+        mark = "  (self-signed)" if row["note"] == "generated" else ""
+        if mark:
+            self_signed += 1
+        line = (f"  {row['endpoint']}: {row['cert_file']}  "
+                f"{days if days is not None else '?'} day(s) left  "
+                f"{row['fingerprint'][:23]}…{mark}")
+        (_ok if state == "ok" else _warn)(line)
+    if self_signed:
+        _info("self-signed certificates are fine for the tunnel itself; for a "
+              "panel or a website use `simurgh cert issue <domain>`")
+    return 1 if problems else 0
+
+
+def cmd_alert(args) -> int:
+    """`simurgh alert [status|test|events]` -- does the operator's phone ring?"""
+    from .alerts import EVENTS, alerts_from_config
+
+    home = _home_or_fail(args)
+    role = _detect_role(home, args.role)
+    path = home.exit_cfg if role == "exit" else home.relay_cfg
+    try:
+        cfg = load_exit(path) if role == "exit" else load_relay(path)
+    except (ConfigError, OSError) as exc:
+        _err(f"cannot read {path}: {exc}")
+        return 2
+    alerts = alerts_from_config(cfg, name=cfg.name or role)
+
+    if args.action == "test":
+        if not alerts.enabled:
+            _warn("no alert channel is configured (telegram_token/telegram_chat "
+                  "or alert_webhook) -- nothing was sent")
+            return 1
+        ok = alerts.test()
+        if ok:
+            _ok(f"test alert sent through {alerts.describe()}")
+            return 0
+        _err(f"the alert channel did not accept the message "
+             f"({alerts.last_error or 'no answer'})")
+        return 1
+
+    if args.action == "events":
+        if args.extra:
+            wanted = [str(x) for x in args.extra]
+            unknown = [x for x in wanted if x not in EVENTS and x != "all"]
+            if unknown:
+                _err(f"unknown event(s): {', '.join(unknown)}")
+                print("known events: " + ", ".join(EVENTS) + ", all")
+                return 2
+            if role == "exit":
+                cfg.alert_events = wanted
+                save_exit(cfg, path)
+            else:
+                cfg.alert_events = wanted
+                save_relay(cfg, path)
+            _ok(f"alert events for the {role}: {', '.join(wanted)}")
+            print("restart the service to apply: simurgh restart")
+            return 0
+        current = alerts.events
+        print(f"alert events for the {role}: {', '.join(current) or '(none)'}")
+        print("known events: " + ", ".join(EVENTS) + ", all")
+        return 0
+
+    # status
+    print(f"{__product__} v{__version__}   role={role}   name={cfg.name or '-'}")
+    print(f"  channels: {alerts.describe()}")
+    if alerts.telegram_token and alerts.telegram_chat:
+        print(f"  telegram: chat {alerts.telegram_chat} "
+              f"(api {alerts.telegram_api}, token {_mask_token(alerts.telegram_token)})")
+    if alerts.webhook:
+        print(f"  webhook:  {alerts.webhook}")
+    print(f"  events:   {', '.join(alerts.events) or '(none)'}")
+    if not alerts.enabled:
+        print("  add telegram_token + telegram_chat, or alert_webhook, to "
+              f"{path.name} and restart")
+    return 0
+
+
+def _mask_token(value: str) -> str:
+    value = str(value or "")
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}…{value[-4:]}"
+
+
+def cmd_update(args) -> int:
+    """Bring this install to the newest release (see simurgh/update.py)."""
+    from . import update as updater
+
+    home = Home(args.home)
+    try:
+        if args.check:
+            info = updater.check()
+            if getattr(args, "json", False):
+                print(json.dumps(info, ensure_ascii=False, indent=2))
+                return 0 if not info["available"] else 3
+            print(f"{__product__} {info['current']}   newest release: {info['latest']}")
+            if info["available"]:
+                print(f"  an update is available: {info['tag']} "
+                      f"({info['published'][:10]})")
+                print(f"  run `simurgh update` to install it   {info['notes_url']}")
+                return 3
+            print("  this install is already the newest release")
+            return 0
+        result = updater.update(home, force=args.force,
+                                rebuild=not args.no_rebuild)
+        if getattr(args, "json", False):
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if result.get("available") is False and result.get("action") == "up to date":
+            print(f"nothing to do: {__version__} is the newest release "
+                  f"({result['latest']})")
+            return 0
+        _ok(f"updated to {result.get('tag') or result.get('latest')}")
+        print(f"  {result.get('action', '')}")
+        for step in result.get("steps", []) or []:
+            print(f"  - {step}")
+        if result.get("notes_url"):
+            print(f"  release notes: {result['notes_url']}")
+        print("  restart the service to run the new version: "
+              "simurgh restart" if shutil.which("systemctl") else
+              "  restart the node to run the new version")
+        return 0
+    except updater.UpdateError as exc:
+        _err(str(exc))
+        return 1
 
 
 def cmd_version(args) -> int:
@@ -1309,6 +1857,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--engine", choices=ENGINES, default="",
                    help="data plane: python (default) or go (see tools/build-go.sh)")
     p.add_argument("--user", default="")
+    p.add_argument("--pair-later", "--unpaired", dest="pair_later",
+                   action="store_true",
+                   help="write the relay config without its exit (no token or "
+                        "address questions); pair it later with `simurgh join` "
+                        "or from the panel")
     # keep the long-standing behaviour, but say what it does: this skips the
     # config and only (re)installs the services
     p.add_argument("--config-only", action="store_true",
@@ -1342,6 +1895,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--panel-port", type=int, default=0)
     p.add_argument("--engine", choices=ENGINES, default="",
                    help="data plane to use (default: python; go needs tools/build-go.sh)")
+    p.add_argument("--pair-later", "--unpaired", dest="pair_later",
+                   action="store_true",
+                   help="write a relay config without its exit; pair it later")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init)
 
@@ -1353,6 +1909,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--panel-host", default="0.0.0.0")
         p.add_argument("--panel-port", type=int, default=0)
         p.add_argument("--verbose", action="store_true")
+        p.add_argument("--exec", dest="exec_engine", action="store_true",
+                       help="hand the process over to the go engine (no panel, "
+                            "no /metrics, no alerts)")
         p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("up", help="start the service")
@@ -1360,7 +1919,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fg", action="store_true", help="run in the terminal (no systemd)")
     p.set_defaults(func=lambda a: cmd_run(argparse.Namespace(
         role=a.role, home=a.home, verbose=False, no_panel=False,
-        panel_host="0.0.0.0", panel_port=0)) if a.fg else cmd_service(
+        panel_host="0.0.0.0", panel_port=0, exec_engine=False)) if a.fg else cmd_service(
         argparse.Namespace(role=a.role, service_action="start", home=a.home, json=False)))
 
     for action, helptext in (("start", "start the service (systemd)"),
@@ -1392,10 +1951,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-f", "--follow", action="store_true")
     p.set_defaults(func=cmd_logs)
 
-    p = sub.add_parser("speedtest", help="measure the real speed through the tunnel")
+    p = sub.add_parser("speedtest",
+                       help="measure the real speed through the tunnel")
     p.add_argument("--seconds", type=int, default=6)
+    p.add_argument("--streams", type=int, default=1,
+                   help="tunnel streams to sum (default 1)")
+    p.add_argument("--udp", action="store_true",
+                   help="also measure UDP loss and jitter through the tunnel")
+    p.add_argument("--no-latency", action="store_true",
+                   help="skip the latency probe (idle and under load)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_speedtest)
+
+    p = sub.add_parser("tune", help="pick a behaviour profile for this server")
+    p.add_argument("profile", nargs="?",
+                   help="gaming | balanced | speed (omit to list them)")
+    p.add_argument("--role", choices=("exit", "relay"), default=None,
+                   help="exit | relay (auto-detected by default)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print what would change, write nothing")
+    p.add_argument("--show", action="store_true", help="list the profiles")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_tune)
 
     p = sub.add_parser("link", help="build the setup link for the other server")
     p.add_argument("--host", default="")
@@ -1403,12 +1980,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--show", action="store_true", help="print just the raw link")
     p.set_defaults(func=cmd_link)
 
-    p = sub.add_parser("join", help="build the config from a setup link")
+    p = sub.add_parser("join", help="pair this server from a setup link")
     p.add_argument("link")
     p.add_argument("--host", default="", help="override the exit address")
     p.add_argument("--timeout", type=float, default=15.0)
     p.add_argument("--split", type=int, default=3, help="bytes of the first write that travel in their own TCP segment (anti-DPI); 0 disables it")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--no-restart", action="store_true",
+                   help="write the config but do not restart the service")
     p.set_defaults(func=cmd_join)
 
     p = sub.add_parser("engine", help="show or switch the data plane (python | go)")
@@ -1424,7 +2003,57 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--role", choices=("exit", "relay"), default=None, help="exit | relay (auto-detected by default)")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=0)
+    p.add_argument("--link", action="store_true",
+                   help="print a one-time login link instead of a password")
+    p.add_argument("--link-ttl", dest="link_ttl", type=int, default=600,
+                   help="how long that link stays valid, in seconds (default: 600)")
     p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser("cert", help="Let's Encrypt certificates (acme.sh / certbot)")
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["status", "issue", "renew"])
+    p.add_argument("domain", nargs="?", default="", help="the host name to certify")
+    p.add_argument("--role", choices=["relay", "exit"], default=None,
+                   help="exit | relay (auto-detected by default)")
+    p.add_argument("--email", default="", help="ACME account e-mail")
+    p.add_argument("--webroot", default="", help="directory a webserver already serves")
+    p.add_argument("--standalone", action="store_true",
+                   help="let the client bind port 80 for a moment")
+    p.add_argument("--staging", action="store_true", help="use the test CA (dry runs)")
+    p.add_argument("--client", choices=["acme.sh", "certbot"], default="",
+                   help="which client to use (default: whichever is installed)")
+    p.add_argument("--acme-sh", dest="acme_sh", default="",
+                   help=argparse.SUPPRESS)
+    p.add_argument("--config-dir", dest="config_dir", default="",
+                   help="certbot's store (default /etc/letsencrypt)")
+    p.add_argument("--port", type=int, default=0,
+                   help="wire the certificate into this [[listen]] port only")
+    p.add_argument("--no-write", action="store_true",
+                   help="obtain the certificate but leave the config alone")
+    p.add_argument("--reload", default="",
+                   help="command to run after a renewal (default: this service)")
+    p.add_argument("--apply", action="store_true",
+                   help="run that command now as well (skip waiting for a restart)")
+    p.add_argument("--json", action="store_true",
+                   help="print the status as JSON (for scripts)")
+    p.set_defaults(func=cmd_cert)
+
+    p = sub.add_parser("alert", aliases=["alerts"], help="telegram / webhook alerts")
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["status", "test", "events"])
+    p.add_argument("extra", nargs="*", help="events to enable (with `events`)")
+    p.add_argument("--role", choices=["relay", "exit"], default="relay")
+    p.set_defaults(func=cmd_alert)
+
+    p = sub.add_parser("update", help="install the newest release")
+    p.add_argument("--check", action="store_true",
+                   help="only report whether an update is available")
+    p.add_argument("--force", action="store_true",
+                   help="reinstall even when this version looks newest")
+    p.add_argument("--no-rebuild", action="store_true",
+                   help="git checkouts: skip rebuilding the Go engine")
+    p.add_argument("--json", action="store_true", help="machine readable output")
+    p.set_defaults(func=cmd_update)
 
     p = sub.add_parser("uninstall", help="remove the services")
     p.add_argument("--purge", action="store_true", help="also delete the config folder")

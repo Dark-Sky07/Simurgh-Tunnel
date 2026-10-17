@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0c1020">
+<title>Simurgh Tunnel</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/assets/simurgh.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/app.css">
+<script type="application/json" id="panel-meta">__META__</script>
+<script src="/app.js" defer></script>
+</head>
+<body>
+<div class="wrap">
+  <aside class="side">
+    <div class="brand">
+      <img src="/assets/simurgh.png" alt="Simurgh" width="46" height="46">
+      <div>
+        <div class="name">Simurgh</div>
+        <div class="sub" id="brand-sub">__ROLE__ · v__VERSION__</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button data-view="dashboard" aria-current="true"><span class="ico">◈</span><span data-i18n="nav_dashboard">Dashboard</span></button>
+      <button data-view="pair" id="nav-pair" hidden><span class="ico">⚭</span><span data-i18n="nav_pair">Pair</span></button>
+      <button data-view="ports"><span class="ico">⇄</span><span data-i18n="nav_ports">Ports</span></button>
+      <button data-view="wizard"><span class="ico">✧</span><span data-i18n="nav_wizard">Wizard</span></button>
+      <button data-view="speed"><span class="ico">⚡</span><span data-i18n="nav_speed">Speed test</span></button>
+      <button data-view="certs"><span class="ico">🔒</span><span data-i18n="nav_certs">Certificates</span></button>
+      <button data-view="logs"><span class="ico">≡</span><span data-i18n="nav_logs">Logs</span></button>
+      <button data-view="security"><span class="ico">⚿</span><span data-i18n="nav_security">Security</span></button>
+      <button data-view="settings"><span class="ico">⚙</span><span data-i18n="nav_settings">Settings</span></button>
+      <button data-view="tools"><span class="ico">⛭</span><span data-i18n="nav_tools">Tools</span></button>
+    </nav>
+
+    <div class="spacer"></div>
+    <div class="foot">
+      <div class="row">
+        <button class="sm ghost" id="lang-toggle" title="language">فا</button>
+        <button class="sm ghost" id="theme-toggle" title="theme">☀</button>
+      </div>
+      <div class="sep"></div>
+      <div data-i18n="footer">No CDN, no build step: this page ships with the tunnel.</div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <h1 data-i18n="title_dashboard">Dashboard</h1>
+      <span class="sp"></span>
+      <span class="badge gold" id="badge-role">__ROLE__</span>
+      <span class="badge" id="badge-state">—</span>
+    </div>
+
+    <!-- ------------------------------------------------------- dashboard -->
+    <section class="view on" id="view-dashboard">
+      <div class="cards" id="cards"></div>
+
+      <div class="card pairbanner" id="pair-banner" hidden>
+        <span class="ico">⚭</span>
+        <div>
+          <b data-i18n="pair_banner_title">This relay is not paired yet</b>
+          <div class="hint" data-i18n="pair_banner_hint">Paste the exit's setup link to bring the tunnel up.</div>
+        </div>
+        <span class="sp"></span>
+        <button class="primary" id="pair-open" data-i18n="pair_open">Pair now</button>
+      </div>
+
+      <div class="grid-2" style="margin-top:16px">
+        <div class="card mapcard">
+          <div class="maphead">
+            <h2 data-i18n="map_title">The tunnel, as a Simurgh</h2>
+            <span class="sp"></span>
+          </div>
+          <svg class="map" id="map" viewBox="0 0 760 300" role="img"></svg>
+        </div>
+
+        <div class="card">
+          <h2 data-i18n="chart_title">Throughput, last 30 minutes</h2>
+          <div class="chart-wrap"><canvas class="chart" id="chart"></canvas></div>
+          <div class="legend">
+            <span class="i-out"><i></i><span data-i18n="legend_out">out (to the exit)</span></span>
+            <span class="i-in"><i></i><span data-i18n="legend_in">in (to the users)</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2 data-i18n="card_mappings">Ports</h2>
+        <table>
+          <thead><tr>
+            <th data-i18n="col_name">Name</th>
+            <th data-i18n="col_route">Route</th>
+            <th data-i18n="col_proto">Proto</th>
+            <th class="num" data-i18n="col_rate">Now</th>
+            <th class="num" data-i18n="col_moved">Moved</th>
+            <th data-i18n="col_quota">Quota</th>
+            <th class="num"></th>
+          </tr></thead>
+          <tbody id="mapping-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ pair -->
+    <section class="view" id="view-pair">
+      <div class="card" id="pair-form">
+        <h2 data-i18n="pair_title">Pair this relay</h2>
+        <p class="hint" data-i18n="pair_lead">This server is installed and its panel is running, but it is not paired with its exit yet — the tunnel stays idle until it is.</p>
+        <ol class="pairsteps">
+          <li data-i18n="pair_step1">On the foreign (exit) server run:  simurgh link</li>
+          <li data-i18n="pair_step2">It prints one line that starts with simurgh://</li>
+          <li data-i18n="pair_step3">Paste that line here and press Pair — nothing else to install.</li>
+        </ol>
+        <label for="pair-link" data-i18n="pair_label">Setup link</label>
+        <input id="pair-link" type="text" autocomplete="off" spellcheck="false" placeholder="simurgh://…" dir="ltr">
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="pair-btn" data-i18n="pair_btn">Pair</button>
+          <span class="sub" id="pair-status"></span>
+        </div>
+      </div>
+      <div class="card" id="pair-done" hidden style="margin-top:16px">
+        <h2 data-i18n="pair_done_title">Paired</h2>
+        <div class="kv"><span data-i18n="pair_exit">Exit</span><span class="v mono" id="pair-exit">—</span></div>
+        <div class="kv"><span data-i18n="pair_ports">Active ports</span><span class="v mono" id="pair-ports">—</span></div>
+        <div class="hint" data-i18n="pair_done_hint">The tunnel starts dialing immediately; traffic flows through this server from now on.</div>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------------- ports -->
+    <section class="view" id="view-ports">
+      <div class="card">
+        <h2 data-i18n="ports_add">Add a port</h2>
+        <div class="cols2">
+          <div class="field"><label for="m_listen" data-i18n="form_listen">Listen port</label><input id="m_listen" type="number" placeholder="8443"></div>
+          <div class="field"><label for="m_target" data-i18n="form_target">Target port</label><input id="m_target" type="number" placeholder="8443"></div>
+          <div class="field"><label for="m_name" data-i18n="form_name">Name (optional)</label><input id="m_name" placeholder="panel"></div>
+          <div class="field"><label for="m_udp" data-i18n="form_proto">Protocol</label>
+            <select id="m_udp"><option value="no">TCP</option><option value="yes">UDP</option></select></div>
+        </div>
+        <div class="row" style="margin-top:12px"><button class="primary" id="add-mapping" data-i18n="btn_add">Add</button></div>
+        <div class="hint" data-i18n="hint_mappings">Ports are applied without a restart: the relay rebinds only what changed.</div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2 data-i18n="card_mappings">Ports</h2>
+        <table>
+          <thead><tr>
+            <th data-i18n="col_name">Name</th>
+            <th data-i18n="col_route">Route</th>
+            <th data-i18n="col_proto">Proto</th>
+            <th class="num" data-i18n="col_rate">Now</th>
+            <th class="num" data-i18n="col_moved">Moved</th>
+            <th data-i18n="col_quota">Quota</th>
+            <th class="num"></th>
+          </tr></thead>
+          <tbody id="mapping-body-2"></tbody>
+        </table>
+        <div class="hint" data-i18n="hint_quota_edit">Quotas and rate limits live in the config file (Limits page keys: rate_limit, quota, quota_period, quota_action).</div>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------- wizard -->
+    <section class="view" id="view-wizard">
+      <div class="card">
+        <h2 data-i18n="wizard_title">Guided setup</h2>
+        <div class="wizard-steps">
+          <div class="step" data-step="1"><span class="n">1</span><span data-i18n="wz_step1">Details</span></div>
+          <div class="step" data-step="2"><span class="n">2</span><span data-i18n="wz_step2">Check &amp; apply</span></div>
+          <div class="step" data-step="3"><span class="n">3</span><span data-i18n="wz_step3">Verify</span></div>
+        </div>
+        <div id="wizard-body"></div>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------------- speed -->
+    <section class="view" id="view-speed">
+      <div class="grid-2">
+        <div class="card">
+          <h2 data-i18n="speed_title">Measure through the tunnel</h2>
+          <div class="cols2">
+            <div class="field"><label for="st_streams" data-i18n="lbl_streams">Streams</label><input id="st_streams" type="number" value="1" min="1" max="8"></div>
+            <div class="field"><label for="st_seconds" data-i18n="lbl_seconds">Seconds</label><input id="st_seconds" type="number" value="6" min="2" max="20"></div>
+            <div class="field"><label for="st_udp" data-i18n="lbl_udp_probe">UDP loss probe</label>
+              <select id="st_udp"><option value="no">off</option><option value="yes">on</option></select></div>
+          </div>
+          <div class="row" style="margin-top:12px"><button class="primary" id="run-speedtest" data-i18n="btn_speedtest">Run the test</button></div>
+          <div id="speed-result" style="margin-top:16px"></div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="speed_history">This session</h2>
+          <div id="speed-runs"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------------- certs -->
+    <section class="view" id="view-certs">
+      <div class="card">
+        <h2 data-i18n="certs_title">Certificates in use</h2>
+        <table>
+          <thead><tr>
+            <th data-i18n="col_endpoint">Endpoint</th>
+            <th data-i18n="col_days">Expiry</th>
+            <th data-i18n="col_fingerprint">Fingerprint</th>
+            <th data-i18n="col_file">File</th>
+            <th data-i18n="col_note">Note</th>
+          </tr></thead>
+          <tbody id="certs-body"></tbody>
+        </table>
+        <div class="hint" data-i18n="certs_hint">Renew or obtain them from the CLI: simurgh cert status | issue | renew.</div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ logs -->
+    <section class="view" id="view-logs">
+      <div class="card">
+        <div class="row">
+          <h2 style="margin:0" data-i18n="card_logs">Logs</h2>
+          <span class="sp" style="flex:1"></span>
+          <input id="log-filter" placeholder="filter…" data-i18n-ph="log_filter" style="width:200px">
+          <select id="log-lines" style="width:120px">
+            <option value="120">120</option><option value="200" selected>200</option>
+            <option value="500">500</option><option value="2000">2000</option>
+          </select>
+          <label class="row" style="gap:6px;margin:0"><input type="checkbox" id="log-auto" checked style="width:auto"><span data-i18n="log_auto">auto</span></label>
+          <button class="sm" id="log-refresh" data-i18n="refresh">Refresh</button>
+        </div>
+        <pre class="logs" id="logs" style="margin-top:12px"></pre>
+      </div>
+    </section>
+
+    <!-- -------------------------------------------------------- security -->
+    <section class="view" id="view-security">
+      <div class="grid-2">
+        <div class="card">
+          <h2 data-i18n="security_title">Panel access</h2>
+          <div id="security-info"></div>
+          <div class="sep"></div>
+          <h2 data-i18n="security_link">One-time login link</h2>
+          <div class="row">
+            <div class="field" style="max-width:160px"><label for="link-ttl" data-i18n="lbl_ttl">Valid for (seconds)</label><input id="link-ttl" type="number" value="600"></div>
+            <button class="primary" id="make-link" style="margin-top:22px" data-i18n="btn_make_link">Create link</button>
+          </div>
+          <pre class="logs" id="link-out" hidden style="margin-top:12px"></pre>
+          <div class="hint" data-i18n="security_link_hint">The link signs in once and then dies. Useful to hand the panel to someone you trust without telling them the password, and never shows the password in a URL.</div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="security_notes">How it is guarded</h2>
+          <ul style="color:var(--fg2);font-size:13.5px;line-height:1.9;padding-inline-start:18px;margin:0">
+            <li data-i18n="security_n1">Session cookie + Basic auth; five wrong passwords from an address lock it out for 300 s.</li>
+            <li data-i18n="security_n2">Strict Content-Security-Policy: no external script, style, image or font can load.</li>
+            <li data-i18n="security_n3">Tokens are masked in the API, and the panel only edits a safe subset of the config.</li>
+            <li data-i18n="security_n4">The panel is read-mostly and never sits in the data path: the tunnel keeps forwarding if it dies.</li>
+          </ul>
+          <div class="sep"></div>
+          <div class="row">
+            <button class="danger" id="logout" data-i18n="btn_logout">Sign out of this browser</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- -------------------------------------------------------- settings -->
+    <section class="view" id="view-settings">
+      <div class="grid-2">
+        <div class="card">
+          <h2 data-i18n="settings_title">Configuration</h2>
+          <div id="settings-form" class="cols2"></div>
+          <div class="row" style="margin-top:14px">
+            <button class="primary" id="save-settings" data-i18n="btn_save">Save</button>
+            <span class="sub" data-i18n="settings_hint">Saved atomically; a running tunnel picks the values up on restart.</span>
+          </div>
+          <div class="sep"></div>
+          <div class="kv"><span data-i18n="lbl_token">Tunnel token</span><span class="v mono" id="token-box">—</span></div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="tune_title">Performance profile</h2>
+          <div class="row">
+            <button data-tune="gaming" data-i18n="tune_gaming">Gaming</button>
+            <button data-tune="balanced" data-i18n="tune_balanced">Balanced</button>
+            <button data-tune="speed" data-i18n="tune_speed">Speed</button>
+          </div>
+          <div class="hint" data-i18n="tune_hint">Same as simurgh tune: windows, frame size, tunnel connections and socket options in one click.</div>
+          <div class="sep"></div>
+          <h2 data-i18n="engine_title">Engine</h2>
+          <div class="kv"><span data-i18n="lbl_engine_now">Data plane</span><span class="v mono" id="engine-box">—</span></div>
+          <div class="hint" data-i18n="engine_hint">The compiled engine is used automatically when simurgh-go is installed; the panel, metrics and alerts stay in Python.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------------- tools -->
+    <section class="view" id="view-tools">
+      <div class="cards">
+        <div class="card">
+          <h2 data-i18n="tools_service">Service</h2>
+          <div class="row">
+            <button data-act="restart" data-i18n="btn_restart">Restart</button>
+            <button data-act="stop" class="danger" data-i18n="btn_stop">Stop</button>
+            <button data-act="start" data-i18n="btn_start">Start</button>
+            <button data-act="reconnect" data-i18n="btn_reconnect">Reconnect now</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="tools_update">Updates</h2>
+          <div class="row"><button data-act="update-check" data-i18n="btn_check_update">Check for updates</button></div>
+          <div class="hint" data-i18n="update_hint">simurgh update installs it; --check is what this button calls.</div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="tools_export">Export</h2>
+          <div class="row">
+            <button data-act="export" data-i18n="btn_export">Download config (JSON)</button>
+            <button data-act="logs-download" data-i18n="btn_download_logs">Download logs</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="tools_metrics">Metrics</h2>
+          <div class="row"><a class="btn" href="/metrics" target="_blank">/metrics</a><a class="btn" href="/healthz" target="_blank">/healthz</a></div>
+          <div class="hint" data-i18n="tools_metrics_hint">Prometheus text for Grafana or any scraper, and an unauthenticated liveness probe.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toasts" id="toasts"></div>
+</body>
+</html>

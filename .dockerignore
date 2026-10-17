@@ -1,0 +1,19 @@
+# Nothing here belongs in an image build context: the image needs the two
+# engines, the launcher and the entrypoint, nothing else.
+.git
+.github
+.gitignore
+build
+dist
+*.egg-info
+**/__pycache__
+**/*.pyc
+.venv
+venv
+tests
+docs
+*.deb
+*.rpm
+*.tar.gz
+SHA256SUMS.txt
+.scratch

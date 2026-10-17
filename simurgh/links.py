@@ -101,6 +101,44 @@ def fetch_setup(link: str, timeout: float = 15.0, scheme: str = "http") -> dict:
     return {**cfg, "link_name": info["name"]}
 
 
+def relay_payload_from_link(link: str, timeout: float = 15.0) -> dict:
+    """Fetch and sanity-check a setup link; refuses a link meant for an exit."""
+    payload = fetch_setup(link, timeout=timeout)
+    if str(payload.get("role") or "") == "exit":
+        raise LinkError("that link is for the exit server, not for the relay; "
+                        "use the link the exit prints with `simurgh link`")
+    return payload
+
+
+def merge_relay_payload(cfg: RelayConfig, payload: dict) -> dict:
+    """Pair an installed-but-unpaired relay with a setup payload.
+
+    Everything this install already chose -- the name, the panel port, the
+    engine, the limits, the ports the operator added -- stays exactly as it is.
+    Pairing brings the shared secret, the exit endpoint (and its failover pool),
+    plus any port the exit advertises that this relay does not forward yet.
+    """
+    fresh = relay_config_from_payload(payload)
+    cfg.token = fresh.token
+    cfg.tokens = list(fresh.tokens)
+    cfg.exit = fresh.exit
+    cfg.pool = list(fresh.pool)
+    cfg.unpaired = False
+    known = {m.key() for m in cfg.mappings}
+    added: list[int] = []
+    for mapping in fresh.mappings:
+        if mapping.key() in known:
+            continue
+        cfg.mappings.append(mapping)
+        known.add(mapping.key())
+        added.append(mapping.listen)
+    return {
+        "exit": cfg.exit.describe(),
+        "mappings": [m.listen for m in cfg.mappings],
+        "added": added,
+    }
+
+
 def relay_config_from_payload(payload: dict) -> RelayConfig:
     cfg = RelayConfig(token=str(payload["token"]))
     cfg.name = str(payload.get("name") or "")

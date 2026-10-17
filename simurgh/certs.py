@@ -140,6 +140,55 @@ def fingerprint_of(cert_path: str | Path) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def expiry_days(cert_path: str | Path) -> float | None:
+    """Days until this certificate stops being valid (None when unreadable).
+
+    Used by the alerting watcher: a self-signed certificate lasts ten years, but
+    the ones an operator copies in from ``acme.sh``/certbot last three months,
+    and a tunnel that dies on a Sunday because nobody noticed is exactly what
+    ``cert`` alerts are for.  ``cryptography`` is used when it is installed; the
+    ``openssl`` CLI covers the machines where it is not (that is also what the
+    installer falls back to).
+    """
+    import time as _time
+
+    if not cert_path:
+        return None
+    path = Path(cert_path)
+    if not path.is_file():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if have_cryptography():
+        try:
+            from cryptography import x509
+
+            cert = x509.load_pem_x509_certificate(data)
+            expires = getattr(cert, "not_valid_after_utc", None)
+            if expires is None:                            # cryptography < 42
+                expires = cert.not_valid_after.timetuple()
+                return (time.mktime(expires) - _time.time()) / 86400.0
+            return (expires.timestamp() - _time.time()) / 86400.0
+        except Exception as exc:                           # pragma: no cover
+            log.debug("cannot read %s with cryptography (%s); trying openssl",
+                      path, exc)
+    try:
+        out = subprocess.run(
+            ["openssl", "x509", "-in", str(path), "-noout", "-enddate"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode != 0:
+            return None
+        stamp = out.stdout.strip().split("=", 1)[1]
+        expires = _time.mktime(_time.strptime(stamp, "%b %d %H:%M:%S %Y %Z"))
+        return (expires - _time.time()) / 86400.0
+    except (OSError, ValueError, IndexError) as exc:
+        log.debug("cannot read %s (%s)", path, exc)
+        return None
+
+
 def ensure_certificate(home, domain: str = "simurgh.local",
                        cert_file: str | None = None,
                        key_file: str | None = None) -> tuple[str, str]:
