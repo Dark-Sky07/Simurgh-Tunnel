@@ -1149,3 +1149,20 @@ async def test_a_reverse_relay_is_not_paired_this_way(home, tmp_path):
         assert "simurgh link" in data["error"]
     finally:
         await panel.stop()
+
+
+async def test_panel_port_zero_adopts_the_kernel_assigned_port(home, tmp_path):
+    cfg = _unpaired_cfg()
+    save_relay(cfg, home.relay_cfg)
+    panel = Panel(home, "relay", node=FakeRelayNode(cfg), host="127.0.0.1",
+                  port=0, user=USER, password=PASSWORD,
+                  state_path=tmp_path / "state.json")
+    await panel.start()
+    try:
+        assert panel.port > 0
+        status, data = await _request(panel.port, "/healthz")
+        assert status == 200 and data["ok"] is True
+        assert panel.status()["panel"]["port"] == panel.port
+    finally:
+        await panel.stop()
+

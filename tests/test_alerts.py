@@ -263,11 +263,26 @@ def _certificate(path, days: int) -> str:
     return str(path)
 
 
-def test_expiry_days_counts_a_real_certificate(tmp_path):
-    soon = expiry_days(_certificate(tmp_path / "soon.pem", 10))
+def test_expiry_days_counts_a_real_certificate(tmp_path, monkeypatch):
+    soon_path = _certificate(tmp_path / "soon.pem", 10)
+    soon = expiry_days(soon_path)
     assert soon is not None and 9.5 < soon < 10.5
     far = expiry_days(_certificate(tmp_path / "far.pem", 200))
     assert far is not None and 199 < far < 201
+
+    # cryptography < 42 has no `not_valid_after_utc`; must still work in UTC
+    from cryptography import x509
+
+    real_load = x509.load_pem_x509_certificate
+
+    class _LegacyCert:
+        def __init__(self, cert):
+            self.not_valid_after = cert.not_valid_after_utc.replace(tzinfo=None)
+
+    monkeypatch.setattr(x509, "load_pem_x509_certificate",
+                        lambda data: _LegacyCert(real_load(data)))
+    legacy = expiry_days(soon_path)
+    assert legacy is not None and 9.5 < legacy < 10.5
 
 
 def test_expiry_days_survives_missing_and_broken_files(tmp_path):

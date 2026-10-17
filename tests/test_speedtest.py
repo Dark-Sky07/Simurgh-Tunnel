@@ -8,9 +8,6 @@ that both ends run in this process.
 from __future__ import annotations
 
 import asyncio
-import socket
-import struct
-import time
 
 import pytest
 

@@ -487,6 +487,8 @@ def cmd_service(args) -> int:
     role = _detect_role(home, args.role)
     names = _service_names(role)
     if action == "status":
+        if getattr(args, "detail", False) or getattr(args, "watch", False):
+            return cmd_status(args)
         rows = []
         for name in names:
             state = systemd.service_state(name)
@@ -495,9 +497,27 @@ def cmd_service(args) -> int:
             enabled = state.get("UnitFileState", "")
             rows.append((name, active, sub, enabled))
         cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
+        pairing = None
+        if role == "relay" and cfg_path.exists():
+            try:
+                relay_cfg = load_relay(cfg_path)
+                pairing = "paired" if relay_cfg.paired else "unpaired"
+            except (ConfigError, OSError):
+                pairing = None
+        if args.json:
+            payload = {"services": [
+                {"name": n, "active": a, "sub": s, "enabled": e} for n, a, s, e in rows
+            ]}
+            if pairing is not None:
+                payload["pairing"] = pairing
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
         print(f"{__product__} v{__version__}   ({role})")
         print(f"  home:   {home.path}")
         print(f"  config: {cfg_path} {'✔' if cfg_path.exists() else '✘ (missing)'}")
+        if pairing == "unpaired":
+            print("  pairing: \033[33mnot paired yet\033[0m — on the exit run "
+                  "`simurgh link`, then here: simurgh join '<link>'")
         for name, active, sub, enabled in rows:
             mark = "✔" if active == "active" else "✘"
             print(f"  service: {name}: {active}/{sub} enable={enabled} {mark}")
@@ -511,10 +531,6 @@ def cmd_service(args) -> int:
                 print(f"  stats:   {json.dumps(state.get('stats', {}).get('totals', {}), ensure_ascii=False)}")
             except (OSError, ValueError, KeyError):
                 pass
-        if args.json:
-            print(json.dumps({"services": [
-                {"name": n, "active": a, "sub": s, "enabled": e} for n, a, s, e in rows
-            ]}, ensure_ascii=False))
         return 0
     if not systemd.available():
         _err("systemd is not available; run `simurgh exit` / `simurgh relay` manually.")
@@ -892,7 +908,7 @@ def cmd_mapping(args) -> int:
 # ------------------------------------------------------------------- reports
 def cmd_status(args) -> int:
     home = Home(args.home)
-    role = args.role
+    role = _detect_role(home, getattr(args, "role", None))
     state: dict = {}
     if home.state.exists():
         try:
@@ -900,9 +916,13 @@ def cmd_status(args) -> int:
         except (OSError, ValueError):
             state = {}
     node = state.get(role, {})
-    if args.json:
+    if getattr(args, "json", False):
         print(json.dumps(node, ensure_ascii=False, indent=2))
         return 0
+    if not node:
+        _warn(f"no live data for {role}. Is the service running? (simurgh status/up)")
+        return cmd_service(argparse.Namespace(role=role, service_action="status",
+                                             home=args.home, json=False))
     print(f"\033[1m{__product__} v{__version__}\033[0m — {home.path}")
     cfg_path = home.exit_cfg if role == "exit" else home.relay_cfg
     print(f"  config: {cfg_path} {'✔' if cfg_path.exists() else '✘'}")
@@ -914,10 +934,6 @@ def cmd_status(args) -> int:
         if relay_cfg is not None and not relay_cfg.paired:
             print("  pairing:  \033[33mnot paired yet\033[0m — on the exit run "
                   "`simurgh link`, then here: simurgh join '<link>'")
-    if not node:
-        _warn(f"no live data for {role}. Is the service running? (simurgh status/up)")
-        return cmd_service(argparse.Namespace(role=role, service_action="status",
-                                             home=args.home, json=False))
     if role == "relay":
         connected = node.get("connected")
         tunnel = "\033[32mconnected\033[0m" if connected else "\033[31mdown\033[0m"
@@ -945,13 +961,14 @@ def cmd_status(args) -> int:
             print(f"    {m.get('listen')} → {m.get('target')} "
                   f"({'UDP' if m.get('udp') else 'TCP'}) "
                   f"{'✔' if m.get('bound') else '✘'}")
-    if args.watch:
+    if getattr(args, "watch", False):
+        interval = getattr(args, "interval", 2.0)
         try:
             while True:
-                time.sleep(args.interval)
+                time.sleep(interval)
                 os.system("clear")
                 cmd_status(argparse.Namespace(home=args.home, role=role, json=False,
-                                              watch=False, interval=args.interval))
+                                              watch=False, interval=interval))
         except KeyboardInterrupt:
             return 0
     return 0
@@ -1932,6 +1949,12 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(action, help=helptext)
         p.add_argument("--role", choices=("exit", "relay"), default=None, help="exit | relay (auto-detected by default)")
         p.add_argument("--json", action="store_true")
+        if action == "status":
+            p.add_argument("--detail", "-d", action="store_true",
+                           help="detailed live tunnel, traffic and mapping report")
+            p.add_argument("--watch", "-w", action="store_true",
+                           help="refresh the detailed report every few seconds")
+            p.add_argument("--interval", type=float, default=2.0)
         p.set_defaults(func=cmd_service, service_action=action)
 
     p = sub.add_parser("mapping", aliases=["port"], help="manage port forwardings")

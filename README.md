@@ -80,9 +80,9 @@ units, the package never writes `/etc/simurgh` itself, and `simurgh update`
 understands all of them. Details: **[docs/PACKAGING.md](docs/PACKAGING.md)**.
 
 ```bash
-sudo dpkg -i simurgh_3.1.0_amd64.deb            # Debian / Ubuntu / Proxmox
-sudo dnf install ./simurgh-3.1.0-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
-sudo tar -xzf simurgh-3.1.0-noarch.tar.gz -C /  # any system with Python 3.9+
+sudo dpkg -i simurgh_3.1.1_amd64.deb            # Debian / Ubuntu / Proxmox
+sudo dnf install ./simurgh-3.1.1-1.x86_64.rpm   # RHEL / Fedora / Alma / Rocky
+sudo tar -xzf simurgh-3.1.1-noarch.tar.gz -C /  # any system with Python 3.9+
 docker compose up -d                            # relay + exit, one machine
 ```
 
@@ -128,7 +128,7 @@ everything again).
 
 ```bash
 simurgh menu                     # English text menu (recommended first run)
-simurgh status                   # tunnel, traffic, RTT, ports
+simurgh status                   # service, pairing and tunnel (--detail for mappings)
 simurgh mapping add 443 443      # Iranian port -> foreign port
 simurgh mapping list | remove | toggle
 simurgh speedtest --udp           # throughput, latency under load, UDP loss
@@ -243,7 +243,7 @@ vendored in `go/third_party/`, so its build needs no network and no package.
 
 | Check | Result |
 |---|---|
-| `python -m pytest -q` | **365 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, tuning profiles, the web panel (the map, the wizard, one-time links, the assets), the packages (a real .deb/.rpm/tarball build, the container image files), and the cross-engine tests below) |
+| `python -m pytest -q` | **373 passed** (Python 3.11; the count differs slightly per interpreter) (protocol, mux, config, panel, links, e2e for all five carriers, reverse mode, tunnel pool, shared window, window autotuning, engine default, ClientHello splitting, bandwidth limits + quotas + `max_conns`, tuning profiles, the web panel (the map, the wizard, one-time links, the assets), the packages (a real .deb/.rpm/tarball build, the container image files), and the cross-engine tests below) |
 | `go test ./...` (in `go/`) | **passing** — mux (round trip, credit return, refused open, shared window) and carrier/decoy (plain, TLS, wrong token, `site:` proxying, custom page) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — 4 carriers × (small, 100 KB, 8 concurrent users) |
 | User path | the foreign server's page served byte-for-byte through the Iranian port (200 MB piped) |
@@ -290,7 +290,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # 365 tests (Python 3.11), no test-only dependencies
+python -m pytest -q                 # 373 tests (Python 3.11), no test-only dependencies
 python tools/live_smoke.py          # live matrix on loopback (40 checks)
 
 # the compiled engine (same protocol, same config files)
@@ -303,7 +303,7 @@ cd go && go test -race ./...        # the same under the race detector
 
 Publishing a GitHub Release triggers `.github/workflows/release-binaries.yml`,
 which builds and attaches the six binaries plus `SHA256SUMS.txt`. To populate an
-existing release manually, run `gh workflow run release-binaries.yml -f tag=v3.1.0`.
+existing release manually, run `gh workflow run release-binaries.yml -f tag=v3.1.1`.
 
 Layout: `simurgh/protocol.py` (frames, address codec), `mux.py` (multiplexer +
 flow control), `carriers.py` (4 carriers) + `tlsio.py`/`obfs.py`/`decoy.py`,

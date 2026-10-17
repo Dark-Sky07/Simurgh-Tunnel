@@ -151,7 +151,7 @@ async def test_the_rate_limit_can_be_changed_without_restarting(certs, tmp_path)
     size = 128 * 1024
     web, target_port = await _body_server(size)
     mapping = Mapping(name="slow", listen=0, target_port=target_port,
-                      rate_limit="64k")
+                      rate_limit={"rate": "64k", "burst": "4k"})
     relay, node, port = await _stack(mapping, certs, tmp_path, target_port)
     try:
         _data, slow = await _fetch(port, size)

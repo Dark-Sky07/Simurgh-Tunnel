@@ -20,7 +20,6 @@ import asyncio
 import os
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -249,12 +248,6 @@ async def test_python_relay_dials_a_go_exit(go_engine, tmp_path, certs, carrier)
     exit_port, relay_port = free_port(), free_port()
     exit_toml, _relay_toml = _write_configs(tmp_path, exit_port, relay_port,
                                             target_port, carrier)
-    exit_cfg = ExitConfig(
-        token=TOKEN, name="cross-exit", cert_file=certs[0], key_file=certs[1],
-        cert_auto=False,
-        listen=[ListenSpec(carrier=carrier, host="127.0.0.1", port=exit_port,
-                           mtu=1200, fec="8:2", window=512)],
-    )
     # the Go exit needs a certificate for the *other* carriers only; udp needs
     # none, so it is handed the same cert paths the Python side uses
     exit_toml.write_text(exit_toml.read_text() + f"""

@@ -309,3 +309,24 @@ def test_exit_summary_shows_the_token_the_relay_needs(tmp_path):
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
     assert "auto-token" in output, output
+
+
+def test_help_does_not_execute_commands_in_backticks(tmp_path):
+    """``install.sh --help`` must print ``simurgh join '<link>'``, never run it."""
+    env = _env(tmp_path)
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    marker = tmp_path / "ran-simurgh"
+    fake = fake_bin / "simurgh"
+    fake.write_text(f"#!/bin/sh\necho \"$*\" > '{marker}'\nexit 99\n",
+                    encoding="utf-8")
+    fake.chmod(0o755)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    proc = subprocess.run(["bash", str(INSTALL), "--help"],
+                          env=env, capture_output=True, text=True, timeout=30)
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert not marker.exists(), f"--help executed simurgh: {marker.read_text()}"
+    assert "simurgh join '<link>'" in output, output
+

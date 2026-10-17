@@ -79,9 +79,9 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 **[docs/PACKAGING.fa.md](docs/PACKAGING.fa.md)**.
 
 ```bash
-sudo dpkg -i simurgh_3.1.0_amd64.deb            # دبیان / اوبونتو / proxmox
-sudo dnf install ./simurgh-3.1.0-1.x86_64.rpm   # ردهت / فدورا / آلما / راکی
-sudo tar -xzf simurgh-3.1.0-noarch.tar.gz -C /  # هر سیستمی با پایتون ۳٫۹+
+sudo dpkg -i simurgh_3.1.1_amd64.deb            # دبیان / اوبونتو / proxmox
+sudo dnf install ./simurgh-3.1.1-1.x86_64.rpm   # ردهت / فدورا / آلما / راکی
+sudo tar -xzf simurgh-3.1.1-noarch.tar.gz -C /  # هر سیستمی با پایتون ۳٫۹+
 docker compose up -d                            # رله + اگزیت، یک ماشین
 ```
 
@@ -124,7 +124,7 @@ sudo bash install.sh --role both --tunnel-port 8443    # تونل روی ۸۴۴�
 
 ```bash
 simurgh menu                     # منوی متنی انگلیسی (پیشنهادی برای شروع)
-simurgh status                   # وضعیت تونل، ترافیک، پینگ، پورت‌ها
+simurgh status                   # وضعیت سرویس، جفت‌سازی و تونل (--detail برای جزئیات)
 simurgh mapping add 443 443      # پورت ایران -> پورت سرور خارج
 simurgh mapping list | remove | toggle
 simurgh speedtest --udp           # توان عبوری، تأخیر زیر بار، افت UDP
@@ -237,7 +237,7 @@ ChaCha20-Poly1305 به‌صورت vendor داخل `go/third_party/` است، پ�
 
 | آزمون | نتیجه |
 |---|---|
-| `python -m pytest -q` | **۳۶۵ تست، همه سبز** (پایتون ۳٫۱۱؛ تعداد بین نسخه‌های پایتون کمی متفاوت است) (پروتکل، مالتی‌پلکسر، کانفیگ، پنل، لینک، e2e هر ۵ حامل، حالت معکوس، استخر تونل، پنجرهٔ مشترک، پنجرهٔ خودکار، پیش‌فرض موتور، تکه‌کردن ClientHello، محدودیت پهنای‌باند و کوتا و `max_conns`، پروفایل‌های کارایی، پنل وب (نقشه، ویزارد، لینک‌های یک‌بارمصرف، assetها)، بسته‌ها (ساخت واقعی .deb/.rpm/tarball و فایل‌های ایمیج کانتینر) و آزمون‌های بین‌موتوری پایین) |
+| `python -m pytest -q` | **۳۷۳ تست، همه سبز** (پایتون ۳٫۱۱؛ تعداد بین نسخه‌های پایتون کمی متفاوت است) (پروتکل، مالتی‌پلکسر، کانفیگ، پنل، لینک، e2e هر ۵ حامل، حالت معکوس، استخر تونل، پنجرهٔ مشترک، پنجرهٔ خودکار، پیش‌فرض موتور، تکه‌کردن ClientHello، محدودیت پهنای‌باند و کوتا و `max_conns`، پروفایل‌های کارایی، پنل وب (نقشه، ویزارد، لینک‌های یک‌بارمصرف، assetها)، بسته‌ها (ساخت واقعی .deb/.rpm/tarball و فایل‌های ایمیج کانتینر) و آزمون‌های بین‌موتوری پایین) |
 | `go test ./...` (داخل پوشهٔ `go/`) | **سبز** — مالتی‌پلکسر (رفت‌وبرگشت، برگشت کردیت، رد درخواست، پنجرهٔ مشترک) و حامل/طعمه (plain، TLS، توکن غلط، پروکسی `site:`، صفحهٔ دلخواه) |
 | `python tools/live_smoke.py` | **ALL GREEN 40/40** — ۴ حامل × (کوچک، ۱۰۰ کیلوبایت، ۸ کاربر همزمان) |
 | مسیر واقعی کاربر | محتوای سرور خارج، بایت‌به‌بایت از پورت ایران سرو شد (۲۰۰ مگابایت پیوسته) |
@@ -285,7 +285,7 @@ git clone https://github.com/Dark-Sky07/Simurgh-Tunnel.git
 cd Simurgh-Tunnel
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[secure]'
-python -m pytest -q                 # ۳۶۵ تست (پایتون ۳٫۱۱)، بدون وابستگی تست‌اضافه
+python -m pytest -q                 # ۳۷۳ تست (پایتون ۳٫۱۱)، بدون وابستگی تست‌اضافه
 python tools/live_smoke.py          # می‌ریس زنده روی لوپ‌بک (۴۰ بررسی)
 
 # موتور کامپایل‌شده (همان پروتکل، همان فایل‌های تنظیمات)
@@ -298,7 +298,7 @@ cd go && go test -race ./...        # همان‌ها زیر race detector
 
 با انتشار GitHub Release، workflow در `.github/workflows/release-binaries.yml`
 شش باینری و `SHA256SUMS.txt` را می‌سازد و پیوست می‌کند. برای افزودن فایل‌ها به
-ریلیز موجود، اجرا کنید: `gh workflow run release-binaries.yml -f tag=v3.1.0`.
+ریلیز موجود، اجرا کنید: `gh workflow run release-binaries.yml -f tag=v3.1.1`.
 
 ساختار: `simurgh/protocol.py` (فریم‌ها و کدگذاری آدرس)، `mux.py` (مالتی‌پلکسر و
 کنترل جریان)، `carriers.py` (چهار حامل) + `tlsio.py`/`obfs.py`/`decoy.py`،

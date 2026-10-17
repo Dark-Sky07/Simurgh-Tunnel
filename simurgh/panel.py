@@ -198,6 +198,12 @@ class Panel:
             self.last_error = f"cannot listen on {self.host}:{self.port}: {exc}"
             log.error("%s", self.last_error)
             raise
+        if not self.port:
+            for sock in self._server.sockets or ():
+                name = sock.getsockname()
+                if len(name) > 1 and name[1]:
+                    self.port = name[1]
+                    break
         log.info("panel on http://%s:%d (login: %s)", self.host, self.port, self.user)
 
     async def stop(self) -> None:
