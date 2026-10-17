@@ -25,7 +25,7 @@ from .accounting import TrafficAccount, quota_from
 from .alerts import alerts_from_config
 from .bridge import Bridge, proxy_v1_header
 from .carriers import ServerCarrier, client_connect, create_tcp_server
-from .config import Mapping, RelayConfig
+from .config import ExitEndpoint, Mapping, RelayConfig
 from .mux import Mux, StreamOpenError
 from .protocol import MODE_TCP, encode_addr
 from .ratelimit import limiter_from

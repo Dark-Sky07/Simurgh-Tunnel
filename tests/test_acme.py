@@ -252,9 +252,6 @@ def test_wire_the_relay_tunnel():
 
 # ------------------------------------------------------------------- status
 def test_status_reports_each_listener(tmp_path, certs):
-    from simurgh.config import save_exit as _save
-    from simurgh.config import load_exit as _load
-
     cfg = ExitConfig(token="tok", name="kharej", cert_file=certs[0],
                      key_file=certs[1], cert_auto=False,
                      listen=[ListenSpec(carrier="tls", port=443),
@@ -404,7 +401,7 @@ def test_the_menu_has_entries_for_alerts_and_certificates(tmp_path, capsys,
     """The menu is the beginner path: both new surfaces need a way in."""
     from simurgh import menu
 
-    home = _exit_home(tmp_path)
+    _exit_home(tmp_path)
 
     class Home:
         path = tmp_path / "simurgh"

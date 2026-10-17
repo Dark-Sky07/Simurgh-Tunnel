@@ -1016,8 +1016,6 @@ class ServerCarrier:
                             mtu: int = 1200, fec: str = "off",
                             window: int = 1024, max_sessions: int = 64):
         """A datagram endpoint for the ``udp`` carrier (one socket, many peers)."""
-        import socket as _socket
-
         from .udpcarrier import UdpServerProtocol, datagram_socket, fec_params
 
         protocol = UdpServerProtocol(

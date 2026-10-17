@@ -103,7 +103,7 @@ main options:
   --token TOKEN              shared secret token (generated/asked if missing)
   --exit HOST:PORT           foreign server address and port (for the relay);
                              without it the relay installs unpaired and you
-                             pair it later with `simurgh join '<link>'` or the
+                             pair it later with \`simurgh join '<link>'\` or the
                              panel's Pair page — nothing is asked up front
   --dial relay|exit          who dials the tunnel (default relay = direct mode;
                              "exit" = reverse: this Iranian server listens)

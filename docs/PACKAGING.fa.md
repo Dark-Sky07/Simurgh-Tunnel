@@ -12,9 +12,9 @@ package manager یا ایمیج یا «باز کن و اجرا کن» جواب �
 | | فرمان | پوشش |
 |---|---|---|
 | **یک فرمان** | `curl … \| sudo bash` | همه‌چیز، همراه ساخت موتور Go |
-| **`.deb`** | `sudo dpkg -i simurgh_3.1.0_amd64.deb` | دبیان، اوبونتو، proxmox |
-| **`.rpm`** | `sudo dnf install ./simurgh-3.1.0-1.x86_64.rpm` | ردهت، فدورا، آلما، راکی، openSUSE |
-| **tarball** | `tar -xzf simurgh-3.1.0-noarch.tar.gz -C /` | هر جایی که پایتون ۳٫۹+ دارد |
+| **`.deb`** | `sudo dpkg -i simurgh_3.1.1_amd64.deb` | دبیان، اوبونتو، proxmox |
+| **`.rpm`** | `sudo dnf install ./simurgh-3.1.1-1.x86_64.rpm` | ردهت، فدورا، آلما، راکی، openSUSE |
+| **tarball** | `tar -xzf simurgh-3.1.1-noarch.tar.gz -C /` | هر جایی که پایتون ۳٫۹+ دارد |
 | **کانتینر** | `docker compose up -d` | هر دو نقش روی یک ماشین، یا یک نقش روی هر سرور |
 
 ## داخل بسته چه چیزی است
@@ -30,8 +30,8 @@ package manager یا ایمیج یا «باز کن و اجرا کن» جواب �
 | `/usr/lib/systemd/system/simurgh-{relay,exit}.service` | یک unit برای هر نقش؛ بسته فقط نقشی را فعال می‌کند که **کانفیگش** از قبل موجود باشد |
 | `/usr/share/doc/simurgh/` | همین فایل، README هر دو زبان و مرجع تنظیمات |
 
-دو حالت بسته عمدی است: `simurgh_3.1.0_all.deb` / `simurgh-3.1.0-1.noarch.rpm`
-خالص پایتون‌اند و همه‌جا اجرا می‌شوند، ولی `simurgh_3.1.0_amd64.deb` و
+دو حالت بسته عمدی است: `simurgh_3.1.1_all.deb` / `simurgh-3.1.1-1.noarch.rpm`
+خالص پایتون‌اند و همه‌جا اجرا می‌شوند، ولی `simurgh_3.1.1_amd64.deb` و
 `…-1.x86_64.rpm` موتور کامپایل‌شده را هم دارند — که CLI خودش از
 `/usr/bin/simurgh-go` برمی‌دارد، پس `engine = "go"` بدون تنظیم هیچ مسیری کار
 می‌کند.
@@ -61,7 +61,7 @@ CI روی هر push هر چهار فایل را می‌سازد (کار `package
 ### دبیان، اوبونتو، proxmox
 
 ```bash
-sudo dpkg -i simurgh_3.1.0_amd64.deb      # اگر وابستگی کم بود: apt -f install
+sudo dpkg -i simurgh_3.1.1_amd64.deb      # اگر وابستگی کم بود: apt -f install
 sudo simurgh install --role exit --listen 443      # یا --role relay --exit-host <ip>
 sudo systemctl enable --now simurgh-exit           # unit همان نقشی که ساختید
 ```
@@ -73,7 +73,7 @@ sudo systemctl enable --now simurgh-exit           # unit همان نقشی که
 ### ردهت، فدورا، آلما، راکی، openSUSE
 
 ```bash
-sudo dnf install ./simurgh-3.1.0-1.x86_64.rpm
+sudo dnf install ./simurgh-3.1.1-1.x86_64.rpm
 sudo simurgh install --role relay --exit-host 203.0.113.9 --exit-port 443 --token XXX
 sudo systemctl enable --now simurgh-relay
 ```
@@ -83,7 +83,7 @@ sudo systemctl enable --now simurgh-relay
 ریشه‌اش `/` است، پس روی هر سیستمی که پایتون ۳٫۹+ دارد باز می‌شود:
 
 ```bash
-sudo tar -xzf simurgh-3.1.0-noarch.tar.gz -C /
+sudo tar -xzf simurgh-3.1.1-noarch.tar.gz -C /
 sudo simurgh install --role exit --listen 443
 sudo simurgh exit          # بدون systemd؟ نقش را دستی اجرا کنید
 ```

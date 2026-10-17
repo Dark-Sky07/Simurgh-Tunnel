@@ -150,6 +150,7 @@ def expiry_days(cert_path: str | Path) -> float | None:
     ``openssl`` CLI covers the machines where it is not (that is also what the
     installer falls back to).
     """
+    import calendar
     import time as _time
 
     if not cert_path:
@@ -168,8 +169,8 @@ def expiry_days(cert_path: str | Path) -> float | None:
             cert = x509.load_pem_x509_certificate(data)
             expires = getattr(cert, "not_valid_after_utc", None)
             if expires is None:                            # cryptography < 42
-                expires = cert.not_valid_after.timetuple()
-                return (time.mktime(expires) - _time.time()) / 86400.0
+                return (calendar.timegm(cert.not_valid_after.timetuple())
+                        - _time.time()) / 86400.0
             return (expires.timestamp() - _time.time()) / 86400.0
         except Exception as exc:                           # pragma: no cover
             log.debug("cannot read %s with cryptography (%s); trying openssl",
@@ -182,7 +183,7 @@ def expiry_days(cert_path: str | Path) -> float | None:
         if out.returncode != 0:
             return None
         stamp = out.stdout.strip().split("=", 1)[1]
-        expires = _time.mktime(_time.strptime(stamp, "%b %d %H:%M:%S %Y %Z"))
+        expires = calendar.timegm(_time.strptime(stamp, "%b %d %H:%M:%S %Y %Z"))
         return (expires - _time.time()) / 86400.0
     except (OSError, ValueError, IndexError) as exc:
         log.debug("cannot read %s (%s)", path, exc)

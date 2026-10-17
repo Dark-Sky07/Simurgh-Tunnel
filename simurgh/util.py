@@ -378,8 +378,6 @@ async def dial_stream(loop, factory, host: str, port: int, *, nodelay: bool = Tr
     opinion about which family to try first, so the socket is made here: picked
     in the configured preference order, tuned, then handed to asyncio.
     """
-    import asyncio
-
     infos = resolve_hosts(host, port, prefer)
     if not infos:
         raise OSError(f"cannot resolve {host}:{port}")

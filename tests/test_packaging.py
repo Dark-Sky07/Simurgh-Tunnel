@@ -82,7 +82,7 @@ def test_the_entrypoint_forwards_other_commands(tmp_path):
     (home / "relay.toml").write_text('token = "x"\n')
     launcher = REPO / "simurgh" / "__main__.py"  # a stand-in, replaced below
     fake = tmp_path / "simurgh"
-    fake.write_text(f"#!/bin/sh\necho forwarded: $*\n")
+    fake.write_text("#!/bin/sh\necho forwarded: $*\n")
     fake.chmod(0o755)
     proc = run(["sh", str(REPO / "packaging/docker/entrypoint.sh"), "--version"],
                env={**os.environ, "SIMURGH_HOME": str(home), "SIMURGH_BIN": str(fake)})

@@ -116,7 +116,7 @@ def run(argv: list[str], *, timeout: float = TIMEOUT) -> tuple[int, str]:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as exc:
         raise AcmeError(f"cannot run {argv[0]}: {exc}") from None
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         raise AcmeError(f"{argv[0]} did not finish in {timeout:.0f} s") from None
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
