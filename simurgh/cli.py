@@ -1980,6 +1980,9 @@ def build_parser() -> argparse.ArgumentParser:
                            ("relay", "run the Iranian server (relay)")):
         p = sub.add_parser(role, help=helptext)
         p.add_argument("--role", default=role, help=argparse.SUPPRESS)
+        # v3.2.0 generated `simurgh relay --home ...` in its systemd unit.
+        # Accept that legacy order during upgrades; new units put --home first.
+        p.add_argument("--home", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         p.add_argument("--no-panel", action="store_true", help="without the web panel")
         p.add_argument("--panel-host", default="0.0.0.0")
         p.add_argument("--panel-port", type=int, default=0)

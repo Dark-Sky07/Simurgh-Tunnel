@@ -77,10 +77,11 @@ def exec_start_for(home: Home, role: str) -> str:
     """The ExecStart line: prefer the installed console script."""
     exe = shutil.which("simurgh")
     if not exe:
-        # running from a source checkout: `python3 -m simurgh ...`
+        # running from a source checkout: `python3 -m simurgh ...`.
+        # --home is a Python CLI *global* option and must precede the role.
         py = shutil.which("python3") or "python3"
-        return f"{py} -m simurgh {role} --home {home.path}"
-    return f"{exe} {role} --home {home.path}"
+        return f"{py} -m simurgh --home {home.path} {role}"
+    return f"{exe} --home {home.path} {role}"
 
 
 def render_unit(home: Home, role: str, name: str = "", user: str | None = None) -> str:

@@ -104,7 +104,9 @@ jobs:
 
   packages:
     name: packages (.deb, .rpm, tarball, image)
-    runs-on: ubuntu-latest
+    # ubuntu-latest moved during the 2026 runner migration and stalled in apt;
+    # keep release package builds on a stable, known toolchain.
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out source
         uses: actions/checkout@v4

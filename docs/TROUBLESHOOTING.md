@@ -16,6 +16,17 @@ simurgh logs -f          # live log (/etc/simurgh/logs/*.log)
 
 * Open the port: `ufw allow 8787` (or `firewall-cmd --add-port=8787/tcp`).
 * Check the service: `systemctl status simurgh-relay` / `simurgh status`.
+* If the log says `error: unrecognized arguments: --home /etc/simurgh` and the
+  unit is in an `auto-restart` loop, it was written by v3.2.0 with the global
+  option after the role. v3.2.1 fixes the generator and accepts the legacy
+  order during upgrades. To repair a relay unit immediately without touching
+  its config, run:
+  ```bash
+  sudo sed -i 's#^ExecStart=/usr/local/bin/simurgh relay --home /etc/simurgh#ExecStart=/usr/local/bin/simurgh --home /etc/simurgh relay#' /etc/systemd/system/simurgh-relay.service
+  sudo systemctl daemon-reload
+  sudo systemctl restart simurgh-relay
+  curl -sS http://127.0.0.1:8787/healthz
+  ```
 * Panel address and credentials are printed at startup and stored in
   `/etc/simurgh/state.json`; `simurgh status` shows them.
 * Prefer a single-use login link from the panel's **Security** page. The legacy

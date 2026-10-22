@@ -18,6 +18,16 @@ simurgh logs -f          # لاگ زنده (/etc/simurgh/logs/*.log)
 
 * پورت را باز کنید: `ufw allow 8787` (یا `firewall-cmd --add-port=8787/tcp`).
 * وضعیت سرویس: `systemctl status simurgh-relay` یا `simurgh status`.
+* اگر لاگ `error: unrecognized arguments: --home /etc/simurgh` می‌دهد و unit در
+  چرخهٔ `auto-restart` است، نسخهٔ v3.2.0 آرگومان سراسری را بعد از نقش نوشته است.
+  نسخهٔ v3.2.1 هم generator را اصلاح می‌کند و هم ترتیب قدیمی را هنگام ارتقا
+  می‌پذیرد. برای تعمیر فوری unit رله بدون تغییر کانفیگ:
+  ```bash
+  sudo sed -i 's#^ExecStart=/usr/local/bin/simurgh relay --home /etc/simurgh#ExecStart=/usr/local/bin/simurgh --home /etc/simurgh relay#' /etc/systemd/system/simurgh-relay.service
+  sudo systemctl daemon-reload
+  sudo systemctl restart simurgh-relay
+  curl -sS http://127.0.0.1:8787/healthz
+  ```
 * آدرس و رمز پنل در اولین اجرا چاپ می‌شود و در `/etc/simurgh/state.json` ذخیره
   است؛ `simurgh status` هم نشانش می‌دهد.
 * لینک یک‌بارمصرف صفحهٔ **امنیت** را ترجیح دهید. شکل قدیمی
