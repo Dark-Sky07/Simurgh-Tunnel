@@ -107,7 +107,7 @@ function makeNode(tag, id) {
 ids.forEach((id) => nodes.set(id, makeNode('div', id)));
 if (nodes.has('panel-meta')) {
   nodes.get('panel-meta').textContent = JSON.stringify({
-    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.1.1',
+    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.0',
   });
 }
 if (nodes.has('log-filter')) nodes.get('log-filter').value = '';
