@@ -67,34 +67,52 @@ Everything on screen comes from one poll: `GET /api/layout` every two seconds
 | View | Notes |
 |---|---|
 | Dashboard | the map, the cards, the chart, the pool |
-| Pair | only while the relay is unpaired: paste the exit's setup link; the running node adopts it in place |
-| Ports | add/remove/enable/disable/re-point mappings; changes are written to the config and applied to the running node without a restart |
+| Pair | create a setup link on an exit or reverse relay; import it on a direct relay or reverse exit. No CLI pairing step is needed |
+| Ports | add/remove/enable/disable mappings; changes are written to the config and applied to the running node without a restart |
 | Wizard | preview → apply → rollback for a new tunnel; see below |
 | Speed test | download/upload against the exit, latency grades, session history in the browser |
 | Certificates | what `simurgh cert status` prints, with days left and fingerprints |
 | Logs | the node's log tail, filter and auto-refresh |
 | Security | sessions, lockouts, failed logins, one-time links, the hardening rules |
-| Settings | the editable subset of the config, the engine in use, the tunnel token |
+| Settings | name, log level, engine, tunnel direction and reverse listener, flow control, panel/speed-test ports, default quotas/rate limits and the masked tunnel token |
 | Tools | restart / stop / start / reconnect, export the config, download the log, `/metrics` and `/healthz`, update check |
 
-## Pairing a relay that was installed first
+## Pairing entirely from the panel
 
-`install.sh` on the Iranian server asks nothing: it writes `relay.toml` with
-`unpaired = true` and starts the panel. Until the server is paired the dashboard
-says so, and a **Pair** entry appears in the sidebar (it disappears the moment
-pairing succeeds). The page is three steps and one field:
+The universal installer can install an Iranian direct relay with
+`unpaired = true`, before its foreign exit exists. The dashboard says **not
+paired** and the relay tunnel stays idle; this is an intentional state, not a
+failed installation.
 
-1. on the exit, `simurgh link` prints a line that starts with `simurgh://`;
-2. paste it into **Setup link**;
-3. press **Pair**.
+### Direct mode
 
-`POST /api/pair {"link": "simurgh://…"}` fetches the same payload
-`simurgh join` fetches, writes the config (a copy of the old file is kept at
-`relay.toml.bak-pair`), and applies it without a restart in the Python engine —
-the tunnel starts dialing in place. Everything the install chose survives: the
-panel port, the engine, the limits and the ports already added. The endpoint
-refuses a link meant for the exit, a second pairing (use `simurgh join --force`)
-and a relay that is not unpaired.
+1. On the **exit**, open **Pair → Create a setup link** and press **Create setup
+   link**. If the panel is reached through SSH/NAT, enter the public panel
+   `IP/domain[:port]` first; that address is what the other server will dial.
+2. Copy the `simurgh://…` link to the **relay's Pair page** and press **Pair**.
+3. The relay fetches the token, exit endpoint/pool, certificate fingerprint and
+   advertised mappings. Its own panel port, engine, limits and existing mappings
+   remain intact. The Python relay applies the result live and keeps a backup at
+   `relay.toml.bak-pair`.
+
+`POST /api/setup-link {"host": "203.0.113.9:8787"}` creates the link on the
+offering server. `POST /api/pair {"link": "simurgh://…"}` imports it on the
+receiving server. Both require normal panel authentication. A direct relay
+refuses a reverse-exit link and an empty/malformed link. On an already paired
+relay, **Replace exit** requires explicit confirmation before replacing its
+token, endpoint and fingerprint; local panel settings and ports are preserved.
+
+### Reverse mode
+
+On the relay, choose **Settings → Who dials the tunnel = exit**, set the reverse
+listener carrier/port/path, save and restart. The relay generates its tunnel
+secret if necessary and its Pair page can now offer a link. Import that link on
+the foreign exit's **Connect to a reverse relay** card. This deliberately
+replaces the exit's tunnel listeners, preserves its local engine/limits, writes
+`exit.toml.bak-pair`, and asks for a restart from **Tools**.
+
+Setup links contain panel credentials; fetched payloads contain the tunnel
+secret. Use a private channel and a firewall/SSH tunnel for the panel itself.
 
 ## The wizard
 
@@ -106,14 +124,15 @@ plan you can read before anything is written:
    the diff against the current config (`[exit] carrier tls -> wss`), and writes
    nothing. A refused plan explains itself: an unknown carrier, a port outside
    1–65535, a mapping that is not `listen:target`, a split that is not a number.
-2. **Apply** — the current file is copied to `<config>.bak-wizard`, the plan is
-   written, and the running node is reconfigured in place.
+2. **Apply** — the current file is copied to `<config>.bak-wizard` and the plan
+   is written. Restart from **Tools** when listener or transport changes require it.
 3. **Rollback** — the backup is copied back and reloaded. One click, and the old
    file is still there afterwards.
 
 The plan is deliberately small: `carrier` (tls, wss, raw, plain, udp), `port`,
-`host`, `path`, `split`, and `mapping` (`listen:target`). Everything else stays
-in the config file, where you can still edit it by hand.
+`host`, `path`, `split`, and `mapping` (`listen:target`). Routine operational settings
+are available in **Settings**; the config file remains available for advanced
+options that do not have a dedicated control.
 
 ## Themes, language and phones
 
@@ -152,16 +171,16 @@ auth, or the session cookie a login hands out):
 | GET | `/api/layout` | the map, cards, chart and rates (the big answer) |
 | GET | `/api/config` | the editable config |
 | POST | `/api/config` | write it back |
-| POST | `/api/mapping` | add / remove / enable / disable a mapping, applied live |
-| POST | `/api/speedtest` | run one |
-| POST | `/api/action` | restart / stop / start / reconnect / reload |
+| POST | `/api/mappings` | add / remove / enable / disable a mapping, applied live |
+| POST | `/api/action` | restart / stop / start / reconnect, or run a speed test |
 | POST | `/api/tune` | apply a performance profile (`gaming`, `balanced`, `speed`) |
-| POST | `/api/pair` | pair an unpaired relay from the exit's setup link |
+| POST | `/api/setup-link` | create a pairing link on an exit or reverse relay |
+| POST | `/api/pair` | import a direct relay or reverse exit setup link |
 | POST | `/api/wizard` | preview / apply / rollback a tunnel plan |
 | POST | `/api/login-token` | mint a one-time login link |
-| POST | `/api/join` | the one-line install payload for a new relay |
+| POST | `/api/join` | authenticated setup payload fetched by the receiving server |
 | GET | `/api/update` | ask GitHub once whether a newer release exists |
-| GET | `/api/logs`, `/api/security` | the log tail, the guard's counters |
+| GET | `/api/logs` | the bounded log tail |
 | GET | `/login`, `POST /login`, `GET /logout` | the form, the form's answer, and goodbye |
 | GET | `/metrics` | Prometheus text for the same numbers (`simurgh_listen_*`, `simurgh_panel_*`, …) |
 | GET | `/healthz` | liveness, no credentials, for a watchdog |
@@ -172,7 +191,8 @@ whole translation layer between it and a node's `status()`.
 
 ## Writing on it
 
-The panel is a friend of the CLI, not a replacement for it: every write goes
-through the same `config.save_*` the CLI uses, and the same validation. If you
-would rather not have it at all, `simurgh relay` with `panel_port = 0` runs the
-node with no page attached, and the CLI keeps working exactly as before.
+The panel is the normal configuration interface after the universal install.
+Every write goes through the same `config.save_*` helpers and validation as the
+CLI, with atomic files and backups for pairing/wizard operations. The CLI remains
+available for diagnostics, recovery and advanced automation; it is not required
+for ordinary pairing, port management or settings.

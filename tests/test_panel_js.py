@@ -47,7 +47,8 @@ def panel_payload(role: str = "relay") -> dict:
         "product": "Simurgh Tunnel", "version": "3.0.0",
         "panel": {"role": role, "uptime": 400.0, "requests": 42, "port": 8787,
                   "user": "admin", "error": "", "lockouts": 1, "failed_logins": 6,
-                  "alerts": None},
+                  "paired": True, "pairing_required": False, "reverse": False,
+                  "setup_link": role == "exit", "alerts": None},
         "node": {
             "role": role, "name": "ir-tehran" if role == "relay" else "de-frankfurt",
             "connected": True, "dial": "relay", "rtt_ms": 22.5, "uptime": 400.0,
@@ -114,6 +115,24 @@ def test_the_page_draws_and_every_button_works(tmp_path, role):
         assert path in called, (path, called)
     if role == "relay":                       # an exit has listeners, not ports
         assert "/api/mappings" in called, called
+    else:
+        assert "/api/setup-link" in called, called
+        assert "/api/pair" in called, called
+
+
+def test_unpaired_and_reverse_pairing_controls_call_their_apis(tmp_path):
+    unpaired = panel_payload("relay")
+    unpaired["panel"].update(paired=False, pairing_required=True, setup_link=False)
+    proc = run_panel_js(tmp_path, "relay", payload=unpaired)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "/api/pair" in proc.stdout
+
+    reverse = panel_payload("relay")
+    reverse["panel"].update(paired=True, pairing_required=False,
+                            reverse=True, setup_link=True)
+    proc = run_panel_js(tmp_path, "relay", payload=reverse)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "/api/setup-link" in proc.stdout
 
 
 def test_the_page_survives_a_panel_that_answers_nothing(tmp_path):

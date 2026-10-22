@@ -55,7 +55,7 @@ These are not small things — they are the reason the project exists:
   *(the number this page found was 153; every iteration since carries its own
   proof in the table below)*, plus the Go test suite and a live carrier matrix.
 * **Operator ergonomics:** one command that works out the role by itself, a
-  setup link / `simurgh join`, a text menu, `simurgh doctor`, a bilingual panel,
+  panel-created setup links / the Pair page, a text menu, `simurgh doctor`, a bilingual panel,
   live mapping changes without restart, engine switch without touching configs.
 
 ## What is missing (prioritised)
@@ -189,10 +189,10 @@ itself. Now:
 
 * **the relay installs with no questions at all** — `unpaired = true` in
   `relay.toml`, the panel up, the tunnel idle;
-* **`simurgh join '<link>'` or the panel's Pair page** completes it whenever the
-  operator likes, keeps everything the install decided (panel port, engine,
-  limits, ports already added) and starts the tunnel in place — no re-install,
-  no service dance;
+* **the exit and relay Pair pages** create and import the setup link whenever
+  the operator likes, keep everything the install decided (panel port, engine,
+  limits, ports already added) and start the tunnel in place — no re-install,
+  no service dance and no role-specific pairing command;
 * **order is free**: either server can be installed first, or the relay can be
   installed before the foreign server even exists;
 * the state is honest everywhere: `simurgh status`, `simurgh doctor`, the menu

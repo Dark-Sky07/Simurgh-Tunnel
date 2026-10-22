@@ -1,8 +1,8 @@
 """The web panel: a small, self-contained asyncio HTTP server.
 
 No framework, no build step, no CDN (it has to work from inside Iran where
-external assets may be blocked).  The whole dashboard is one HTML string with
-inline CSS/JS that polls ``/api/status`` every two seconds.
+external assets may be blocked). The dashboard and its local assets poll the
+authenticated layout API every two seconds.
 
 Endpoints
 ---------
@@ -13,8 +13,9 @@ Endpoints
 ``POST /api/mappings``    add / remove / toggle a port mapping
 ``POST /api/action``      restart | start | stop | speedtest | reconnect
 ``GET  /api/logs``        tail of the log file
-``GET  /api/join``        (exit only) the join payload for a new relay
-``POST /api/pair``        pair this relay with the exit's setup link
+``POST /api/join``        authenticated setup payload for the other server
+``POST /api/setup-link``  create a link on an exit or reverse relay
+``POST /api/pair``        import a link on a direct relay or reverse exit
 ``GET  /healthz``         unauthenticated liveness probe
 """
 
@@ -30,15 +31,15 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __product__, __version__
-from .config import (ConfigError, ExitConfig, Mapping, load_exit, load_relay,
-                     save_exit, save_relay)
+from .config import (ENGINES, ConfigError, ExitConfig, Mapping, load_exit,
+                     load_relay, new_token, save_exit, save_relay)
 from .layout import History, RateTracker, build as build_layout
 from .panel_i18n import EN as I18N_EN, FA as I18N_FA
 from .panel_ui import (CSP, LOGIN_TOKEN_TTL, LoginTokens, apply_plan, backup,
                        dashboard_html, login_error, login_page, plan_changes,
                        read_asset, rollback)
 from .stats import Stats
-from .util import Home, clamp, get_logger
+from .util import Home, clamp, get_logger, parse_size, split_host_port
 
 #: the dashboard's words, in both languages (see simurgh/panel_i18n.py)
 PANEL_I18N = {"en": I18N_EN, "fa": I18N_FA}
@@ -327,6 +328,8 @@ class Panel:
             return json_response(self.layout_payload())
         if req.method == "POST" and path == "/api/login-token":
             return self.create_login_token(req)
+        if req.method == "POST" and path == "/api/setup-link":
+            return self.create_setup_link(req)
         if req.method == "POST" and path == "/api/tune":
             return self.set_profile(req.json())
         if req.method == "POST" and path == "/api/pair":
@@ -478,6 +481,44 @@ class Panel:
         return json_response({"ok": True, "url": f"http://{host}/?t={made['token']}",
                               "expires_in": made["expires_in"],
                               "tokens": self.login_tokens.snapshot()})
+
+    def create_setup_link(self, req: Request) -> bytes:
+        """Create the same pairing link as ``simurgh link``, inside the panel.
+
+        An exit offers it to a direct relay; a reverse relay offers it to the
+        exit. The operator can override the public host/port, which is needed
+        when the panel itself is reached through an SSH tunnel or NAT.
+        """
+        reverse = self.role == "relay" and self._relay_is_reverse()
+        if self.role != "exit" and not reverse:
+            return json_response(
+                {"ok": False, "error": "this server imports a setup link; it does not offer one"},
+                400)
+        if not self.password:
+            return json_response(
+                {"ok": False, "error": "a panel password is required for a setup link"}, 400)
+        cfg = self.load_config()
+        if cfg is None:
+            return json_response({"ok": False, "error": "no readable config"}, 400)
+        body = req.json()
+        raw = str(body.get("host") or req.headers.get("host") or "").strip()
+        try:
+            host, port = split_host_port(raw, self.port)
+        except (TypeError, ValueError):
+            return json_response(
+                {"ok": False, "error": "use HOST, HOST:PORT or [IPv6]:PORT"}, 400)
+        if (not host or not 1 <= port <= 65535
+                or any(ch.isspace() for ch in host)
+                or any(ch in host for ch in "/\\?#@")):
+            return json_response(
+                {"ok": False, "error": "use a valid public IP/domain and a port in 1-65535"},
+                400)
+        from .links import build_join_link
+
+        link = build_join_link(host, port, self.user, self.password,
+                               str(getattr(cfg, "name", "") or self.role))
+        return json_response({"ok": True, "url": link, "host": host, "port": port,
+                              "target": "exit" if reverse else "relay"})
 
     # ------------------------------------------------------- profile/tuning
     def set_profile(self, body: dict) -> bytes:
@@ -638,40 +679,42 @@ class Panel:
         working tunnel.
         """
         if self.role != "relay":
-            return {"paired": True, "required": False, "exit": ""}
+            return {"paired": True, "required": False, "exit": "",
+                    "reverse": False, "setup_link": True}
         cfg = getattr(self.node, "cfg", None)
         if cfg is None:
             try:
                 cfg = load_relay(self.home.relay_cfg)
             except (ConfigError, OSError):
-                return {"paired": True, "required": False, "exit": ""}
+                return {"paired": True, "required": False, "exit": "",
+                        "reverse": False, "setup_link": False}
         return {"paired": cfg.paired, "required": not cfg.paired,
-                "exit": cfg.exit.describe() if cfg.paired else ""}
+                "exit": cfg.exit.describe() if cfg.paired else "",
+                "reverse": cfg.reverse, "setup_link": cfg.reverse}
 
     async def pair(self, body: dict) -> bytes:
-        """Complete an unpaired relay from the exit's setup link.
+        """Import a setup link without leaving the panel.
 
-        The browser half of ``simurgh join '<link>'``: the link brings the
-        secret and the exit, while everything this install already chose (the
-        panel port, the engine, the limits, the ports added here) stays.  With
-        a live node the tunnel starts dialing immediately.
+        Direct relays import an exit link. Exits import a reverse relay's
+        link; that change replaces their tunnel listeners and needs a restart.
         """
+        if self.role == "exit":
+            return await self.pair_exit(body)
         if self.role != "relay":
-            return json_response({"ok": False, "error": "only the relay is paired"}, 400)
+            return json_response({"ok": False, "error": "unknown server role"}, 400)
         try:
             cfg = load_relay(self.home.relay_cfg)
         except (ConfigError, OSError) as exc:
             return json_response({"ok": False, "error": str(exc)}, 400)
         if cfg.reverse:
             return json_response(
-                {"ok": False, "error": "this relay waits for its exit; run "
-                                       "`simurgh link` here and import that link "
-                                       "on the foreign server"}, 400)
-        if cfg.paired:
+                {"ok": False, "error": "this relay offers its own setup link; "
+                                       "import it on the foreign exit's Pair page"},
+                400)
+        if cfg.paired and not bool((body or {}).get("replace")):
             return json_response(
-                {"ok": False, "error": "this relay is already paired; "
-                                       "`simurgh join --force` replaces the exit"},
-                409)
+                {"ok": False, "error": "this relay is already paired; confirm "
+                                       "Replace exit on the Pair page to change it"}, 409)
         link = str((body or {}).get("link") or "").strip()
         if not link:
             return json_response({"ok": False, "error": "paste the setup link first"}, 400)
@@ -710,6 +753,54 @@ class Panel:
                      else "restart the service to apply"),
         })
 
+    async def pair_exit(self, body: dict) -> bytes:
+        """Point this exit at a reverse relay, preserving local panel settings."""
+        link = str((body or {}).get("link") or "").strip()
+        if not link:
+            return json_response({"ok": False, "error": "paste the setup link first"}, 400)
+        from .links import LinkError, exit_config_from_payload, fetch_setup
+
+        try:
+            payload = await asyncio.to_thread(fetch_setup, link, 12.0)
+            if str(payload.get("role") or "") != "exit":
+                raise LinkError("that link is for a direct relay, not for a reverse exit")
+            fresh = exit_config_from_payload(payload)
+            if not fresh.token or not fresh.listen:
+                raise LinkError("the reverse link has no token or listener")
+            listener = fresh.listen[0]
+            if (listener.carrier not in CARRIERS
+                    or not 1 <= listener.port <= 65535
+                    or not listener.dial or any(ch.isspace() for ch in listener.dial)):
+                raise LinkError("the reverse link has an invalid listener")
+            if (listener.carrier in ("tls", "wss")
+                    and not listener.fingerprint and not listener.insecure_skip_verify):
+                raise LinkError("the reverse link has no certificate fingerprint")
+        except LinkError as exc:
+            return json_response({"ok": False, "error": str(exc)}, 400)
+        except (KeyError, ValueError, ConfigError) as exc:
+            return json_response({"ok": False, "error": f"the link is incomplete: {exc}"}, 400)
+        cfg = self.load_config()
+        if cfg is None:
+            return json_response({"ok": False, "error": "no readable config"}, 400)
+        backup_file = backup(self.home.exit_cfg, "pair")
+        cfg.token = fresh.token
+        cfg.tokens = list(fresh.tokens)
+        cfg.listen = list(fresh.listen)
+        cfg.cert_auto = False       # a reverse exit dials; it serves no tunnel TLS
+        try:
+            save_exit(cfg, self.home.exit_cfg)
+        except OSError as exc:
+            return json_response({"ok": False, "error": str(exc)}, 500)
+        if self.node is not None:
+            self.node.cfg = cfg
+        self.last_layout = {}
+        listener = fresh.listen[0]
+        return json_response({
+            "ok": True, "exit": listener.dial, "mappings": [], "added": [],
+            "applied": "restart", "backup": backup_file,
+            "note": "reverse relay saved; restart this exit from Tools to connect",
+        })
+
     # ---------------------------------------------------------- status/data
     def status(self) -> dict:
         node_status: dict = {}
@@ -729,6 +820,8 @@ class Panel:
             "role": self.role,
             "paired": pairing["paired"],
             "pairing_required": pairing["required"],
+            "reverse": pairing["reverse"],
+            "setup_link": pairing["setup_link"],
             "uptime": time.time() - self.started_at,
             "requests": self.requests,
             "port": self.port,
@@ -945,10 +1038,88 @@ class Panel:
         except (ConfigError, OSError) as exc:
             return json_response({"ok": False, "error": str(exc)}, 400)
         changed: list[str] = []
+        if "name" in body:
+            cfg.name = str(body["name"])[:64]
+            changed.append("name")
+        if "log_level" in body:
+            level = str(body["log_level"]).strip().lower()
+            if level not in ("debug", "info", "warning", "error"):
+                return json_response(
+                    {"ok": False, "error": "log_level must be debug, info, warning or error"},
+                    400)
+            cfg.log_level = level
+            changed.append("log_level")
+        if "engine" in body:
+            engine = str(body["engine"]).strip().lower()
+            if engine not in ENGINES:
+                return json_response(
+                    {"ok": False, "error": "engine must be python or go"}, 400)
+            if engine == "go" and engine != str(getattr(cfg, "engine", "")):
+                from . import engines
+
+                if not engines.find_binary(self.home):
+                    return json_response(
+                        {"ok": False, "error": "simurgh-go is not installed on this server"},
+                        400)
+            cfg.engine = engine
+            changed.append("engine")
+        for key in ("rate_limit", "quota"):
+            if key not in body:
+                continue
+            value = body[key]
+            try:
+                if parse_size(value) < 0:
+                    raise ValueError("negative size")
+            except (TypeError, ValueError, OverflowError):
+                return json_response(
+                    {"ok": False, "error": f"{key} must be 0, bytes, or a size such as 20M"},
+                    400)
+            setattr(cfg, key, value)
+            changed.append(key)
+        if "quota_period" in body:
+            period = str(body["quota_period"]).strip().lower()
+            if period not in ("day", "month", "total"):
+                return json_response(
+                    {"ok": False, "error": "quota_period must be day, month or total"}, 400)
+            cfg.quota_period = period
+            changed.append("quota_period")
+        if "quota_action" in body:
+            quota_action = str(body["quota_action"]).strip().lower()
+            if quota_action not in ("block", "throttle", "warn"):
+                return json_response(
+                    {"ok": False, "error": "quota_action must be block, throttle or warn"},
+                    400)
+            cfg.quota_action = quota_action
+            changed.append("quota_action")
         if self.role == "relay":
-            if "name" in body:
-                cfg.name = str(body["name"])[:64]
-                changed.append("name")
+            if "dial" in body:
+                dial = str(body["dial"]).strip().lower()
+                if dial not in ("relay", "exit"):
+                    return json_response(
+                        {"ok": False, "error": "dial must be relay or exit"}, 400)
+                cfg.dial = dial
+                if dial == "exit" and not cfg.token:
+                    # A reverse relay defines the secret it will accept from
+                    # the exit; unlike an unpaired direct relay it needs one
+                    # before it can offer a setup link.
+                    cfg.token = new_token()
+                cfg.unpaired = dial == "relay" and not bool(cfg.endpoints())
+                changed.append("dial")
+            if "tunnel_carrier" in body:
+                carrier = str(body["tunnel_carrier"]).strip().lower()
+                if carrier not in CARRIERS:
+                    return json_response(
+                        {"ok": False, "error": f"unknown carrier {carrier!r}"}, 400)
+                cfg.tunnel.carrier = carrier
+                changed.append("tunnel.carrier")
+            if "tunnel_path" in body:
+                path_value = str(body["tunnel_path"]).strip()[:255]
+                if not path_value.startswith("/") or any(ch.isspace() for ch in path_value):
+                    return json_response(
+                        {"ok": False, "error": "tunnel path must start with / and contain no spaces"},
+                        400)
+                cfg.tunnel.path = path_value
+                changed.append("tunnel.path")
             if "accept_push" in body:
                 cfg.accept_push = bool(body["accept_push"])
                 changed.append("accept_push")
@@ -982,22 +1153,51 @@ class Panel:
                     cfg.exit.insecure_skip_verify = bool(endpoint["insecure_skip_verify"])
                     changed.append("exit.insecure_skip_verify")
         else:
-            if "name" in body:
-                cfg.name = str(body["name"])[:64]
-                changed.append("name")
             if "strict_ports" in body:
                 cfg.strict_ports = bool(body["strict_ports"])
                 changed.append("strict_ports")
             if "proxy_protocol" in body and body["proxy_protocol"] in ("off", "v1", "v2"):
                 cfg.proxy_protocol = body["proxy_protocol"]
                 changed.append("proxy_protocol")
-        if "connections" in body:
-            # one tunnel per core-flow is the default; a pool spreads the load
+        numeric = {
+            "connections": (1, 16),
+            "stream_window": (16 * 1024, 1 << 30),
+            "max_stream_window": (16 * 1024, 1 << 30),
+            "chunk": (4096, 1024 * 1024),
+            "max_conns": (0, 1_000_000),
+        }
+        if self.role == "relay":
+            numeric["panel_port"] = (1, 65535)
+            numeric["keepalive"] = (0, 600)
+        else:
+            numeric["speedtest_port"] = (0, 65535)  # zero disables the local endpoint
+        for key, (low, high) in numeric.items():
+            if key not in body:
+                continue
             try:
-                cfg.connections = clamp(int(body["connections"]), 1, 16)
-                changed.append("connections")
-            except (TypeError, ValueError):
-                return json_response({"ok": False, "error": "connections must be a number"}, 400)
+                value = int(body[key])
+            except (TypeError, ValueError, OverflowError):
+                return json_response(
+                    {"ok": False, "error": f"{key} must be an integer"}, 400)
+            if not low <= value <= high:
+                return json_response(
+                    {"ok": False, "error": f"{key} must be in {low}..{high}"}, 400)
+            setattr(cfg, key, value)
+            changed.append(key)
+        if self.role == "relay" and "tunnel_port" in body:
+            try:
+                tunnel_port = int(body["tunnel_port"])
+            except (TypeError, ValueError, OverflowError):
+                return json_response(
+                    {"ok": False, "error": "tunnel_port must be an integer"}, 400)
+            if not 1 <= tunnel_port <= 65535:
+                return json_response(
+                    {"ok": False, "error": "tunnel_port must be in 1..65535"}, 400)
+            cfg.tunnel.port = tunnel_port
+            changed.append("tunnel.port")
+        if cfg.max_stream_window < cfg.stream_window:
+            return json_response(
+                {"ok": False, "error": "max_stream_window must be >= stream_window"}, 400)
         if not changed:
             return json_response({"ok": False, "error": "no editable field given"}, 400)
         try:
@@ -1160,7 +1360,11 @@ class Panel:
             cfg = load_exit(self.home.exit_cfg)
         except (ConfigError, OSError) as exc:
             return json_response({"ok": False, "error": str(exc)}, 500)
-        host = req.query.get("host") or (req.headers.get("host", "").split(":")[0])
+        try:
+            request_host, _ = split_host_port(req.headers.get("host", ""), self.port)
+        except (TypeError, ValueError):
+            request_host = ""
+        host = req.query.get("host") or request_host
         listen = [spec for spec in cfg.listen if spec.enabled]
         if not listen:
             return json_response({"ok": False, "error": "no listener is enabled on the exit"}, 400)
@@ -1188,7 +1392,7 @@ class Panel:
             "mappings": [{"port": p, "target": p, "name": f"port-{p}"}
                          for p in cfg.push_ports],
             "note": ("Keep this payload secret: the token is inside it. "
-                     "Import it on the relay with `simurgh join <link>`."),
+                     "Import it on the relay panel's Pair page."),
         }
         return json_response(payload)
 
@@ -1206,7 +1410,11 @@ class Panel:
                 "error": ("this relay dials the exit (direct mode): ask the exit "
                           "server for its setup link instead"),
             }, 400)
-        host = req.query.get("host") or (req.headers.get("host", "").split(":")[0])
+        try:
+            request_host, _ = split_host_port(req.headers.get("host", ""), self.port)
+        except (TypeError, ValueError):
+            request_host = ""
+        host = req.query.get("host") or request_host
         fingerprint = self._tunnel_fingerprint(cfg)
         payload = reverse_payload(cfg, host, fingerprint)
         payload["version"] = __version__

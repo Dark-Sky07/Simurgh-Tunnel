@@ -54,76 +54,49 @@ Iran relay :8443 ──user traffic──► exit target 127.0.0.1:8443
 - Python **3.9+**. `systemd` is used when available; manual and container runs are supported too.
 - One reachable tunnel port and, for production TLS, either a pinned certificate fingerprint or a CA-signed certificate.
 
-### 1 — Install the foreign exit
+### 1 — Install every server with the same command
 
-Explicit roles avoid relying on geolocation when a server's IP database is inaccurate:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
-  | sudo bash /dev/stdin --role exit --name de-frankfurt
-```
-
-Keep the generated token and setup link private. To use a specific tunnel listener:
+Run **this exact command on both the foreign server and the Iranian server**. Do not add a role-specific option:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
-  | sudo bash /dev/stdin --role exit --listen 443,2053 --name de-frankfurt
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
-### 2 — Install the Iranian relay
+The installer detects an existing installation and otherwise uses the public IP's country to select the role; if that is unavailable, it asks on the terminal. A direct relay is deliberately installed **unpaired**, so its panel can start before the exit address or token exists. Re-running the installer refreshes its source checkout rather than mixing a new script with an old cached CLI.
 
-The relay can be installed before pairing. Its panel starts in **not paired** state instead of failing because no exit has been supplied yet.
+### 2 — Open both web panels
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
-  | sudo bash /dev/stdin --role relay --name ir-tehran
-```
+Open `http://<server-ip>:8787` on each server (or the panel port printed by the installer). The installer prints the login credentials. Keep the panels behind a firewall or SSH tunnel as described in [Web panel](#web-panel).
 
-Omit `--role` to let the installer ask or auto-detect. Re-running the installer refreshes an existing source checkout before invoking the CLI, so an old cached CLI is not mixed with a new installer.
+### 3 — Pair and forward from the panel (direct mode)
 
-### 3 — Pair, forward and verify
+1. On the **foreign exit**, open **Pair → Create a setup link**. Enter its public panel IP/domain and port if the browser address is not reachable from the relay, then create and copy the link.
+2. On the **Iranian relay**, open **Pair**, paste the link and press **Pair**. The relay securely fetches the token, exit address, listener pool, certificate fingerprint and advertised ports. Existing panel settings and mappings are preserved.
+3. Open **Ports** on the relay to add or remove user-facing forwards. Changes to mappings are applied live.
+4. Use **Settings** for the engine, tunnel direction, reverse listener, flow control, quotas and rate limits. Use **Wizard** for carrier or public tunnel endpoint changes. Use **Tools → Restart** when a saved change says it needs a restart.
+5. Confirm the result on **Dashboard**. The tunnel is connected when its state is up and RTT/throughput are reported.
 
-```bash
-# On the exit: print only the setup link
-sudo simurgh link --show
+The setup link carries panel credentials and the fetched payload contains the tunnel token. Treat both as secrets and send the link only over a private channel.
 
-# On the relay: paste the complete link between quotes
-sudo simurgh join 'simurgh://<exit-ip>:8787/setup?u=admin&p=…#de-frankfurt'
+### Reverse mode (optional, also panel-only)
 
-# Add another mapping when needed (join imports ports advertised by the exit)
-sudo simurgh mapping add 8443 8443 --name my-service
-sudo simurgh restart
+Use reverse mode when the foreign exit should dial the Iranian relay:
 
-sudo simurgh status --detail
-sudo simurgh doctor
-```
+1. On the relay, open **Settings**, set **Who dials the tunnel** to `exit`, choose the reverse listener carrier/port, save, and restart from **Tools**.
+2. On the relay's **Pair** page, create a setup link using the relay's publicly reachable panel address.
+3. On the foreign exit, open **Pair → Connect to a reverse relay**, paste the link and save. Restart the exit from **Tools** when prompted.
 
-You can also paste the setup link into **Panel → Pair**. Pairing preserves the relay's existing panel settings, engine choice and mappings.
-
-<details>
-<summary><strong>Direct install without a setup link</strong></summary>
-
-If you already manage the token and certificate verification yourself, install in one step:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
-  | sudo bash /dev/stdin --role relay \
-      --exit 203.0.113.9:443 --token 'SHARED-TOKEN' --fingerprint 'SHA256-FINGERPRINT'
-```
-
-Run `simurgh cert` on the exit to inspect its fingerprint. The default exit certificate is self-signed: **a token and address alone do not authenticate it**. Use the setup-link flow, a fingerprint, or a properly configured CA-signed certificate. `--insecure` is for temporary testing only.
-
-</details>
+Open the selected tunnel listener port on the relay instead of the exit. User-facing mappings remain on the relay in both modes.
 
 ### Packages and containers
 
 Release assets include `.deb`, `.rpm`, portable `.tar.gz` packages and compiled engines. A `Dockerfile` and `docker-compose.yml` are included as well.
 
 ```bash
-sudo dpkg -i simurgh_3.1.1_amd64.deb
-sudo dnf install ./simurgh-3.1.1-1.x86_64.rpm
-sudo tar -xzf simurgh-3.1.1-noarch.tar.gz -C /
-docker compose up -d
+sudo dpkg -i simurgh_3.2.0_amd64.deb
+sudo dnf install ./simurgh-3.2.0-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.0-noarch.tar.gz -C /
+docker compose up -d                   # optional two-node development lab, not server installation
 ```
 
 See **[Packages & containers](docs/PACKAGING.md)** for offline installation, package contents and upgrades.
@@ -146,30 +119,36 @@ Start conservatively, measure on the actual relay → exit route, and change one
 
 More detail: **[Configuration](docs/CONFIGURATION.md)** and **[Troubleshooting](docs/TROUBLESHOOTING.md)**.
 
-## Everyday commands
+## Everyday operations
+
+Configuration is panel-first on both roles:
+
+| Task | Panel location |
+|---|---|
+| Create or import a setup link | **Pair** |
+| Add, remove, enable or disable forwards | **Ports** |
+| Preview, apply or roll back a configuration plan | **Wizard** |
+| Change engine, tunnel direction, reverse listener, performance, quotas or rate limits | **Settings** |
+| Run speed tests, inspect certificates and logs | **Speed test / Certificates / Logs** |
+| Restart, start, stop or reconnect; check updates; export config | **Tools** |
+
+The CLI remains useful for read-only diagnostics and automation:
 
 ```bash
-simurgh menu                       # interactive operator menu
 simurgh status --detail            # service, pairing, mappings and tunnel state
 simurgh doctor                     # configuration and connectivity checks
-simurgh mapping list               # list user-facing forwards
-simurgh mapping add 443 443        # relay port -> exit target port
-simurgh speedtest --udp            # throughput, loaded latency and UDP loss
 simurgh logs -f                    # follow the active role's log
-simurgh tune balanced              # restore the baseline performance profile
 simurgh update --check             # check without changing the installation
-simurgh link --show                # setup link for the other server
-simurgh start | stop | restart     # service control
 ```
 
 Run `simurgh <command> --help` for command-specific options.
 
 ## Web panel
 
-Open `http://<relay-ip>:8787` (or the configured panel port). The panel is bilingual **English / فارسی**, supports RTL/LTR and night/dawn themes, and serves every asset locally under a strict Content Security Policy.
+Open `http://<server-ip>:8787` on either role (or the configured panel port). The panel is bilingual **English / فارسی**, supports RTL/LTR and night/dawn themes, and serves every asset locally under a strict Content Security Policy.
 
 - **Dashboard:** live tunnel map, throughput chart, reconnects, RTT and exit-pool health.
-- **Pair:** finish an unpaired relay without reinstalling.
+- **Pair:** create or import setup links on either role, including reverse mode, without reinstalling or using the CLI.
 - **Ports:** add, remove, enable and disable mappings without restarting the live node.
 - **Wizard:** preview configuration changes, apply them with a backup and roll back.
 - **Operations:** speed tests, certificates, filterable logs, service tools and update checks.
@@ -189,7 +168,7 @@ Full reference: **[Panel guide](docs/PANEL.md)**.
 | **Go** | High-throughput/multi-core data plane; preferred when a matching compiled binary is available. |
 | **Python** | Portable fallback and protocol reference; no third-party dependency for TLS/WSS/plain operation. |
 
-Both engines read the same configuration and interoperate. Switch with `simurgh engine go` or `simurgh engine python`, then restart. Actual throughput depends on CPU, RTT, loss, carrier, flow count and upstream service—not just the engine.
+Both engines read the same configuration and interoperate. Switch in **Settings → Engine**, then restart from **Tools**. The panel rejects Go if its binary is not installed. Actual throughput depends on CPU, RTT, loss, carrier, flow count and upstream service—not just the engine.
 
 Reproduce measurements on your own path instead of treating loopback benchmarks as Internet results:
 

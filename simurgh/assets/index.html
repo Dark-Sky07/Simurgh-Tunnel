@@ -107,12 +107,24 @@
 
     <!-- ------------------------------------------------------------ pair -->
     <section class="view" id="view-pair">
+      <div class="card" id="pair-offer" hidden>
+        <h2 data-i18n="setup_offer_title">Create a setup link</h2>
+        <p class="hint" data-i18n="setup_offer_lead">Give this link to the other server. It can finish pairing from its own panel — no CLI needed.</p>
+        <label for="setup-host" data-i18n="setup_host_label">Public panel address (optional)</label>
+        <input id="setup-host" type="text" autocomplete="off" spellcheck="false" placeholder="203.0.113.9:8787" dir="ltr">
+        <div class="hint" data-i18n="setup_host_hint">Use a public IP or domain, optionally with :port. Leave empty to use the address of this panel.</div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="setup-link-btn" data-i18n="setup_create">Create setup link</button>
+        </div>
+        <pre class="logs" id="setup-link-out" hidden style="margin-top:12px"></pre>
+        <div class="hint" data-i18n="setup_secret">Keep this link secret: it contains the panel credentials.</div>
+      </div>
       <div class="card" id="pair-form">
-        <h2 data-i18n="pair_title">Pair this relay</h2>
-        <p class="hint" data-i18n="pair_lead">This server is installed and its panel is running, but it is not paired with its exit yet — the tunnel stays idle until it is.</p>
-        <ol class="pairsteps">
-          <li data-i18n="pair_step1">On the foreign (exit) server run:  simurgh link</li>
-          <li data-i18n="pair_step2">It prints one line that starts with simurgh://</li>
+        <h2 id="pair-title" data-i18n="pair_title">Pair this relay</h2>
+        <p class="hint" id="pair-lead" data-i18n="pair_lead">This server is installed and its panel is running, but it is not paired with its exit yet — the tunnel stays idle until it is.</p>
+        <ol class="pairsteps" id="pair-steps">
+          <li data-i18n="pair_step1">Open the foreign server's panel and choose Pair / Setup link</li>
+          <li data-i18n="pair_step2">Create and copy the simurgh:// link there — no CLI is needed</li>
           <li data-i18n="pair_step3">Paste that line here and press Pair — nothing else to install.</li>
         </ol>
         <label for="pair-link" data-i18n="pair_label">Setup link</label>
@@ -120,6 +132,16 @@
         <div class="row" style="margin-top:12px">
           <button class="primary" id="pair-btn" data-i18n="pair_btn">Pair</button>
           <span class="sub" id="pair-status"></span>
+        </div>
+      </div>
+      <div class="card" id="exit-pair-form" hidden style="margin-top:16px">
+        <h2 data-i18n="pair_exit_title">Connect to a reverse relay</h2>
+        <p class="hint" data-i18n="pair_exit_lead">If the Iranian relay listens for this exit, create its setup link in the relay panel and paste it here. This replaces the exit's tunnel listeners; restart from Tools after saving.</p>
+        <label for="exit-pair-link" data-i18n="pair_label">Setup link</label>
+        <input id="exit-pair-link" type="text" autocomplete="off" spellcheck="false" placeholder="simurgh://…" dir="ltr">
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="exit-pair-btn" data-i18n="pair_btn">Pair</button>
+          <span class="sub" id="exit-pair-status"></span>
         </div>
       </div>
       <div class="card" id="pair-done" hidden style="margin-top:16px">

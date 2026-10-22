@@ -29,6 +29,21 @@ def _install_args(tmp_path, *extra):
     return args
 
 
+def test_interactive_universal_install_asks_for_the_role(tmp_path, monkeypatch):
+    """Package installs use the same command on either server, with one prompt."""
+    args = _install_args(tmp_path)
+    args.token = ""  # the ordinary universal install has no pre-shared token
+    called = []
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "_ask", lambda *a, **k: "2")
+    monkeypatch.setattr(cli, "_init_relay",
+                        lambda home, given: called.append((given.role, given.pair_later)) or 0)
+    monkeypatch.setattr(cli, "_init_exit",
+                        lambda home, given: called.append(("exit", False)) or 0)
+    assert cli.cmd_install(args) == 0
+    assert called == [("relay", True)]
+
+
 def test_install_both_on_one_box_finalises_the_local_pair(tmp_path):
     args = _install_args(tmp_path, "--both", "--listen", "9443,9444")
     assert cli.cmd_install(args) == 0

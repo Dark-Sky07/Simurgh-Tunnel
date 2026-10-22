@@ -18,6 +18,7 @@ They never touch the network: ``SIMURGH_SRC`` points at this checkout, and
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -195,9 +196,10 @@ def test_a_relay_without_a_token_is_installed_and_paired_later(tmp_path):
     relay = _config(tmp_path, "relay.toml")
     assert "unpaired = true" in relay, relay
     assert "token = \"\"" in relay, relay
-    # and the way out is printed, in order, with the command to run
+    # the normal next step is the panel, not a second role-specific CLI flow
     assert "not paired yet" in output, output
-    assert "simurgh link" in output and "simurgh join" in output, output
+    assert "web panel:" in output and "Pair" in output, output
+    assert "sudo simurgh link" not in output and "sudo simurgh join" not in output, output
 
 
 def test_piped_installer_refreshes_a_complete_but_stale_git_cache(tmp_path):
@@ -299,10 +301,8 @@ def test_both_mode_dials_a_port_and_carrier_the_local_exit_serves(tmp_path, extr
     assert relay_cfg.accept_push is False
 
 
-def test_both_mode_in_reverse_prints_commands_that_work(tmp_path):
-    """Reverse + both: the local exit has to be pointed at the relay. The
-    installer either does it (panel already up) or prints the two commands that
-    do -- never the old ``simurgh join '<link>'`` placeholder."""
+def test_both_mode_in_reverse_finishes_or_points_to_the_panel(tmp_path):
+    """Reverse + both: pair locally or explain the panel-only fallback."""
     proc = subprocess.run(
         ["bash", str(INSTALL), "--yes", "--no-go", "--role", "both", "--dial", "exit",
          "--tunnel-port", "8443", "--name", "dual"],
@@ -314,9 +314,9 @@ def test_both_mode_in_reverse_prints_commands_that_work(tmp_path):
     exit_cfg, relay_cfg = _both_configs(tmp_path)
     assert relay_cfg.dial == "exit"
     assert relay_cfg.tunnel.port == 8443
-    # either the exit dials the relay now, or the exact way to make it do so
+    # either the exit dials now, or the user is sent to the two local panels
     assert ("the local exit dials this relay now" in output
-            or "simurgh link --host 127.0.0.1 --show" in output), output
+            or "in their panels" in output), output
 
 
 def _auto(tmp_path, country):
@@ -360,11 +360,31 @@ def test_a_rerun_keeps_the_role_that_is_already_installed(tmp_path):
     assert not (tmp_path / "etc" / "relay.toml").exists()
 
 
-def test_exit_summary_shows_the_token_the_relay_needs(tmp_path):
+def test_exit_summary_points_to_the_panel_not_a_token_workflow(tmp_path):
     proc = _auto(tmp_path, "DE")
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
-    assert "auto-token" in output, output
+    assert "web panel:" in output and "Pair" in output, output
+    assert "auto-token" not in output, output
+    assert "relay setup link" not in output, output
+
+
+@pytest.mark.parametrize("filename,start,end", [
+    ("README.md", "### 1 — Install every server with the same command",
+     "### Packages and containers"),
+    ("README.fa.md", "### ۱ — نصب همهٔ سرورها با یک فرمان واحد",
+     "### بسته‌ها و کانتینر"),
+])
+def test_quick_start_has_one_universal_install_command(filename, start, end):
+    text = (ROOT / filename).read_text(encoding="utf-8")
+    quick = text.split(start, 1)[1].split(end, 1)[0]
+    commands = re.findall(r"```bash\n(.*?)```", quick, flags=re.S)
+    assert commands == [
+        "curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash\n"
+    ]
+    assert "--role" not in quick
+    assert "simurgh join" not in quick and "simurgh link" not in quick
+    assert "Pair" in quick and "Settings" in quick
 
 
 def test_help_does_not_execute_commands_in_backticks(tmp_path):
