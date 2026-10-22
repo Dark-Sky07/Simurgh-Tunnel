@@ -46,7 +46,8 @@ jobs:
 
   packages:
     name: Build and attach packages
-    runs-on: ubuntu-latest
+    # Match CI and avoid apt stalls on the moving ubuntu-latest image.
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out source
         uses: actions/checkout@v4
