@@ -12,7 +12,7 @@ import pytest
 
 from conftest import free_port
 from simurgh.config import (ExitConfig, ExitEndpoint, ListenSpec, Mapping,
-                            RelayConfig, load_relay, save_exit, save_relay)
+                            RelayConfig, load_exit, load_relay, save_exit, save_relay)
 from simurgh import panel_ui
 from simurgh.panel import Panel
 
@@ -1098,7 +1098,7 @@ async def test_pairing_from_the_panel_keeps_what_the_install_chose(
         await panel.stop()
 
 
-async def test_pairing_refuses_a_second_pairing(home, tmp_path, monkeypatch):
+async def test_pairing_replaces_an_exit_only_after_confirmation(home, tmp_path, monkeypatch):
     from simurgh import links
 
     cfg = RelayConfig(token="tok", name="ir",
@@ -1116,6 +1116,16 @@ async def test_pairing_refuses_a_second_pairing(home, tmp_path, monkeypatch):
         assert status == 409 and data["ok"] is False
         assert "already paired" in data["error"]
         assert load_relay(home.relay_cfg).exit.address == "203.0.113.9"
+
+        status, data = await _request(
+            port, "/api/pair", method="POST",
+            body={"link": "simurgh://x:8787/setup?u=a&p=b", "replace": True},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and data["ok"] is True
+        replaced = load_relay(home.relay_cfg)
+        assert replaced.token == "s3cret-token"
+        assert replaced.exit.address == "198.51.100.7"
+        assert pathlib.Path(data["backup"]).is_file()
     finally:
         await panel.stop()
 
@@ -1163,7 +1173,7 @@ async def test_pairing_needs_a_link_and_a_relay(home, tmp_path):
                                       body={"link": "simurgh://x/setup"},
                                       auth=f"{USER}:{PASSWORD}")
         assert status == 400 and data["ok"] is False
-        assert "only the relay" in data["error"]
+        assert "credentials" in data["error"]
     finally:
         await panel.stop()
 
@@ -1178,7 +1188,193 @@ async def test_a_reverse_relay_is_not_paired_this_way(home, tmp_path):
                                       body={"link": "simurgh://x/setup?u=a&p=b"},
                                       auth=f"{USER}:{PASSWORD}")
         assert status == 400 and data["ok"] is False
-        assert "simurgh link" in data["error"]
+        assert "foreign exit's Pair page" in data["error"]
+    finally:
+        await panel.stop()
+
+
+async def test_setup_link_is_created_in_the_panel_with_a_public_address(home, tmp_path):
+    from simurgh.links import parse_join_link
+
+    cfg = ExitConfig(token="tok", name="de-frankfurt")
+    cfg.listen = [ListenSpec(carrier="tls", port=443)]
+    save_exit(cfg, home.exit_cfg)
+    panel, port = await _panel(home, tmp_path, role="exit")
+    try:
+        status, _ = await _request(port, "/api/setup-link", method="POST",
+                                   body={"host": "203.0.113.9:9999"})
+        assert status == 401
+        status, data = await _request(
+            port, "/api/setup-link", method="POST",
+            body={"host": "203.0.113.9:9999"}, auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and data["ok"] is True
+        assert data["target"] == "relay"
+        parsed = parse_join_link(data["url"])
+        assert (parsed["host"], parsed["port"]) == ("203.0.113.9", 9999)
+        assert (parsed["user"], parsed["password"]) == (USER, PASSWORD)
+        assert parsed["name"] == "de-frankfurt"
+
+        status, data = await _request(
+            port, "/api/setup-link", method="POST",
+            body={"host": "[2001:db8::1]:8787"}, auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and parse_join_link(data["url"])["host"] == "2001:db8::1"
+        for invalid in ("https://example.com", "bad host", "host:70000", "user@host"):
+            status, data = await _request(port, "/api/setup-link", method="POST",
+                                          body={"host": invalid}, auth=f"{USER}:{PASSWORD}")
+            assert status == 400 and data["ok"] is False, invalid
+    finally:
+        await panel.stop()
+
+
+async def test_only_an_exit_or_reverse_relay_offers_a_setup_link(home, tmp_path):
+    direct = _unpaired_cfg()
+    save_relay(direct, home.relay_cfg)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(direct))
+    try:
+        status, data = await _request(port, "/api/setup-link", method="POST",
+                                      body={}, auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and "imports a setup link" in data["error"]
+    finally:
+        await panel.stop()
+
+    reverse = RelayConfig(token="tok", name="ir", dial="exit")
+    save_relay(reverse, home.relay_cfg)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(reverse))
+    try:
+        status, data = await _request(port, "/api/setup-link", method="POST",
+                                      body={"host": "198.51.100.8"},
+                                      auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and data["target"] == "exit"
+        status, layout = await _request(port, "/api/layout", auth=f"{USER}:{PASSWORD}")
+        assert layout["panel"]["setup_link"] is True
+        assert layout["panel"]["reverse"] is True
+    finally:
+        await panel.stop()
+
+
+async def test_reverse_exit_pairing_from_the_panel_preserves_local_settings(
+        home, tmp_path, monkeypatch):
+    from simurgh import links
+
+    cfg = ExitConfig(token="old", name="de", engine="python", speedtest_port=9911)
+    cfg.listen = [ListenSpec(carrier="tls", port=443)]
+    save_exit(cfg, home.exit_cfg)
+    payload = {
+        "ok": True, "role": "exit", "token": "reverse-secret", "name": "ir",
+        "listen": {"carrier": "wss", "address": "198.51.100.8", "port": 9443,
+                   "path": "/tunnel", "fingerprint": "ab:cd"},
+    }
+    monkeypatch.setattr(links, "fetch_setup", lambda link, timeout=15.0: payload)
+    panel, port = await _panel(home, tmp_path, role="exit")
+    try:
+        status, data = await _request(
+            port, "/api/pair", method="POST",
+            body={"link": "simurgh://198.51.100.8:8787/setup?u=a&p=c2VjcmV0"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and data["ok"] is True
+        assert data["applied"] == "restart"
+        assert pathlib.Path(data["backup"]).is_file()
+        saved = load_exit(home.exit_cfg)
+        assert saved.token == "reverse-secret"
+        assert saved.name == "de" and saved.engine == "python"
+        assert saved.speedtest_port == 9911 and saved.cert_auto is False
+        assert len(saved.listen) == 1
+        assert saved.listen[0].dial == "198.51.100.8"
+        assert saved.listen[0].port == 9443 and saved.listen[0].carrier == "wss"
+        assert saved.listen[0].fingerprint == "ab:cd"
+
+        monkeypatch.setattr(links, "fetch_setup", lambda link, timeout=15.0: PAIR_PAYLOAD)
+        status, data = await _request(
+            port, "/api/pair", method="POST",
+            body={"link": "simurgh://x:8787/setup?u=a&p=c2VjcmV0"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and "direct relay" in data["error"]
+        assert load_exit(home.exit_cfg).token == "reverse-secret"
+
+        missing_pin = {**payload, "listen": {**payload["listen"], "fingerprint": None}}
+        monkeypatch.setattr(links, "fetch_setup", lambda link, timeout=15.0: missing_pin)
+        status, data = await _request(
+            port, "/api/pair", method="POST",
+            body={"link": "simurgh://x:8787/setup?u=a&p=c2VjcmV0"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and "fingerprint" in data["error"]
+        assert load_exit(home.exit_cfg).token == "reverse-secret"
+    finally:
+        await panel.stop()
+
+
+async def test_every_settings_field_is_validated_and_persisted(home, tmp_path):
+    cfg = _unpaired_cfg()
+    cfg.engine = "python"
+    save_relay(cfg, home.relay_cfg)
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(cfg))
+    body = {
+        "name": "ir-new", "log_level": "debug", "engine": "python",
+        "dial": "exit", "tunnel_carrier": "wss", "tunnel_port": 9443,
+        "tunnel_path": "/socket", "panel_port": 9999, "keepalive": 0,
+        "stream_window": 524288, "max_stream_window": 4194304,
+        "chunk": 32768, "connections": 4, "rate_limit": "20M",
+        "quota": "100G", "quota_period": "day", "quota_action": "throttle",
+        "max_conns": 250,
+    }
+    try:
+        status, data = await _request(port, "/api/config", method="POST", body=body,
+                                      auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and data["ok"] is True, data
+        saved = load_relay(home.relay_cfg)
+        assert saved.name == "ir-new" and saved.log_level == "debug"
+        assert saved.dial == "exit" and saved.token and saved.unpaired is False
+        assert saved.tunnel.carrier == "wss" and saved.tunnel.port == 9443
+        assert saved.tunnel.path == "/socket"
+        assert saved.panel_port == 9999 and saved.keepalive == 0
+        assert saved.stream_window == 524288 and saved.max_stream_window == 4194304
+        assert saved.chunk == 32768 and saved.connections == 4
+        assert saved.rate_limit == "20M" and saved.quota == "100G"
+        assert saved.quota_period == "day" and saved.quota_action == "throttle"
+        assert saved.max_conns == 250
+
+        status, data = await _request(port, "/api/config", method="POST",
+                                      body={"log_level": "verbose"},
+                                      auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and "log_level" in data["error"]
+        status, data = await _request(port, "/api/config", method="POST",
+                                      body={"max_stream_window": 16384},
+                                      auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and "max_stream_window" in data["error"]
+        assert load_relay(home.relay_cfg).log_level == "debug"
+    finally:
+        await panel.stop()
+
+
+async def test_exit_settings_include_speedtest_and_limits(home, tmp_path):
+    cfg = ExitConfig(token="tok", name="de", engine="python")
+    cfg.listen = [ListenSpec(carrier="tls", port=443)]
+    save_exit(cfg, home.exit_cfg)
+    panel, port = await _panel(home, tmp_path, role="exit")
+    try:
+        status, data = await _request(
+            port, "/api/config", method="POST",
+            body={"speedtest_port": 9909, "stream_window": 524288,
+                  "max_stream_window": 4194304, "chunk": 32768,
+                  "rate_limit": "10M", "quota": "50G", "quota_period": "total",
+                  "quota_action": "warn", "max_conns": 100},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and data["ok"] is True, data
+        saved = load_exit(home.exit_cfg)
+        assert saved.speedtest_port == 9909 and saved.stream_window == 524288
+        assert saved.max_stream_window == 4194304 and saved.chunk == 32768
+        assert saved.rate_limit == "10M" and saved.quota == "50G"
+        assert saved.quota_period == "total" and saved.quota_action == "warn"
+        assert saved.max_conns == 100
+
+        status, data = await _request(port, "/api/config", method="POST",
+                                      body={"speedtest_port": 0},
+                                      auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and load_exit(home.exit_cfg).speedtest_port == 0
+        status, data = await _request(port, "/api/config", method="POST",
+                                      body={"speedtest_port": -1},
+                                      auth=f"{USER}:{PASSWORD}")
+        assert status == 400 and "speedtest_port" in data["error"]
     finally:
         await panel.stop()
 

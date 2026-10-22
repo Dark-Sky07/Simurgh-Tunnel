@@ -27,18 +27,19 @@ simurgh logs -f          # لاگ زنده (/etc/simurgh/logs/*.log)
 ## تونل بالا نمی‌آید (حالت مستقیم)
 
 ۰. اصلاً رله جفت شده؟ `simurgh status` (و پنل) روی سروری که پیش از اگزیتش نصب
-   شده می‌گوید `not paired yet`. با `sudo simurgh join '<setup link>'` جفتش
-   کنید — لینک را `simurgh link` روی اگزیت چاپ می‌کند — یا همان را در صفحهٔ
-   **جفت‌سازی** پنل بچسبانید. هیچ نصبی دوباره لازم نیست.
+   شده می‌گوید `not paired yet`. در صفحهٔ **Pair** اگزیت لینک راه‌اندازی بسازید
+   و آن را در صفحهٔ **Pair** رله وارد کنید. نه نصب دوباره لازم است و نه CLI
+   جفت‌سازی.
 ۱. روی **هر دو** سرور `simurgh doctor` را اجرا کنید.
 ۲. توکن باید بایت‌به‌بایت یکسان باشد (در صورت شک، لینک اتصال را دوباره بگیرید).
 ۳. پورت تونل باید روی **سرور خارج** باز باشد (مثلاً `443/tcp`) — همان پورتی که
    `[[listen]]` روی آن گوش می‌دهد.
 ۴. `simurgh status` روی رله: فیلدهای `last_error` و `bind_errors` می‌گویند آخرین
    مشکل چه بوده است.
-۵. اگر اثرانگشت گواهی پین شده باشد، رله هر گواهی دیگری را رد می‌کند: بعد از
-   تغییر گواهی، لینک را دوباره بسازید، یا موقتاً در `[exit]` مقدار
-   `insecure_skip_verify = true` بگذارید تا مطمئن شوید مشکل از پین بوده است.
+۵. اگر اثرانگشت گواهی پین شده باشد، رله هر گواهی دیگری را رد می‌کند: در
+   اگزیت لینک تازه بسازید و در صفحهٔ **Pair** رله از **Replace exit** استفاده
+   کنید. فقط برای تشخیص می‌توانید موقتاً در `[exit]` مقدار
+   `insecure_skip_verify = true` بگذارید و بعد بررسی گواهی را برگردانید.
 ۶. `strict_ports = true` روی اگزیت پورت‌هایی که به رله پیشنهاد نشده‌اند را رد
    می‌کند — پورت را به `push_ports` اضافه کنید یا سخت‌گیری را خاموش کنید.
 
@@ -52,8 +53,9 @@ simurgh logs -f          # لاگ زنده (/etc/simurgh/logs/*.log)
    `cannot reach the relay` یعنی آدرس یا فایروال اشتباه است.
 ۳. توکن اشتباه در هر طرف، بی‌صدا رد می‌شود و شنونده صفحهٔ طعمه را سرو می‌کند —
    توکن را بررسی کنید.
-۴. اگر گواهی رله را عوض کرده‌اید، کانفیگ اگزیت را با
-   `simurgh join '<new link>' --force` تازه کنید تا اثرانگشت بخواند.
+۴. اگر گواهی رله را عوض کرده‌اید، در پنل رله لینک تازه بسازید و دوباره در
+   صفحهٔ **Pair** اگزیت وارد کنید تا fingerprint تازه شود؛ سپس اگزیت را
+   ری‌استارت کنید.
 ۵. بعد از `systemctl restart simurgh-relay`، اگزیت در چند ثانیه خودش برمی‌گردد.
 
 ## تونل بالاست ولی اتصال فیلتر می‌شود
@@ -130,8 +132,7 @@ systemctl stop simurgh-relay    # و دوباره start
 می‌کند و لازم نیست چیزی را پاک کنید:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
-  | sudo bash /dev/stdin --role exit
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
 اگر ردیابی خطا به `ModuleNotFoundError: No module named 'tomllib'` می‌رسد، حکایت
@@ -158,7 +159,7 @@ sudo simurgh engine go
 
 ```bash
 sudo simurgh uninstall --purge     # حذف سرویس‌ها، کانفیگ‌ها و گواهی‌ها
-sudo bash install.sh --role relay --exit <foreign-ip>:443
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
 ---

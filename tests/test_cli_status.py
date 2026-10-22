@@ -28,7 +28,7 @@ def test_status_reports_an_unpaired_relay(tmp_path, capsys, monkeypatch):
     assert _run(tmp_path, "status") == 0
     out = capsys.readouterr().out
     assert "not paired yet" in out
-    assert "simurgh join" in out
+    assert "Pair page" in out and "simurgh join" not in out
 
 
 def test_status_on_a_paired_relay_stays_quiet_about_pairing(tmp_path, capsys,

@@ -269,7 +269,7 @@ def _init_exit(home: Home, args) -> int:
         _warn(f"automatic certificate generation failed: {exc}")
     save_exit(cfg, home.exit_cfg)
     _ok(f"exit config written: {home.exit_cfg}")
-    print(f"   token: {token}")
+    _info("token: stored in exit.toml; the panel's Pair page shares it securely")
     print(f"   ports: {', '.join(str(s.port) for s in cfg.listen)}")
     return 0
 
@@ -370,12 +370,11 @@ def _init_relay(home: Home, args) -> int:
     if cfg.reverse:
         print("   mode:           reverse (the exit dials us)")
         print(f"   tunnel listen:  {cfg.tunnel.endpoint()}")
-        _info("run `simurgh link` on this server and paste the link on the exit")
+        _info("open Pair in this panel, create a setup link, and import it in the exit panel")
     elif cfg.unpaired:
         print("   pairing:        not paired yet (the tunnel stays idle)")
-        _info("on the FOREIGN (exit) server run:  simurgh link")
-        _info("then here:                        simurgh join '<that link>'")
-        _info("or open the panel and paste the link there")
+        _info("create a setup link in the FOREIGN panel's Pair page")
+        _info("then import it on this server's Pair page")
     else:
         print(f"   foreign server: {carrier}://{exit_host}:{exit_port}")
         split = _split_arg(args)
@@ -383,7 +382,7 @@ def _init_relay(home: Home, args) -> int:
             print(f"   anti-DPI:       the first {split} byte(s) of the handshake "
                   f"travel alone (split = {split})")
     if not mappings:
-        _info("to add a port: simurgh mapping add 443 443")
+        _info("to add a port, open Ports in the web panel")
     return 0
 
 
@@ -461,9 +460,25 @@ def cmd_install(args) -> int:
     home = Home(args.home).ensure()
     role = args.role
     if role == "auto":
-        # with --exit-host (or --dial exit, which is the reverse direction) we
-        # are on the Iranian server, otherwise on the exit
-        role = "relay" if (args.exit_host or args.dial == "exit") else "exit"
+        # Explicit endpoint options imply the relay. Otherwise an interactive
+        # package install asks once, just like `simurgh init`; an unattended
+        # install keeps the historical exit default. install.sh normally does
+        # its geo-detection first and passes an explicit role here.
+        if args.exit_host or args.dial == "exit":
+            role = "relay"
+        elif sys.stdin.isatty():
+            print("What is the role of this server?")
+            print("  1) Foreign server (exit)  — your panel/service lives here")
+            print("  2) Iranian server (relay) — your users connect here")
+            choice = _ask("choice", "1")
+            role = "exit" if choice.strip() in ("1", "exit") else "relay"
+        else:
+            role = "exit"
+    if (args.role == "auto" and role == "relay" and args.dial != "exit"
+            and not args.token and not args.exit_host):
+        # The universal package flow is panel-first too: do not ask for the
+        # token/address immediately after asking which role this server is.
+        args.pair_later = True
     roles = ("exit", "relay") if args.both else (role,)
     if not args.config_only:
         for wanted in roles:
@@ -556,8 +571,8 @@ def cmd_service(args) -> int:
         print(f"  home:   {home.path}")
         print(f"  config: {cfg_path} {'✔' if cfg_path.exists() else '✘ (missing)'}")
         if pairing == "unpaired":
-            print("  pairing: \033[33mnot paired yet\033[0m — on the exit run "
-                  "`simurgh link`, then here: simurgh join '<link>'")
+            print("  pairing: \033[33mnot paired yet\033[0m — create a setup link "
+                  "in the exit panel and import it on this panel's Pair page")
         for name, active, sub, enabled in rows:
             mark = "✔" if active == "active" else "✘"
             print(f"  service: {name}: {active}/{sub} enable={enabled} {mark}")
@@ -664,8 +679,7 @@ async def _run_relay(home: Home, args) -> int:
     if cfg.reverse:
         where = f"tunnel listen: {cfg.tunnel.endpoint()}"
     elif cfg.unpaired:
-        where = ("not paired yet -- the panel is up, the tunnel waits for "
-                 "`simurgh join '<link>'`")
+        where = "not paired yet -- import the exit's setup link on the panel's Pair page"
     else:
         where = f"target: {cfg.exit.describe()}"
     _ok(f"relay \"{cfg.name or 'relay'}\" is up. {where}")

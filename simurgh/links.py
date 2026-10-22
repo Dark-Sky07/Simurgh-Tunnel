@@ -1,15 +1,15 @@
-"""Setup links — one string that carries everything a new Iranian server needs.
+"""Authenticated setup links for panel-first direct and reverse pairing.
 
-    simurgh://<relay-ip>:<panel-port>/setup?u=<user>&p=<pass>#Iran-2
+    simurgh://<panel-host>:<panel-port>/setup?u=<user>&p=<pass>#name
 
-Paste that link into ``simurgh`` on a fresh Iranian server (``simurgh link
---join 'simurgh://...'``) and it fetches ``token`` + ``exit`` endpoint from the
-existing panel, writes ``relay.toml`` and can start the service immediately.
+The offering server's **Pair** page creates the link. The receiving server
+imports it on its own Pair page, fetches the token and tunnel endpoint from the
+authenticated panel API, and writes its role's configuration. The pairing CLI
+uses the same helpers for advanced automation.
 
-The token travels over HTTP(S) to the panel.  When the panel is reachable over
+The token travels over HTTP(S) to the panel. When the panel is reachable over
 plain HTTP on a public IP, treat the link like a password: send it through a
-private channel.  (The file-copy path -- ``simurgh link --show`` -- never puts
-the token on the wire.)
+private channel and restrict panel access with a firewall or SSH tunnel.
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def relay_payload_from_link(link: str, timeout: float = 15.0) -> dict:
     payload = fetch_setup(link, timeout=timeout)
     if str(payload.get("role") or "") == "exit":
         raise LinkError("that link is for the exit server, not for the relay; "
-                        "use the link the exit prints with `simurgh link`")
+                        "use the link created on the exit panel's Pair page")
     return payload
 
 
@@ -229,8 +229,7 @@ def reverse_payload(relay_cfg: RelayConfig, host: str,
         },
         "push_ports": [],
         "note": ("Keep this payload secret: the token is inside it. "
-                 "Import it on the foreign (exit) server with "
-                 "`simurgh join <link>`."),
+                 "Import it on the foreign exit panel's Pair page."),
     }
 
 

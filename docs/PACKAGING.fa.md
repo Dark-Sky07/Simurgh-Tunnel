@@ -62,8 +62,8 @@ CI روی هر push هر چهار فایل را می‌سازد (کار `package
 
 ```bash
 sudo dpkg -i simurgh_3.1.1_amd64.deb      # اگر وابستگی کم بود: apt -f install
-sudo simurgh install --role exit --listen 443      # یا --role relay --exit-host <ip>
-sudo systemctl enable --now simurgh-exit           # unit همان نقشی که ساختید
+sudo simurgh install                         # همان فرمان روی هر سرور؛ در صورت سؤال، نقش را انتخاب کنید
+# نصاب یونیت systemd نقش انتخاب‌شده را فعال و اجرا می‌کند
 ```
 
 `remove` پکیج، `/etc/simurgh` را نگه می‌دارد (توکن‌ها و دفتر ترافیک از نصب دوباره
@@ -74,8 +74,8 @@ sudo systemctl enable --now simurgh-exit           # unit همان نقشی که
 
 ```bash
 sudo dnf install ./simurgh-3.1.1-1.x86_64.rpm
-sudo simurgh install --role relay --exit-host 203.0.113.9 --exit-port 443 --token XXX
-sudo systemctl enable --now simurgh-relay
+sudo simurgh install                         # یکسان روی سرور خارج و ایران؛ در صورت سؤال، نقش را انتخاب کنید
+# نصاب یونیت systemd نقش انتخاب‌شده را فعال و اجرا می‌کند
 ```
 
 ### هر جای دیگر: tarball
@@ -84,8 +84,8 @@ sudo systemctl enable --now simurgh-relay
 
 ```bash
 sudo tar -xzf simurgh-3.1.1-noarch.tar.gz -C /
-sudo simurgh install --role exit --listen 443
-sudo simurgh exit          # بدون systemd؟ نقش را دستی اجرا کنید
+sudo simurgh install                         # همان فرمان؛ در صورت سؤال، نقش را انتخاب کنید
+# بدون systemd، نقش exit یا relay اعلام‌شده توسط نصاب را دستی اجرا کنید
 ```
 
 پیشوندی جز `/usr` فقط یک سوییچ در زمان ساخت است (`--prefix /opt/simurgh`) و
@@ -98,8 +98,8 @@ launcher آن‌وقت در `/opt/simurgh/lib/simurgh` را نگاه می‌کن
 ```bash
 docker build -t simurgh .
 docker run --rm simurgh --version
-docker run --rm -v simurgh-exit:/etc/simurgh simurgh init --role exit --listen 443
-docker run -d --name simurgh-exit -v simurgh-exit:/etc/simurgh \
+docker run --rm -v simurgh-node:/etc/simurgh simurgh install  # نمونهٔ اگزیت؛ پیش‌فرض غیرتعاملی
+docker run -d --name simurgh-exit -v simurgh-node:/etc/simurgh \
        -p 443:443 -p 19443:19443 simurgh exit
 ```
 
@@ -109,8 +109,9 @@ docker run -d --name simurgh-exit -v simurgh-exit:/etc/simurgh \
 ندارد. هیچ کانفیگی داخلش نیست؛ `/etc/simurgh` یک والیوم است و فقط خودِ
 `simurgh` در آن می‌نویسد، دقیقاً مثل روی سرور.
 
-فایل `docker-compose.yml` یک رله و یک اگزیت را کنار هم بالا می‌آورد؛ سریع‌ترین
-راه برای دیدن کارکرد کل سیستم:
+فایل `docker-compose.yml` یک رله و یک اگزیت را کنار هم بالا می‌آورد. دستور زیر
+فقط یک **آزمایشگاه توسعهٔ غیرتعاملی** است، نه مسیر معمول نصب سرور (که همان فرمان نصب
+و سپس پنل است):
 
 ```bash
 docker compose build
@@ -154,8 +155,8 @@ entrypoint اگر نقشی کانفیگ نداشته باشد اجازهٔ با�
   (`simurgh status --json` وقتی کانفیگ خوانده شود کد ۰ می‌دهد).
 * **موتور Go در کانتینر** در `/usr/bin/simurgh-go` است و خودکار استفاده می‌شود؛
   همان `engine = "go"` در کانفیگ کافی است.
-* **هیچ بسته‌ای کانفیگ نمی‌سازد**: دو سرور با یک توکن جفت می‌شوند که به هر دو
-  می‌دهید (`--token`)، یا با یک لینک اتصال (`simurgh link --show` →
-  `simurgh join '<link>'`).
+* **صرفِ بازکردن بسته کانفیگ نمی‌سازد**: روی هر سرور همان `simurgh install` را اجرا کنید و در صورت سؤال نقش را
+  انتخاب کنید و سپس لینک راه‌اندازی را در پنل‌های وب بسازید/وارد
+  کنید. توکن دستی و CLI جفت‌سازی فقط برای اتوماسیون پیشرفته باقی می‌مانند.
 
 </div>

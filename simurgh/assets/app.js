@@ -458,19 +458,31 @@ async function loadSettings() {
     ['name', t('lbl_name'), cfg.name || '', 'text'],
     ['log_level', t('lbl_log_level'), cfg.log_level || 'info', 'select:debug,info,warning,error'],
     ['engine', t('lbl_engine'), cfg.engine || 'python', 'select:python,go'],
+    ['rate_limit', t('lbl_rate_limit'), cfg.rate_limit || '', 'text'],
+    ['quota', t('lbl_quota'), cfg.quota || '', 'text'],
+    ['quota_period', t('lbl_quota_period'), cfg.quota_period || 'month', 'select:day,month,total'],
+    ['quota_action', t('lbl_quota_action'), cfg.quota_action || 'block', 'select:block,throttle,warn'],
+    ['max_conns', t('lbl_max_conns'), cfg.max_conns ?? 0, 'number'],
   ];
   if (ROLE === 'relay') {
+    rows.push(['dial', t('lbl_dial'), cfg.dial || 'relay', 'select:relay,exit']);
+    rows.push(['tunnel_carrier', t('lbl_reverse_carrier'),
+      (cfg.tunnel && cfg.tunnel.carrier) || 'tls', 'select:tls,wss,raw,plain,udp']);
+    rows.push(['tunnel_port', t('lbl_reverse_port'),
+      (cfg.tunnel && cfg.tunnel.port) || 8443, 'number']);
+    rows.push(['tunnel_path', t('lbl_reverse_path'),
+      (cfg.tunnel && cfg.tunnel.path) || '/ws', 'text']);
     rows.push(['panel_port', t('lbl_panel_port'), cfg.panel_port || 8787, 'number']);
-    rows.push(['keepalive', t('lbl_ping'), cfg.keepalive || 25, 'number']);
-    rows.push(['stream_window', t('lbl_window'), cfg.stream_window || 262144, 'number']);
-    rows.push(['max_stream_window', t('lbl_max_window'), cfg.max_stream_window || 8388608, 'number']);
-    rows.push(['chunk', t('lbl_chunk'), cfg.chunk || 65536, 'number']);
-    rows.push(['connections', t('lbl_conns_cfg'), cfg.connections || 1, 'number']);
+    rows.push(['keepalive', t('lbl_ping'), cfg.keepalive ?? 25, 'number']);
+    rows.push(['stream_window', t('lbl_window'), cfg.stream_window ?? 262144, 'number']);
+    rows.push(['max_stream_window', t('lbl_max_window'), cfg.max_stream_window ?? 8388608, 'number']);
+    rows.push(['chunk', t('lbl_chunk'), cfg.chunk ?? 65536, 'number']);
+    rows.push(['connections', t('lbl_conns_cfg'), cfg.connections ?? 1, 'number']);
   } else {
-    rows.push(['stream_window', t('lbl_window'), cfg.stream_window || 262144, 'number']);
-    rows.push(['max_stream_window', t('lbl_max_window'), cfg.max_stream_window || 8388608, 'number']);
-    rows.push(['chunk', t('lbl_chunk'), cfg.chunk || 65536, 'number']);
-    rows.push(['speedtest_port', 'speedtest_port', cfg.speedtest_port || 0, 'number']);
+    rows.push(['stream_window', t('lbl_window'), cfg.stream_window ?? 262144, 'number']);
+    rows.push(['max_stream_window', t('lbl_max_window'), cfg.max_stream_window ?? 8388608, 'number']);
+    rows.push(['chunk', t('lbl_chunk'), cfg.chunk ?? 65536, 'number']);
+    rows.push(['speedtest_port', 'speedtest_port', cfg.speedtest_port ?? 8808, 'number']);
   }
   box.innerHTML = rows.map(([key, label, value, kind]) => {
     if (kind.startsWith('select:')) {
@@ -662,16 +674,22 @@ function pairingRequired() {
 }
 function renderPairing() {
   const unpaired = pairingRequired();
+  const panel = data && data.panel || {};
+  const offer = ROLE === 'exit' || !!panel.setup_link;
   const banner = $('pair-banner'), nav = $('nav-pair');
   if (banner) banner.hidden = !unpaired;
-  if (nav) nav.hidden = !unpaired;
-  if (!unpaired && view === 'pair') show('dashboard');
-  const form = $('pair-form'), done = $('pair-done');
-  if (form && done) {
-    // a finished pairing keeps its receipt on the page, unless the relay is
-    // (still) unpaired, in which case the form is what matters
-    if (unpaired) { form.hidden = false; done.hidden = true; }
-  }
+  if (nav) nav.hidden = false;
+  const form = $('pair-form'), done = $('pair-done'), offerBox = $('pair-offer');
+  const exitForm = $('exit-pair-form');
+  if (offerBox) offerBox.hidden = !offer;
+  if (form) form.hidden = ROLE === 'exit' || !!panel.reverse;
+  if (exitForm) exitForm.hidden = ROLE !== 'exit';
+  if (done && (unpaired || ROLE === 'exit')) done.hidden = true;
+  const replacing = ROLE === 'relay' && !!panel.paired && !panel.reverse;
+  if ($('pair-title')) $('pair-title').textContent = t(replacing ? 'pair_replace_title' : 'pair_title');
+  if ($('pair-lead')) $('pair-lead').textContent = t(replacing ? 'pair_replace_lead' : 'pair_lead');
+  if ($('pair-steps')) $('pair-steps').hidden = replacing;
+  if ($('pair-btn')) $('pair-btn').textContent = t(replacing ? 'pair_replace_btn' : 'pair_btn');
 }
 function bindPair() {
   const btn = $('pair-btn');
@@ -680,10 +698,14 @@ function bindPair() {
       const field = $('pair-link');
       const link = (field ? field.value : '').trim();
       if (!link) { toast(t('pair_need_link'), 'warn'); return; }
+      const replacing = !!(data && data.panel && data.panel.paired);
+      if (replacing && !confirm(t('confirm_replace_pair'))) return;
       btn.disabled = true;
       const status = $('pair-status');
       if (status) status.textContent = '…';
-      const res = await api('/api/pair', { method: 'POST', body: JSON.stringify({ link }) });
+      const res = await api('/api/pair', {
+        method: 'POST', body: JSON.stringify({ link, replace: replacing }),
+      });
       btn.disabled = false;
       if (status) status.textContent = '';
       if (!res.ok) {
@@ -703,6 +725,36 @@ function bindPair() {
   }
   const open = $('pair-open');
   if (open) open.onclick = () => show('pair');
+  const exitBtn = $('exit-pair-btn');
+  if (exitBtn) exitBtn.onclick = async () => {
+    const field = $('exit-pair-link');
+    const link = (field ? field.value : '').trim();
+    if (!link) { toast(t('pair_need_link'), 'warn'); return; }
+    exitBtn.disabled = true;
+    const status = $('exit-pair-status');
+    if (status) status.textContent = '…';
+    const res = await api('/api/pair', { method: 'POST', body: JSON.stringify({ link }) });
+    exitBtn.disabled = false;
+    if (status) status.textContent = res.ok ? (res.note || '') : (res.error || '');
+    if (!res.ok) { toast(t('toast_error', { msg: res.error || '' }), 'err'); return; }
+    if (field) field.value = '';
+    toast(t('pair_saved_restart'));
+    await load(true);
+  };
+  const make = $('setup-link-btn');
+  if (make) make.onclick = async () => {
+    const host = ($('setup-host') && $('setup-host').value || '').trim();
+    make.disabled = true;
+    const res = await api('/api/setup-link', {
+      method: 'POST', body: JSON.stringify({ host }),
+    });
+    make.disabled = false;
+    if (!res.ok) { toast(t('toast_error', { msg: res.error || '' }), 'err'); return; }
+    const out = $('setup-link-out');
+    if (out) { out.textContent = res.url; out.hidden = false; }
+    toast(t('setup_created'));
+    if (navigator.clipboard) navigator.clipboard.writeText(res.url).catch(() => {});
+  };
 }
 
 /* ---------------------------------------------------------- certificates */

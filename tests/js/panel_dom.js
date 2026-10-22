@@ -25,6 +25,7 @@ if (!payloadPath) {
   process.exit(2);
 }
 const payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+const role = (payload.panel && payload.panel.role) || 'relay';
 
 /* ------------------------------------------------------------- the fake DOM */
 const ids = new Set([...html.matchAll(/id="([A-Za-z0-9_-]+)"/g)].map((m) => m[1]));
@@ -104,6 +105,11 @@ function makeNode(tag, id) {
 }
 
 ids.forEach((id) => nodes.set(id, makeNode('div', id)));
+if (nodes.has('panel-meta')) {
+  nodes.get('panel-meta').textContent = JSON.stringify({
+    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.1.1',
+  });
+}
 if (nodes.has('log-filter')) nodes.get('log-filter').value = '';
 if (nodes.has('link-ttl')) nodes.get('link-ttl').value = '600';
 
@@ -115,9 +121,12 @@ const SPEEDTEST = {
   history: [{ t: 0, mbps: 40 }, { t: 1, mbps: 84 }],
 };
 const CONFIG = {
-  ok: true, role: 'relay', name: 'ir-tehran', log_level: 'info', engine: 'python',
-  panel_port: 8787, keepalive: 25, stream_window: 262144, max_stream_window: 8388608,
-  chunk: 65536, connections: 1, token_masked: 'DEMO…123',
+  ok: true, role, name: 'ir-tehran', log_level: 'info', engine: 'python',
+  dial: 'relay', tunnel: { carrier: 'tls', port: 8443, path: '/ws' },
+  panel_port: 8787, keepalive: 0, stream_window: 262144, max_stream_window: 8388608,
+  chunk: 65536, connections: 1, speedtest_port: 8808,
+  rate_limit: '20M', quota: '100G', quota_period: 'month', quota_action: 'block',
+  max_conns: 100, token_masked: 'DEMO…123',
 };
 const LOGS = { ok: true, lines: ['2026-10-17 10:00:00 INFO tunnel up',
                                  '2026-10-17 10:00:01 INFO port 8443 -> 127.0.0.1:9000'],
@@ -129,6 +138,8 @@ const ANSWERS = [
   [/^\/api\/logs/, () => LOGS],
   [/^\/api\/action/, () => ({ ok: true, speedtest: SPEEDTEST, action: 'speedtest' })],
   [/^\/api\/mappings/, () => ({ ok: true, mappings: payload.mappings })],
+  [/^\/api\/setup-link/, () => ({ ok: true, target: role === 'exit' ? 'relay' : 'exit',
+                                  url: 'simurgh://203.0.113.9:8787/setup?u=admin&p=c2VjcmV0' })],
   [/^\/api\/pair/, () => ({ ok: true, exit: 'tls://198.51.100.7:443', applied: 'live',
                             mappings: [443], added: [443],
                             backup: '/etc/simurgh/relay.toml.bak-pair' })],
@@ -142,7 +153,7 @@ const ANSWERS = [
                               latest: '3.1.0', notes_url: 'https://example.invalid' })],
   [/^\/healthz/, () => ({ ok: true, version: '3.0.0' })],
 ];
-const seen = [];
+const seen = [], bodies = [];
 
 const document = {
   documentElement: makeNode('html'),
@@ -214,9 +225,10 @@ const sandbox = {
   URL: { createObjectURL: () => 'blob:stub', revokeObjectURL() {} },
   TextDecoder, TextEncoder,
   Event: class {}, CustomEvent: class {},
-  fetch: async (url) => {
+  fetch: async (url, init = {}) => {
     const path = String(url);
     seen.push(path);
+    if (init.body) bodies.push(JSON.parse(init.body));
     const answer = ANSWERS.find(([pattern]) => pattern.test(path));
     const body = answer ? answer[1]() : { ok: false, error: `no stub for ${path}` };
     return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
@@ -303,18 +315,45 @@ try {
   const speed = nodes.get('run-speedtest');
   if (speed && speed.onclick) { speed.disabled = false; speed.onclick(); await new Promise((r) => setTimeout(r, 80)); }
 
-  // an unpaired relay: the Pair page is the one thing the operator can do,
-  // and pressing the button must reach the endpoint with the pasted link
-  if (payload.panel && payload.panel.pairing_required) {
+  // Setup links are panel-only on an exit or a reverse relay. An exit can
+  // also import a reverse relay's link from its own Pair page.
+  if (role === 'exit' || (payload.panel && payload.panel.setup_link)) {
+    const host = nodes.get('setup-host');
+    if (host) host.value = '203.0.113.9:8787';
+    const make = nodes.get('setup-link-btn');
+    if (!make || typeof make.onclick !== 'function') problems.push('setup-link button is not wired');
+    else {
+      make.onclick();
+      await new Promise((r) => setTimeout(r, 80));
+      if (!seen.includes('/api/setup-link')) problems.push('setup-link button never called its API');
+      if (!(nodes.get('setup-link-out').textContent || '').startsWith('simurgh://')) {
+        problems.push('setup link was not rendered');
+      }
+    }
+  }
+  if (role === 'exit') {
+    const field = nodes.get('exit-pair-link');
+    if (field) field.value = 'simurgh://198.51.100.8:8787/setup?u=admin&p=c2VjcmV0';
+    const button = nodes.get('exit-pair-btn');
+    if (!button || typeof button.onclick !== 'function') problems.push('exit Pair button is not wired');
+    else { button.onclick(); await new Promise((r) => setTimeout(r, 80)); }
+  }
+
+  // A direct relay can complete pairing or explicitly replace its exit. The
+  // latter must send the replacement acknowledgement, never silently re-pair.
+  if (role === 'relay' && payload.panel && !payload.panel.reverse) {
     const field = nodes.get('pair-link');
     const button = nodes.get('pair-btn');
-    if (!button) problems.push('an unpaired relay has no Pair button');
+    if (!button) problems.push('a direct relay has no Pair button');
     else {
       if (field) field.value = 'simurgh://198.51.100.7:8787/setup?u=admin&p=c2VjcmV0#de-frankfurt';
       button.onclick();
       await new Promise((r) => setTimeout(r, 80));
       if (!seen.some((url) => url.split('?')[0] === '/api/pair')) {
         problems.push('the Pair button never called /api/pair');
+      }
+      if (payload.panel.paired && !bodies.some((body) => body.link && body.replace === true)) {
+        problems.push('replacing a paired exit did not send explicit confirmation');
       }
     }
   }

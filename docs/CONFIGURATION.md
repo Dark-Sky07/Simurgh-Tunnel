@@ -342,44 +342,38 @@ the current value of every key next to the profile it belongs to.
 
 ## Setup links
 
-A setup link is a single string that carries the token and the endpoint:
+A setup link carries the offering server's panel address and credentials. The
+receiving server uses it once to fetch the tunnel token, endpoint, certificate
+fingerprint and advertised mappings over the authenticated `/api/join` endpoint:
 
 ```
 simurgh://<host>:<panel-port>/setup?u=<panel-user>&p=<base64 password>#<name>
 ```
 
-* On the **exit**: `simurgh link --show` prints the link for a new relay.
-* On a **reverse relay**: the same command prints the link for the exit.
-* On the other server: `simurgh join '<link>'` writes the config; add
-  `--host <ip>` to override the address, `--force` to overwrite an existing
-  config.
-* `--no-restart` writes the config without restarting the service; otherwise the
-  unit is restarted when it is running, so the tunnel comes up immediately.
+The normal flow needs no pairing CLI:
+
+* **Direct mode:** create the link on the foreign exit's **Pair** page and import
+  it on the Iranian relay's **Pair** page. The relay preserves its panel port,
+  engine, limits and existing mappings, and applies the new exit live in the
+  Python engine.
+* **Reverse mode:** on the relay, select `dial = exit` in **Settings**, configure
+  the reverse listener and restart. Create the link on that relay's **Pair**
+  page and import it on the foreign exit's **Pair** page; then restart the exit.
+* Override the offering panel's public `IP/domain[:port]` in the setup-link card
+  when the browser uses an SSH tunnel or NAT address. Bracket literal IPv6 when
+  adding a port, for example `[2001:db8::1]:8787`.
 
 ### Installing first, pairing later
 
-An Iranian server does not need the foreign one to exist yet. The one-command
-installer never asks for the token or the exit address: it writes `relay.toml`
-with `unpaired = true`, installs the panel, and the tunnel stays idle (the panel
-and `simurgh status` both say so):
+The universal installer does not need the foreign exit to exist before the
+Iranian direct relay. It writes `relay.toml` with `unpaired = true` and starts
+the panel; the tunnel intentionally stays idle until the panel pairing above.
+An unpaired config without `unpaired = true` is still rejected: an empty token
+alone is a configuration error, not a pairing state.
 
-```bash
-sudo bash install.sh                 # on the Iranian server, no questions
-sudo simurgh join '<setup link>'     # later, in any order
-```
-
-* `simurgh install --role relay --pair-later` is the same thing without the
-  installer (also available as `simurgh init`).
-* The panel has a **Pair** page for exactly this: paste the link, press Pair,
-  and the running relay adopts it in place — the panel port, the engine, the
-  limits and the ports already added are kept; only the secret and the exit
-  arrive from the link.
-* `simurgh join` on an unpaired config needs no `--force` and keeps a copy of
-  the previous file at `relay.toml.bak-pair`.
-* An unpaired config without `unpaired = true` is still refused: an empty token
-  alone is a mistake, not a state.
-
-Treat links as secrets: they contain the tunnel token.
+Pairing writes `<config>.bak-pair` before changing the file. Treat links and
+payloads as secrets: links contain panel credentials and payloads contain the
+tunnel token.
 
 ## systemd units
 

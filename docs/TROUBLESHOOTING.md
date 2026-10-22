@@ -25,10 +25,9 @@ simurgh logs -f          # live log (/etc/simurgh/logs/*.log)
 ## The tunnel never comes up (direct mode)
 
 0. Is the relay paired at all? `simurgh status` (and the panel) say
-   `not paired yet` on a server installed before its exit existed. Pair it with
-   `sudo simurgh join '<setup link>'` — the link is printed by `simurgh link` on
-   the exit — or paste it on the panel's **Pair** page. Nothing has to be
-   re-installed.
+   `not paired yet` on a server installed before its exit existed. Create a
+   setup link on the exit's **Pair** page and import it on the relay's **Pair**
+   page. Nothing has to be re-installed and no pairing CLI is required.
 1. `simurgh doctor` on **both** servers.
 2. The token must be byte-identical on both sides (copy the setup link again if
    unsure).
@@ -37,9 +36,10 @@ simurgh logs -f          # live log (/etc/simurgh/logs/*.log)
 4. `simurgh status` on the relay: `last_error` and `bind_errors` tell you what
    the relay last saw.
 5. If a certificate fingerprint is pinned, the relay refuses any other
-   certificate: re-issue the link after changing certificates, or temporarily
-   set `insecure_skip_verify = true` in `[exit]` to confirm that the pin was the
-   problem.
+   certificate: create a fresh link on the exit and use **Replace exit** on the
+   relay's **Pair** page. To diagnose only, temporarily set
+   `insecure_skip_verify = true` in `[exit]` to confirm that the pin was the
+   problem, then restore verification.
 6. `strict_ports = true` on the exit refuses ports the relay was not offered —
    add the port to `push_ports` or turn strictness off.
 
@@ -53,8 +53,9 @@ In reverse mode the **exit dials the relay**, so the checks are mirrored:
    like `cannot reach the relay` means the address or the firewall is wrong.
 3. A wrong token on either side is refused silently by the listener (it serves
    the decoy page instead) — verify the token.
-4. If you replaced the relay's certificate, refresh the exit's config
-   (`simurgh join '<new link>' --force`) so the fingerprint matches.
+4. If you replaced the relay's certificate, create a fresh setup link on the
+   relay and import it again on the exit's **Pair** page so the fingerprint
+   matches; restart the exit afterwards.
 5. After `systemctl restart simurgh-relay`, the exit reconnects within a few
    seconds by itself.
 
@@ -137,8 +138,7 @@ when the script was piped into `bash` it also printed
 refreshes the configuration in place, nothing has to be removed first:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh \
-  | sudo bash /dev/stdin --role exit
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
 A traceback ending in `ModuleNotFoundError: No module named 'tomllib'` is the
@@ -165,7 +165,7 @@ a toolchain that is too old, or no route to `go.dev`).
 
 ```bash
 sudo simurgh uninstall --purge     # removes services, configs and certificates
-sudo bash install.sh --role relay --exit <foreign-ip>:443
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
 ---
