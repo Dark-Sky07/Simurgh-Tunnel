@@ -151,6 +151,16 @@ def test_a_non_2xx_answer_counts_as_a_failure(monkeypatch):
     assert alerts.test() is False and alerts.failed == 1
 
 
+def test_non_web_alert_scheme_is_refused_without_network_io(monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("urlopen should not be called for a file URL")
+
+    monkeypatch.setattr(alerts_mod.urllib.request, "urlopen", unexpected)
+    alerts = Alerts(webhook="file:///tmp/simurgh-secret")
+    assert alerts.test() is False
+    assert "HTTP or HTTPS" in alerts.last_error
+
+
 # --------------------------------------------------------------- event filter
 def test_events_are_filtered(recorder):
     alerts = Alerts(webhook="https://example.invalid/hook", events=["quota"])

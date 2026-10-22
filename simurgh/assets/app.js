@@ -306,31 +306,35 @@ function renderMappingTable() {
   }
   bodies.forEach((body) => { body.innerHTML = ''; });
   rows.forEach((m) => {
-    const tr = el('tr');
-    tr.dataset.row = m.key;
-    const quota = m.quota && m.quota.limit;
-    const pct = quota ? Math.min(100, ((m.quota.used || 0) / m.quota.limit) * 100) : 0;
-    tr.innerHTML = `
-      <td>${esc(m.name || '—')}${m.listener ? ' <span class="pill">' + esc(t('lbl_listener')) + '</span>' : ''}</td>
-      <td class="mono">${m.listener ? esc(m.target) : (m.listen + ' → ' + esc(m.target))}</td>
-      <td>${m.udp ? 'UDP' : 'TCP'}</td>
-      <td class="num">${bitrate(m.in_rate + m.out_rate)}</td>
-      <td class="num">${bytes(m.in_bytes + m.out_bytes)}</td>
-      <td>${quota ? `<div class="qbar${pct > 85 ? ' hot' : ''}"><i style="width:${pct.toFixed(1)}%"></i></div><div class="sub">${bytes(m.quota.used)} / ${bytes(m.quota.limit)} (${esc(m.quota.period)})</div>` : esc(t('lbl_no_quota'))}</td>
-      <td class="num"></td>`;
-    const last = tr.lastElementChild;
-    last.appendChild(sparkFor(m.key, m.in_rate, m.out_rate));
-    if (!m.listener) {
-      const tog = el('button', 'sm ghost', m.enabled ? t('btn_turn_off') : t('btn_turn_on'));
-      tog.onclick = () => mappingAction({ action: 'toggle', key: m.key });
-      const del = el('button', 'sm danger', t('btn_delete'));
-      del.onclick = () => { if (confirm(t('confirm_delete'))) mappingAction({ action: 'remove', key: m.key }); };
-      const wrap = el('div', 'row');
-      wrap.style.justifyContent = 'flex-end';
-      wrap.append(tog, del);
-      last.appendChild(wrap);
-    }
-    bodies.forEach((body) => { body.appendChild(tr.cloneNode(true)); });
+    // Build one row per table. cloneNode(true) copies markup but not onclick
+    // handlers, which used to leave every visible toggle/delete button dead.
+    bodies.forEach((body) => {
+      const tr = el('tr');
+      tr.dataset.row = m.key;
+      const quota = m.quota && m.quota.limit;
+      const pct = quota ? Math.min(100, ((m.quota.used || 0) / m.quota.limit) * 100) : 0;
+      tr.innerHTML = `
+        <td>${esc(m.name || '—')}${m.listener ? ' <span class="pill">' + esc(t('lbl_listener')) + '</span>' : ''}</td>
+        <td class="mono">${m.listener ? esc(m.target) : (m.listen + ' → ' + esc(m.target))}</td>
+        <td>${m.udp ? 'UDP' : 'TCP'}</td>
+        <td class="num">${bitrate(m.in_rate + m.out_rate)}</td>
+        <td class="num">${bytes(m.in_bytes + m.out_bytes)}</td>
+        <td>${quota ? `<div class="qbar${pct > 85 ? ' hot' : ''}"><i style="width:${pct.toFixed(1)}%"></i></div><div class="sub">${bytes(m.quota.used)} / ${bytes(m.quota.limit)} (${esc(m.quota.period)})</div>` : esc(t('lbl_no_quota'))}</td>
+        <td class="num"></td>`;
+      const last = tr.lastElementChild;
+      last.appendChild(sparkFor(m.key, m.in_rate, m.out_rate));
+      if (!m.listener) {
+        const tog = el('button', 'sm ghost', m.enabled ? t('btn_turn_off') : t('btn_turn_on'));
+        tog.onclick = () => mappingAction({ action: 'toggle', key: m.key });
+        const del = el('button', 'sm danger', t('btn_delete'));
+        del.onclick = () => { if (confirm(t('confirm_delete'))) mappingAction({ action: 'remove', key: m.key }); };
+        const wrap = el('div', 'row');
+        wrap.style.justifyContent = 'flex-end';
+        wrap.append(tog, del);
+        last.appendChild(wrap);
+      }
+      body.appendChild(tr);
+    });
   });
 }
 

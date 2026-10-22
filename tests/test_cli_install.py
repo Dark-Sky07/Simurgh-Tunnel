@@ -88,6 +88,26 @@ def test_install_pair_later_writes_an_unpaired_config(tmp_path):
     assert cfg.panel_port == 8787          # still a normal, reachable panel
 
 
+def test_concise_exit_option_matches_the_documented_install_example(tmp_path):
+    args = _install_args(tmp_path, "--role", "relay", "--exit", "[2001:db8::1]:9443")
+    assert cli.cmd_install(args) == 0
+    cfg = load_relay(tmp_path / "relay.toml")
+    assert cfg.exit.address == "2001:db8::1"
+    assert cfg.exit.port == 9443
+
+
+def test_concise_exit_option_rejects_a_bad_port_without_writing_config(
+        tmp_path, capsys):
+    args = _install_args(tmp_path, "--role", "relay", "--exit", "host:70000")
+    try:
+        cli.cmd_install(args)
+    except cli.ConfigError as exc:
+        assert "1-65535" in str(exc)
+    else:
+        raise AssertionError("an invalid endpoint was accepted")
+    assert not (tmp_path / "relay.toml").exists()
+
+
 def test_join_completes_a_server_that_was_installed_unpaired(tmp_path, monkeypatch):
     """Pairing later must not throw away what the install already decided."""
     assert cli.cmd_install(_install_later(

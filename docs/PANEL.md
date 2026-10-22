@@ -25,7 +25,7 @@ start it from the menu.
 | Way in | How |
 |---|---|
 | password prompt | `http://<ip>:8787` — HTTP Basic, for scripts and `curl` |
-| one-click link | `http://<ip>:8787/?k=<panel-password>` — for a browser without a password manager |
+| legacy one-click link | `http://<ip>:8787/?k=<panel-password>` — exchanges the password for a cookie and redirects to `/` |
 | login form | `http://<ip>:8787/login` — a real form, `EN / فا` |
 | one-time link | `simurgh web --link`, or the Security page: single use, 10 minutes |
 

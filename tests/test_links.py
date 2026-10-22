@@ -36,14 +36,29 @@ def test_password_is_not_plain_in_the_link():
     assert "sup3r-secret" not in link
 
 
+def test_ipv6_setup_links_are_built_and_parsed_with_brackets():
+    link = build_join_link("2001:db8::1", 8787, USER, PASSWORD)
+    assert link.startswith("simurgh://[2001:db8::1]:8787/")
+    assert parse_join_link(link)["host"] == "2001:db8::1"
+
+
 @pytest.mark.parametrize("bad", [
     "http://example.com/setup?u=a&p=b",
     "simurgh://example.com/wrong?u=a&p=b",
     "simurgh://example.com/setup?u=&p=",
+    "simurgh://example.com:not-a-port/setup?u=a&p=b",
+    "simurgh://example.com:70000/setup?u=a&p=b",
+    "simurgh://[2001:db8::1/setup?u=a&p=b",
 ])
 def test_bad_links_are_refused(bad):
     with pytest.raises(LinkError):
         parse_join_link(bad)
+
+
+def test_setup_fetch_refuses_non_web_schemes_before_any_network_io():
+    link = build_join_link("203.0.113.9", 8787, USER, PASSWORD)
+    with pytest.raises(LinkError, match="HTTP or HTTPS"):
+        fetch_setup(link, scheme="file")
 
 
 def test_payload_becomes_a_relay_config():

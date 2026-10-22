@@ -230,8 +230,8 @@ def _init(tmp_path, argv):
 
 
 def test_init_writes_the_anti_dpi_split(tmp_path, monkeypatch):
-    """A fresh install hides the ClientHello from DPI that only reads the first
-    TCP segment — and `--split 0` (or a non-TLS carrier) turns it off."""
+    """A fresh install writes the requested first-segment split (default 3),
+    and `--split 0` turns that compatibility heuristic off."""
     monkeypatch.setenv("SIMURGH_GO_BIN", str(tmp_path / "no-go"))
     _init(tmp_path, ["--role", "relay", "--exit-host", "203.0.113.9",
                      "--exit-port", "443", "--token", "t0k", "--carrier", "tls"])
@@ -272,3 +272,25 @@ def test_a_completed_unpaired_config_stops_being_unpaired(home):
     cfg.exit = ExitEndpoint(carrier="tls", address="203.0.113.9", port=443)
     save_relay(cfg, home.relay_cfg)
     assert load_relay(home.relay_cfg).paired is True
+
+
+@pytest.mark.parametrize("role", ["exit", "relay"])
+def test_non_numeric_scalar_is_an_actionable_config_error(tmp_path, role):
+    path = tmp_path / f"{role}.toml"
+    if role == "exit":
+        path.write_text('token = "t"\nspeedtest_port = "oops"\n'
+                        '[[listen]]\ncarrier = "plain"\nport = 8443\n')
+    else:
+        path.write_text('token = "t"\npanel_port = "oops"\n'
+                        '[exit]\ncarrier = "plain"\naddress = "203.0.113.9"\nport = 443\n')
+    loader = load_exit if role == "exit" else load_relay
+    with pytest.raises(ConfigError, match="invalid configuration value"):
+        loader(path)
+
+
+def test_relay_rejects_an_exit_port_that_cannot_be_dialled(home):
+    home.relay_cfg.write_text(
+        'token = "t"\n[exit]\ncarrier = "plain"\n'
+        'address = "203.0.113.9"\nport = 70000\n')
+    with pytest.raises(ConfigError, match="1-65535"):
+        load_relay(home.relay_cfg)

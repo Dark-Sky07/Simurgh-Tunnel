@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import socket
+import subprocess
 import time
 
 from . import __product__, __version__
@@ -29,7 +30,10 @@ def c(text: str, colour: str) -> str:
 
 
 def clear() -> None:
-    os.system("clear" if os.name != "nt" else "cls")
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "cls"], check=False)
+    else:
+        print("\033[2J\033[H", end="")
 
 
 def pause() -> None:
@@ -449,7 +453,20 @@ def show_logs(home: Home, role: str) -> None:
         print(c("  no log file yet.", "yellow"))
         pause()
         return
-    os.system(f"tail -n 25 {path} 2>/dev/null || cat {path}")
+    # Do not interpolate a config path into a root shell command.  Reading a
+    # bounded tail here is also portable to hosts without tail/cat and leaves
+    # the log on screen until the operator asks for the menu again.
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 64 * 1024))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError as exc:
+        print(c(f"  could not read the log: {exc}", "yellow"))
+    else:
+        print("\n".join(lines[-25:]))
+    pause()
 
 
 def doctor(home: Home, role: str) -> None:

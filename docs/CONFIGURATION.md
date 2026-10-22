@@ -567,9 +567,9 @@ it one:
   counts how often it happened.
 * The panel **never prints the token or the bot token**; `simurgh alert status`
   masks it (`1234…ew11`).
-* `?k=<password>` links still work for one-click access, but the password ends up
-  in the browser history — prefer the `Set-Cookie` session the same link creates,
-  or Basic auth.
+* Legacy `?k=<password>` links immediately exchange the password for a session
+  cookie and redirect to `/`, so it does not stay in the address bar. Prefer a
+  single-use `?t=` link when sharing access.
 
 ## Environment variables
 

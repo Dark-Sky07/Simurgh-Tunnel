@@ -36,10 +36,16 @@ def _b64d(s: str) -> str:
     return base64.urlsafe_b64decode(s + pad).decode()
 
 
+def _url_host(host: str) -> str:
+    """Format a host for a URL, including literal IPv6 addresses."""
+    host = str(host).strip()
+    return f"[{host.strip('[]')}]" if ":" in host else host
+
+
 def build_join_link(host: str, panel_port: int, user: str, password: str,
                     name: str = "") -> str:
     q = f"u={quote(user)}&p={quote(_b64e(password))}"
-    link = f"simurgh://{host}:{panel_port}/setup?{q}"
+    link = f"simurgh://{_url_host(host)}:{panel_port}/setup?{q}"
     if name:
         link += f"#{quote(name)}"
     return link
@@ -48,9 +54,16 @@ def build_join_link(host: str, panel_port: int, user: str, password: str,
 def parse_join_link(link: str) -> dict:
     if not link.startswith("simurgh://"):
         raise LinkError("link must start with simurgh://")
-    u = urlparse(link)
-    if not u.hostname:
+    try:
+        u = urlparse(link)
+        host = u.hostname
+        port = u.port or 8787
+    except ValueError as exc:
+        raise LinkError("bad host or port in link") from exc
+    if not host:
         raise LinkError("link has no host")
+    if not 1 <= port <= 65535:
+        raise LinkError("link port is outside 1-65535")
     if (u.path or "").strip("/") not in ("setup", ""):
         raise LinkError("not a setup link")
     q = parse_qs(u.query)
@@ -63,8 +76,8 @@ def parse_join_link(link: str) -> dict:
     except Exception as exc:
         raise LinkError("bad credentials in link") from exc
     return {
-        "host": u.hostname,
-        "port": u.port or 8787,
+        "host": host,
+        "port": port,
         "user": user,
         "password": password,
         "name": unquote(u.fragment) if u.fragment else "",
@@ -73,23 +86,34 @@ def parse_join_link(link: str) -> dict:
 
 def fetch_setup(link: str, timeout: float = 15.0, scheme: str = "http") -> dict:
     """Ask the panel for the tunnel configuration (returns a dict)."""
+    if scheme not in ("http", "https"):
+        raise LinkError("setup links can only use HTTP or HTTPS")
     info = parse_join_link(link)
-    url = f"{scheme}://{info['host']}:{info['port']}/api/join"
+    url = f"{scheme}://{_url_host(info['host'])}:{info['port']}/api/join"
     payload = json.dumps({"user": info["user"], "password": info["password"]}).encode()
     req = urllib.request.Request(url, data=payload,
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
+            raw = resp.read((1 << 20) + 1)
+            if len(raw) > 1 << 20:
+                raise LinkError("panel sent an oversized configuration")
+            data = json.loads(raw.decode())
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise LinkError("panel rejected the credentials") from exc
         raise LinkError(f"panel answered HTTP {exc.code}") from exc
+    except LinkError:
+        raise
     except Exception as exc:
         raise LinkError(f"cannot reach the panel: {exc}") from exc
+    if not isinstance(data, dict):
+        raise LinkError("panel sent an invalid configuration")
     if not data.get("ok"):
         raise LinkError(str(data.get("error") or "panel refused the request"))
     cfg = data.get("relay") or data          # flat payload, or nested under "relay"
+    if not isinstance(cfg, dict):
+        raise LinkError("panel sent an invalid configuration")
     if not cfg.get("token"):
         raise LinkError("panel sent an incomplete configuration")
     if str(cfg.get("role") or "") == "exit":

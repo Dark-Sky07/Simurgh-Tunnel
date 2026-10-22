@@ -902,7 +902,10 @@ async def _ws_client_hello(tls, host: str, path: str, extra: dict | None = None)
     status = head.split(b"\r\n", 1)[0].decode("latin-1", "replace")
     if "101" not in status:
         raise ConnectionError(f"websocket upgrade refused: {status}")
-    digest = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+    # RFC 6455's WebSocket accept hash is a protocol identifier, not a
+    # password/signature primitive; SHA-1 is required for interoperability.
+    digest = base64.b64encode(hashlib.sha1(
+        (key + WS_GUID).encode(), usedforsecurity=False).digest()).decode()
     if digest.lower() not in head.decode("latin-1", "replace").lower():
         raise ConnectionError("bad websocket accept key")
     return WsChannel(tls, mask=True, name="wss")
@@ -1251,7 +1254,9 @@ def _send_ws_upgrade_ok(tls, head: bytes) -> None:
         if k.strip().lower() == "sec-websocket-key":
             key = v.strip()
             break
-    accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+    # See the client-side note above: this is RFC 6455, not password hashing.
+    accept = base64.b64encode(hashlib.sha1(
+        (key + WS_GUID).encode(), usedforsecurity=False).digest()).decode()
     tls.write((
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\n"
