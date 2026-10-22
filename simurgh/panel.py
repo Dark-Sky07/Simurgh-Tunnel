@@ -306,12 +306,16 @@ class Panel:
                 401, extra={"WWW-Authenticate": 'Basic realm="simurgh"'})
         path = req.path
         if req.method == "GET" and path in ("/", "/index.html"):
-            extra = None
-            # one-click login: /?k=<panel password> turns into a session cookie
+            # Exchange the legacy password link for a cookie, then redirect to
+            # a clean URL so the password does not remain in the address bar or
+            # browser history. Prefer the single-use login links for sharing.
             if self.password and self._query_password_ok(req):
-                extra = {"Set-Cookie":
-                         f"{SESSION_COOKIE}={self._session_value()}; Path=/; HttpOnly; SameSite=Lax"}
-            return http_response(self.dashboard().encode("utf-8"), extra=extra)
+                return http_response(b"", 303, extra={
+                    "Location": "/",
+                    "Set-Cookie": (f"{SESSION_COOKIE}={self._session_value()}; "
+                                   "Path=/; HttpOnly; SameSite=Lax"),
+                })
+            return http_response(self.dashboard().encode("utf-8"))
         if req.method == "GET" and path == "/api/status":
             return json_response(self.status())
         if req.method == "GET" and path == "/metrics":
@@ -952,10 +956,27 @@ class Panel:
             if isinstance(endpoint, dict):
                 for field in ("carrier", "address", "domain", "fingerprint"):
                     if field in endpoint:
-                        setattr(cfg.exit, field, str(endpoint[field])[:255])
+                        value = str(endpoint[field])[:255]
+                        if field == "carrier":
+                            value = value.strip().lower()
+                            if value not in CARRIERS:
+                                return json_response(
+                                    {"ok": False, "error": f"unknown carrier {value!r}"}, 400)
+                        if field == "address" and not value.strip() and not cfg.reverse:
+                            return json_response(
+                                {"ok": False, "error": "the exit address cannot be empty"}, 400)
+                        setattr(cfg.exit, field, value)
                         changed.append(f"exit.{field}")
                 if "port" in endpoint:
-                    cfg.exit.port = clamp(int(endpoint["port"]), 1, 65535)
+                    try:
+                        port = int(endpoint["port"])
+                    except (TypeError, ValueError):
+                        return json_response(
+                            {"ok": False, "error": "the exit port must be a number"}, 400)
+                    if not 1 <= port <= 65535:
+                        return json_response(
+                            {"ok": False, "error": "the exit port is outside 1-65535"}, 400)
+                    cfg.exit.port = port
                     changed.append("exit.port")
                 if "insecure_skip_verify" in endpoint:
                     cfg.exit.insecure_skip_verify = bool(endpoint["insecure_skip_verify"])

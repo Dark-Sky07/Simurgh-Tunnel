@@ -18,7 +18,9 @@ simurgh logs -f          # live log (/etc/simurgh/logs/*.log)
 * Check the service: `systemctl status simurgh-relay` / `simurgh status`.
 * Panel address and credentials are printed at startup and stored in
   `/etc/simurgh/state.json`; `simurgh status` shows them.
-* One-click login: `http://<server>:8787/?k=<panel-password>`.
+* Prefer a single-use login link from the panel's **Security** page. The legacy
+  `http://<server>:8787/?k=<panel-password>` form still works, but immediately
+  redirects to `/` so the password does not remain in the address bar.
 
 ## The tunnel never comes up (direct mode)
 

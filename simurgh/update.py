@@ -27,6 +27,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import __product__, __version__
 from .util import get_logger
@@ -49,6 +50,13 @@ class UpdateError(RuntimeError):
 
 
 def _open(url: str, *, timeout: float = TIMEOUT):
+    try:
+        parsed = urlparse(url)
+        valid = parsed.scheme == "https" and bool(parsed.hostname)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise UpdateError("update downloads must use a valid HTTPS URL")
     request = urllib.request.Request(url, headers={
         "User-Agent": f"{__product__.replace(' ', '-')}/{__version__}",
         "Accept": "application/vnd.github+json",
@@ -214,20 +222,26 @@ def update_binary(dest: Path, tag: str, asset_urls: dict) -> str:
     if not url:
         raise UpdateError(f"release {tag} has no asset called {name}")
     sums = checksums_for(asset_urls)
-    with tempfile.TemporaryDirectory(prefix="simurgh-update-") as tmp:
+    wanted = sums.get(name)
+    if not wanted:
+        # A network or release-layout problem must not silently turn a verified
+        # update into an unverified binary installation.
+        raise UpdateError(f"release {tag} has no usable SHA-256 checksum for {name}; "
+                          "the existing engine was left unchanged")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Stage beside the destination so os.replace is an atomic, same-filesystem
+    # swap: a stopped service must never observe a half-copied engine.
+    with tempfile.TemporaryDirectory(prefix=".simurgh-update-", dir=dest.parent) as tmp:
         staged = Path(tmp) / name
         _download(url, staged)
-        wanted = sums.get(name)
-        if wanted:
-            got = _sha256(staged)
-            if got.lower() != wanted.lower():
-                raise UpdateError(f"{name} does not match its checksum "
-                                  f"(expected {wanted[:12]}…, got {got[:12]}…)")
+        got = _sha256(staged)
+        if got.lower() != wanted.lower():
+            raise UpdateError(f"{name} does not match its checksum "
+                              f"(expected {wanted[:12]}…, got {got[:12]}…)")
         os.chmod(staged, 0o755)
-        dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             shutil.copy2(dest, dest.with_suffix(dest.suffix + ".bak"))
-        shutil.copy2(staged, dest)
+        os.replace(staged, dest)
         os.chmod(dest, 0o755)
     return f"installed {name} to {dest}" + (" (the old one is next to it as .bak)"
                                             if dest.with_suffix(dest.suffix + ".bak").exists()

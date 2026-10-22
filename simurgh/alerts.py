@@ -17,6 +17,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 from .util import get_logger
 
@@ -174,6 +175,15 @@ class Alerts:
         return ok
 
     def _post_json(self, url: str, body: dict) -> bool:
+        try:
+            parsed = urlparse(url)
+            valid = parsed.scheme in ("http", "https") and bool(parsed.hostname)
+        except ValueError:
+            valid = False
+        if not valid:
+            self.last_error = "ValueError: alert endpoints must use HTTP or HTTPS"
+            log.debug("alert rejected: %s", self.last_error)
+            return False
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             url, data=data, method="POST",

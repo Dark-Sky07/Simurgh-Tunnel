@@ -164,10 +164,35 @@ def test_update_finds_a_packaged_binary(monkeypatch, tmp_path):
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"old")
     monkeypatch.setattr(updater, "_download", lambda url, target: target.write_bytes(b"new"))
-    monkeypatch.setattr(updater, "checksums_for", lambda urls: {})
+    import hashlib
+    digest = hashlib.sha256(b"new").hexdigest()
+    monkeypatch.setattr(updater, "checksums_for", lambda urls: {name: digest})
     result = updater.update(home, verbose=False)
     assert "installed" in result["action"]
     assert dest.read_bytes() == b"new"
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.invalid/release",
+    "file:///tmp/engine",
+    "https://[broken-ipv6/release",
+])
+def test_update_transport_refuses_a_non_https_or_malformed_url(url):
+    with pytest.raises(updater.UpdateError, match="HTTPS"):
+        updater._open(url)
+
+
+def test_binary_update_refuses_a_missing_checksum(monkeypatch, tmp_path):
+    """No checksum means no installation, never a silent security downgrade."""
+    name = updater.asset_name()
+    dest = tmp_path / "simurgh-go"
+    dest.write_bytes(b"known-good")
+    monkeypatch.setattr(updater, "checksums_for", lambda urls: {})
+    monkeypatch.setattr(updater, "_download",
+                        lambda url, target: target.write_bytes(b"untrusted"))
+    with pytest.raises(updater.UpdateError, match="checksum"):
+        updater.update_binary(dest, "v9.9.9", {name: "https://example.invalid/" + name})
+    assert dest.read_bytes() == b"known-good"
 
 
 def _git(cwd: Path, *args: str) -> None:

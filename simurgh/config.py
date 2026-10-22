@@ -425,6 +425,18 @@ class ExitConfig:
 
 
 def load_exit(path: str | Path) -> ExitConfig:
+    """Load an exit config and report bad values as configuration errors.
+
+    TOML accepts strings where numbers were intended; a service or panel should
+    see one actionable ConfigError rather than an uncaught ValueError traceback.
+    """
+    try:
+        return _load_exit(path)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path}: invalid configuration value: {exc}") from exc
+
+
+def _load_exit(path: str | Path) -> ExitConfig:
     data = _read_toml(path)
     cfg = ExitConfig(token=str(data.get("token") or ""))
     cfg.tokens = _tokens_from(data, cfg.token)
@@ -882,10 +894,13 @@ def _endpoint_from(data: dict, strict: bool = True) -> ExitEndpoint:
     address = str(data.get("address") or data.get("host") or "")
     if not address and strict:
         raise ConfigError("exit: 'address' is required")
+    port = int(data.get("port", 8443))
+    if not 1 <= port <= 65535:
+        raise ConfigError("exit: 'port' must be in the 1-65535 range")
     return ExitEndpoint(
         carrier=carrier,
         address=address,
-        port=int(data.get("port", 8443)),
+        port=port,
         domain=data.get("domain"),
         path=str(data.get("path", "/ws")),
         fingerprint=data.get("fingerprint"),
@@ -932,6 +947,14 @@ def _families_of(host: str) -> list[str]:
 
 
 def load_relay(path: str | Path) -> RelayConfig:
+    """Load a relay config, normalising malformed scalar values to ConfigError."""
+    try:
+        return _load_relay(path)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path}: invalid configuration value: {exc}") from exc
+
+
+def _load_relay(path: str | Path) -> RelayConfig:
     data = _read_toml(path)
     cfg = RelayConfig(token=str(data.get("token") or ""))
     cfg.tokens = _tokens_from(data, cfg.token)

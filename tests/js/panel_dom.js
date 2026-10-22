@@ -245,6 +245,31 @@ try {
   const afterBoot = drawn();
   if (!afterBoot.length) throw new Error('the page drew nothing after boot');
 
+  // Every row that is actually attached to either Ports table must own live
+  // buttons. Testing only document.created used to miss handlers lost by
+  // cloneNode(true), because the original, unattached row still worked.
+  const attachedButtons = [];
+  const collectButtons = (node, out) => {
+    if (node.tagName === 'BUTTON') out.push(node);
+    (node.children || []).forEach((child) => collectButtons(child, out));
+  };
+  if ((payload.mappings || []).some((m) => !m.listener)) {
+    for (const id of ['mapping-body', 'mapping-body-2']) {
+      const body = nodes.get(id);
+      const rows = (body.children || []).filter((node) => node.tagName === 'TR');
+      if (!rows.length) { problems.push(`${id} has no attached mapping rows`); continue; }
+      for (const row of rows) {
+        const buttons = [];
+        collectButtons(row, buttons);
+        if (buttons.length < 2) problems.push(`${id} contains a row without both actions`);
+        for (const button of buttons) {
+          if (typeof button.onclick !== 'function') problems.push(`${id} contains a dead action`);
+          else attachedButtons.push(button);
+        }
+      }
+    }
+  }
+
   const views = document.querySelectorAll('[data-view]');
   for (const button of views) {
     if (!button.onclick) { problems.push(`the ${button.dataset.view} tab has no handler`); continue; }

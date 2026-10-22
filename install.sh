@@ -318,22 +318,28 @@ fi
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/simurgh" ]; then
   SRC="$SCRIPT_DIR"
 say "using the source next to this script: $SRC"
-elif [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/simurgh" ]; then
-  # a checkout that was put there by hand (or by a previous run)
-  SRC="$SRC_DIR"
-say "using the source in $SRC"
-else
-  if [ -d "$SRC_DIR/.git" ]; then
+elif [ -d "$SRC_DIR/.git" ]; then
+  # A complete checkout can still be old.  In particular, a freshly downloaded
+  # installer must not pass new options to the CLI left by an earlier run.
+  # Refresh the cache before deciding that it is usable, not only when files
+  # are missing from it.
 say "updating the source in $SRC_DIR ($REF)…"
 git -C "$SRC_DIR" fetch --depth 1 origin "$REF" --quiet &&
 git -C "$SRC_DIR" checkout --quiet FETCH_HEAD ||
 warn "could not update the source; continuing with the existing copy."
-  else
-    command -v git >/dev/null 2>&1 || install_pkgs "git"
+  [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/simurgh" ] ||
+die "the source in $SRC_DIR is incomplete; remove it or set SIMURGH_SRC to a complete checkout."
+  SRC="$SRC_DIR"
+say "using the source in $SRC"
+elif [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/simurgh" ]; then
+  # a source tree copied here by hand (without git metadata)
+  SRC="$SRC_DIR"
+say "using the source in $SRC"
+else
+  command -v git >/dev/null 2>&1 || install_pkgs "git"
 say "downloading the source from GitHub ($REF)…"
 git -c advice.detachedHead=false clone --depth 1 --branch "$REF" "$REPO_URL" "$SRC_DIR" ||
 die "could not download the source ($REF)."
-  fi
   SRC="$SRC_DIR"
 fi
 

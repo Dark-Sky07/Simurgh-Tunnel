@@ -392,14 +392,16 @@ async def test_one_click_login_link_sets_a_session_cookie(home, tmp_path, relay_
         # wrong key: still asks for credentials
         status, _ = await _request(port, "/?k=nope")
         assert status == 401
-        # right key: page + cookie
+        # right key: a cookie plus a redirect that removes the password from
+        # the address bar instead of rendering the dashboard at /?k=...
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(f"GET /?k={PASSWORD} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
                      .encode())
         await writer.drain()
         raw = await asyncio.wait_for(reader.read(-1), 10)
         writer.close()
-        assert b"200 OK" in raw
+        assert b"303 See Other" in raw
+        assert b"Location: /" in raw
         assert b"simurgh_session=" in raw
         cookie = raw.split(b"simurgh_session=")[1].split(b";")[0].decode()
         # and the cookie alone is enough for the API
@@ -827,6 +829,36 @@ async def test_the_login_page_is_a_form_and_speaks_persian(home, tmp_path, relay
         assert "simurgh_session=" in raw.headers["set-cookie"]
         assert (await _raw(port, "/api/layout",
                            auth=f"{USER}:{PASSWORD}")).status == 200
+    finally:
+        await panel.stop()
+
+
+async def test_settings_reject_an_invalid_exit_without_corrupting_config(
+        home, tmp_path, relay_cfg):
+    save_relay(relay_cfg, home.relay_cfg)
+    before = home.relay_cfg.read_text()
+    panel, port = await _panel(home, tmp_path, node=FullNode(relay_cfg))
+    auth = f"{USER}:{PASSWORD}"
+    try:
+        for endpoint, complaint in (
+            ({"port": "not-a-port"}, "number"),
+            ({"port": 70000}, "1-65535"),
+            ({"carrier": "carrier-pigeon"}, "carrier"),
+            ({"address": ""}, "address"),
+        ):
+            status, data = await _request(
+                port, "/api/config", method="POST", auth=auth,
+                body={"exit": endpoint})
+            assert status == 400 and data["ok"] is False
+            assert complaint in data["error"]
+            assert home.relay_cfg.read_text() == before
+
+        status, data = await _request(
+            port, "/api/config", method="POST", auth=auth,
+            body={"exit": {"carrier": "wss", "port": 9443}})
+        assert status == 200 and data["ok"] is True
+        changed = load_relay(home.relay_cfg)
+        assert changed.exit.carrier == "wss" and changed.exit.port == 9443
     finally:
         await panel.stop()
 

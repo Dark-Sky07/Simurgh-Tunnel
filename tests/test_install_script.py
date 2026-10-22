@@ -18,6 +18,7 @@ They never touch the network: ``SIMURGH_SRC`` points at this checkout, and
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -50,6 +51,17 @@ def _env(tmp_path: Path) -> dict:
 
 def _config(tmp_path: Path, name: str = "exit.toml") -> str:
     return (tmp_path / "etc" / name).read_text(encoding="utf-8")
+
+
+def _non_git_source(tmp_path: Path) -> Path:
+    """A plain cached tree, for pipe tests that are not testing git updates."""
+    source = tmp_path / "plain-source"
+    source.mkdir()
+    shutil.copytree(ROOT / "simurgh", source / "simurgh",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for name in ("pyproject.toml", "README.md"):
+        shutil.copy2(ROOT / name, source / name)
+    return source
 
 
 def test_install_script_has_no_syntax_errors():
@@ -94,9 +106,11 @@ def test_install_from_a_file_forwards_every_option(tmp_path):
 def test_install_when_the_script_is_piped_into_bash(tmp_path):
     """``curl … | sudo bash`` — no BASH_SOURCE, no terminal, no questions."""
     script = INSTALL.read_text(encoding="utf-8")
+    env = _env(tmp_path)
+    env["SIMURGH_SRC"] = str(_non_git_source(tmp_path))
     proc = subprocess.run(
         ["bash", "-s", "--", "--yes", "--no-go", "--role", "exit", "--token", "piped-token"],
-        input=script, env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+        input=script, env=env, capture_output=True, text=True, timeout=TIMEOUT,
     )
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
@@ -169,9 +183,11 @@ def test_a_relay_without_a_token_is_installed_and_paired_later(tmp_path):
     finish it.  Piping the installer is the common case, so it must not abort.
     """
     script = INSTALL.read_text(encoding="utf-8")
+    env = _env(tmp_path)
+    env["SIMURGH_SRC"] = str(_non_git_source(tmp_path))
     proc = subprocess.run(
         ["bash", "-s", "--", "--yes", "--no-go", "--role", "relay"],
-        input=script, env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+        input=script, env=env, capture_output=True, text=True, timeout=TIMEOUT,
     )
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
@@ -182,6 +198,46 @@ def test_a_relay_without_a_token_is_installed_and_paired_later(tmp_path):
     # and the way out is printed, in order, with the command to run
     assert "not paired yet" in output, output
     assert "simurgh link" in output and "simurgh join" in output, output
+
+
+def test_piped_installer_refreshes_a_complete_but_stale_git_cache(tmp_path):
+    """A valid ``/opt/simurgh-src`` may still contain an older CLI.
+
+    The one-liner downloads a new install.sh on every run.  Reusing an old git
+    checkout just because pyproject.toml exists used to make that new script
+    pass --pair-later to a CLI which did not know the option yet.
+    """
+    cache = tmp_path / "git-source"
+    subprocess.run(["git", "clone", "--quiet", str(ROOT), str(cache)],
+                   check=True, timeout=60)
+    cli = cache / "simurgh" / "cli.py"
+    source = cli.read_text(encoding="utf-8")
+    option = 'p.add_argument("--pair-later", "--unpaired", dest="pair_later",'
+    assert option in source
+    cli.write_text(source.replace(
+        option, 'p.add_argument("--unpaired", dest="pair_later",'),
+        encoding="utf-8",
+    )
+    subprocess.run([
+        "git", "-C", str(cache), "-c", "user.name=Installer Test",
+        "-c", "user.email=installer@example.invalid", "commit", "--quiet",
+        "--all", "--message", "simulate a stale cached CLI",
+    ], check=True, timeout=60)
+
+    env = _env(tmp_path)
+    env["SIMURGH_SRC"] = str(cache)
+    env["SIMURGH_REF"] = "HEAD"       # the local origin; no network is used
+    proc = subprocess.run(
+        ["bash", "-s", "--", "--yes", "--no-go", "--role", "relay"],
+        input=INSTALL.read_text(encoding="utf-8"), env=env,
+        capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "updating the source" in output, output
+    assert "unrecognized arguments: --pair-later" not in output, output
+    assert "unpaired = true" in _config(tmp_path, "relay.toml")
+    assert option in cli.read_text(encoding="utf-8")
 
 
 def test_role_both_writes_both_configs(tmp_path):

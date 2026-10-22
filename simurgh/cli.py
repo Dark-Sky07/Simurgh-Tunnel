@@ -30,12 +30,13 @@ import time
 from pathlib import Path
 
 from . import __product__, __version__
-from .config import (ENGINES, GO_MAX_STREAM_WINDOW, GO_STREAM_WINDOW,
+from .config import (CARRIERS, ENGINES, GO_MAX_STREAM_WINDOW, GO_STREAM_WINDOW,
                      ConfigError, ExitConfig, ExitEndpoint, ListenSpec, Mapping,
                      RelayConfig, TunnelSpec, load_exit, load_relay, new_token,
                      save_exit, save_relay)
 from .util import (Home, free_port, get_logger, human_bytes, human_duration,
-                   human_rate, is_ip, local_ips, parse_port_list, setup_logging)
+                   human_rate, is_ip, local_ips, parse_port_list, setup_logging,
+                   split_host_port)
 
 log = get_logger("simurgh.cli")
 
@@ -188,7 +189,28 @@ def _apply_engine_windows(cfg) -> None:
         cfg.max_stream_window = GO_MAX_STREAM_WINDOW
 
 
+def _apply_exit_shortcut(args) -> None:
+    """Expand ``--exit HOST[:PORT]`` into the two long-standing options.
+
+    The installer and the CLI examples have always used this concise spelling;
+    accepting it here keeps those entry points consistent, including IPv6.
+    """
+    value = str(getattr(args, "exit_address", "") or "").strip()
+    if not value:
+        return
+    if getattr(args, "exit_host", ""):
+        raise ConfigError("use either --exit or --exit-host, not both")
+    try:
+        host, port = split_host_port(value, getattr(args, "exit_port", 0) or 443)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("--exit must look like HOST:PORT (IPv6: [ADDR]:PORT)") from exc
+    if not host or not 1 <= port <= 65535:
+        raise ConfigError("--exit needs a host and a port in the 1-65535 range")
+    args.exit_host, args.exit_port = host, port
+
+
 def cmd_init(args) -> int:
+    _apply_exit_shortcut(args)
     home = Home(args.home).ensure()
     role = args.role
     if role == "auto":
@@ -217,7 +239,14 @@ def _init_exit(home: Home, args) -> int:
         return 1
     name = args.name or _ask("name of this server", socket.gethostname()[:32])
     token = args.token or new_token()
-    ports = parse_port_list(args.listen or list(DEFAULT_TLS_PORTS)[:3])
+    try:
+        ports = parse_port_list(args.listen or list(DEFAULT_TLS_PORTS)[:3])
+    except (TypeError, ValueError) as exc:
+        _err(f"invalid listen port list: {exc}")
+        return 2
+    if any(not 1 <= port <= 65535 for port in ports):
+        _err("listen ports must be in the 1-65535 range")
+        return 2
     listen = [ListenSpec(carrier="tls", port=ports[0], path="/ws")] if ports else []
     for port in ports[1:2]:
         listen.append(ListenSpec(carrier="tls", host="0.0.0.0", port=port, path="/ws"))
@@ -264,8 +293,14 @@ def _init_relay(home: Home, args) -> int:
     # the exit serves on its first port, and it is what `join` will find
     carrier = (args.carrier or ("tls" if pair_later
                                 else _ask("carrier (tls/wss/raw/plain)", "tls"))).lower()
+    if carrier not in CARRIERS:
+        _err(f"unknown carrier {carrier!r}; choose one of {', '.join(CARRIERS)}")
+        return 2
     name = args.name or socket.gethostname()[:32]
     panel_port = args.panel_port or RELAY_DEFAULT_PANEL
+    if not 1 <= panel_port <= 65535:
+        _err("the panel port must be in the 1-65535 range")
+        return 2
     if dial == "exit":
         # reverse mode: this relay is the one that defines the secret, so it
         # never has to be told a token from the other side
@@ -316,6 +351,10 @@ def _init_relay(home: Home, args) -> int:
                               split=_split_arg(args)),
         )
         cfg.connections = max(0, int(getattr(args, "connections", 0) or 0)) or 1
+    tunnel_port = cfg.tunnel.port if cfg.reverse else cfg.exit.port
+    if not 1 <= tunnel_port <= 65535:
+        _err("the tunnel port must be in the 1-65535 range")
+        return 2
     cfg.engine = _init_engine(args, home)
     _apply_engine_windows(cfg)
     mappings = []
@@ -418,6 +457,7 @@ def cmd_install(args) -> int:
     """Create the config, install systemd units, start everything."""
     from . import systemd
 
+    _apply_exit_shortcut(args)
     home = Home(args.home).ensure()
     role = args.role
     if role == "auto":
@@ -966,7 +1006,7 @@ def cmd_status(args) -> int:
         try:
             while True:
                 time.sleep(interval)
-                os.system("clear")
+                print("\033[2J\033[H", end="")
                 cmd_status(argparse.Namespace(home=args.home, role=role, json=False,
                                               watch=False, interval=interval))
         except KeyboardInterrupt:
@@ -1856,6 +1896,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name")
     p.add_argument("--token")
     p.add_argument("--listen", help="exit ports, e.g. 443,8443")
+    p.add_argument("--exit", dest="exit_address", default="",
+                   help="foreign endpoint: HOST[:PORT] (default port 443; IPv6 [ADDR]:PORT)")
     p.add_argument("--exit-host", default="", help="foreign server address (for the relay)")
     p.add_argument("--exit-port", type=int, default=0)
     p.add_argument("--carrier", default="")
@@ -1895,6 +1937,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name")
     p.add_argument("--token")
     p.add_argument("--listen")
+    p.add_argument("--exit", dest="exit_address", default="",
+                   help="foreign endpoint: HOST[:PORT] (default port 443; IPv6 [ADDR]:PORT)")
     p.add_argument("--exit-host", default="")
     p.add_argument("--exit-port", type=int, default=0)
     p.add_argument("--carrier", default="")
