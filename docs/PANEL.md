@@ -5,9 +5,12 @@
 The panel is a page the tunnel serves about itself: a map of the two ends, the
 numbers behind them, and the buttons an operator reaches for at 3 a.m. It is
 part of the package — one Python file (`simurgh/panel.py`), one data file
-(`simurgh/layout.py`), one string table (`simurgh/panel_i18n.py`) and the four
-assets in `simurgh/assets/`. There is no build step, no framework, no CDN and no
-JavaScript dependency: nothing the panel shows needs the internet to load.
+(`simurgh/layout.py`), one string table (`simurgh/panel_i18n.py`) and the
+HTML/CSS/JavaScript, manifest and icon assets in `simurgh/assets/`. There is no
+build step, no framework, no CDN and no JavaScript dependency: nothing the panel
+shows needs the internet to load. From v3.2.5, the installer also verifies these
+files inside the installed Python package, so a healthy `/healthz` cannot hide
+an incomplete dashboard installation.
 
 ## Opening it
 

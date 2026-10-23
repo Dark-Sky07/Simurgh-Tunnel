@@ -93,9 +93,9 @@ Open the selected tunnel listener port on the relay instead of the exit. User-fa
 Release assets include `.deb`, `.rpm`, portable `.tar.gz` packages and compiled engines. A `Dockerfile` and `docker-compose.yml` are included as well.
 
 ```bash
-sudo dpkg -i simurgh_3.2.4_amd64.deb
-sudo dnf install ./simurgh-3.2.4-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.4-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.5_amd64.deb
+sudo dnf install ./simurgh-3.2.5-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.5-noarch.tar.gz -C /
 docker compose up -d                   # optional two-node development lab, not server installation
 ```
 
@@ -142,7 +142,7 @@ simurgh update --check             # check without changing the installation
 simurgh update --restart           # install, restart, then verify /healthz
 ```
 
-For a fully interactive update, use **Tools → Install update** in the panel or option **17** in `simurgh menu`. Updates reinstall the Python package and the checksummed Go engine without rewriting pairing, mappings, credentials or other configuration. If GitHub's API is rate-limited, release discovery falls back to the validated `/releases/latest` redirect without bypassing checksum verification. Re-running the universal installer likewise preserves an existing config; only an explicit `--force` replaces it, with a backup.
+For a fully interactive update, use **Tools → Install update** in the panel or option **17** in `simurgh menu`. Updates reinstall the Python package and the checksummed Go engine without rewriting pairing, mappings, credentials or other configuration. If GitHub's API is rate-limited, release discovery falls back to the validated `/releases/latest` redirect without bypassing checksum verification. Re-running the universal installer likewise preserves an existing config; only an explicit `--force` replaces it, with a backup. It also verifies the installed panel assets, not just the source checkout or `/healthz`.
 
 Run `simurgh <command> --help` for command-specific options.
 
