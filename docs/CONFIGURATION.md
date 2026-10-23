@@ -363,6 +363,11 @@ The normal flow needs no pairing CLI:
   when the browser uses an SSH tunnel or NAT address. Bracket literal IPv6 when
   adding a port, for example `[2001:db8::1]:8787`.
 
+The receiving server connects directly to that panel address without inherited
+HTTP proxies. Its panel port must be reachable through local and cloud firewalls
+while pairing. An implicit localhost/SSH-tunnel browser address is rejected so it
+cannot make the other server connect to itself.
+
 ### Installing first, pairing later
 
 The universal installer does not need the foreign exit to exist before the

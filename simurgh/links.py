@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import socket
 import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -84,17 +85,40 @@ def parse_join_link(link: str) -> dict:
     }
 
 
+def _unreachable(endpoint: str, exc: Exception) -> LinkError:
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, ConnectionRefusedError):
+        detail = "connection refused"
+    elif isinstance(reason, socket.gaierror):
+        detail = f"DNS lookup failed ({reason})"
+    elif isinstance(reason, (socket.timeout, TimeoutError)):
+        detail = "connection timed out"
+    else:
+        detail = str(reason)
+    return LinkError(
+        f"cannot reach the panel at {endpoint}: {detail}. Check that the offering "
+        "panel is running and that this server can reach its panel port through "
+        "local and cloud firewalls; use the public panel IP/domain, not the "
+        "browser's SSH-tunnel/localhost address."
+    )
+
+
 def fetch_setup(link: str, timeout: float = 15.0, scheme: str = "http") -> dict:
     """Ask the panel for the tunnel configuration (returns a dict)."""
     if scheme not in ("http", "https"):
         raise LinkError("setup links can only use HTTP or HTTPS")
     info = parse_join_link(link)
-    url = f"{scheme}://{_url_host(info['host'])}:{info['port']}/api/join"
+    endpoint = f"{scheme}://{_url_host(info['host'])}:{info['port']}"
+    url = f"{endpoint}/api/join"
     payload = json.dumps({"user": info["user"], "password": info["password"]}).encode()
     req = urllib.request.Request(url, data=payload,
                                  headers={"Content-Type": "application/json"})
+    # Pairing is server-to-server.  An HTTP_PROXY/http_proxy inherited by the
+    # service must not send these credentials through a local proxy or turn a
+    # dead proxy into a misleading "panel connection refused" error.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             raw = resp.read((1 << 20) + 1)
             if len(raw) > 1 << 20:
                 raise LinkError("panel sent an oversized configuration")
@@ -105,8 +129,12 @@ def fetch_setup(link: str, timeout: float = 15.0, scheme: str = "http") -> dict:
         raise LinkError(f"panel answered HTTP {exc.code}") from exc
     except LinkError:
         raise
+    except urllib.error.URLError as exc:
+        raise _unreachable(endpoint, exc) from exc
+    except OSError as exc:
+        raise _unreachable(endpoint, exc) from exc
     except Exception as exc:
-        raise LinkError(f"cannot reach the panel: {exc}") from exc
+        raise LinkError(f"cannot read the panel response from {endpoint}: {exc}") from exc
     if not isinstance(data, dict):
         raise LinkError("panel sent an invalid configuration")
     if not data.get("ok"):

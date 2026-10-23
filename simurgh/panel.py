@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -558,7 +559,8 @@ class Panel:
         if cfg is None:
             return json_response({"ok": False, "error": "no readable config"}, 400)
         body = req.json()
-        raw = str(body.get("host") or req.headers.get("host") or "").strip()
+        override = str(body.get("host") or "").strip()
+        raw = override or str(req.headers.get("host") or "").strip()
         try:
             host, port = split_host_port(raw, self.port)
         except (TypeError, ValueError):
@@ -570,6 +572,18 @@ class Panel:
             return json_response(
                 {"ok": False, "error": "use a valid public IP/domain and a port in 1-65535"},
                 400)
+        if not override:
+            try:
+                address = ipaddress.ip_address(host)
+                local = address.is_loopback or address.is_unspecified
+            except ValueError:
+                local = host.rstrip(".").lower() == "localhost"
+            if local:
+                return json_response({
+                    "ok": False,
+                    "error": ("the browser is using a local panel address; enter the public "
+                              "IP/domain[:port] so the other server does not pair with itself"),
+                }, 400)
         from .links import build_join_link
 
         link = build_join_link(host, port, self.user, self.password,

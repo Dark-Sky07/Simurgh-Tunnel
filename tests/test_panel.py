@@ -87,9 +87,10 @@ async def _raw(port, path, *, method="GET", body=None, auth=None, cookie=None) -
     return _Raw(status, headers, raw.partition(b"\r\n\r\n")[2])
 
 
-async def _request(port, path, *, method="GET", body=None, auth=None):
+async def _request(port, path, *, method="GET", body=None, auth=None, host_header=None):
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    head = [f"{method} {path} HTTP/1.1", "Host: localhost", "Connection: close"]
+    head = [f"{method} {path} HTTP/1.1", f"Host: {host_header or 'localhost'}",
+            "Connection: close"]
     if auth:
         token = base64.b64encode(auth.encode()).decode()
         head.append(f"Authorization: Basic {token}")
@@ -1392,6 +1393,17 @@ async def test_setup_link_is_created_in_the_panel_with_a_public_address(home, tm
         status, _ = await _request(port, "/api/setup-link", method="POST",
                                    body={"host": "203.0.113.9:9999"})
         assert status == 401
+        for local_host in ("127.0.0.1:8787", "localhost:8787", "[::1]:8787"):
+            status, data = await _request(
+                port, "/api/setup-link", method="POST", body={},
+                auth=f"{USER}:{PASSWORD}", host_header=local_host)
+            assert status == 400 and "public IP/domain" in data["error"], local_host
+        # An explicit loopback override remains available for a deliberate
+        # one-box setup; only the accidental browser-Host default is refused.
+        status, data = await _request(
+            port, "/api/setup-link", method="POST", body={"host": "127.0.0.1:8787"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and parse_join_link(data["url"])["host"] == "127.0.0.1"
         status, data = await _request(
             port, "/api/setup-link", method="POST",
             body={"host": "203.0.113.9:9999"}, auth=f"{USER}:{PASSWORD}")

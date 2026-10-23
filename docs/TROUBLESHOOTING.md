@@ -135,7 +135,7 @@ official direct URLs for the engine and `SHA256SUMS.txt`. Binary installation
 still requires a matching checksum; the fallback does not weaken verification.
 
 For **this one upgrade from v3.2.3**, the old updater cannot load its own fix.
-Run the same universal installer once to bridge to v3.2.9:
+Run the same universal installer once to bridge to v3.2.10:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
@@ -144,6 +144,45 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 Do not add `--force` and do not delete `/etc/simurgh`: the normal rerun preserves
 pairing, mappings, credentials and other configuration. From v3.2.4 onward, the
 panel, menu and `simurgh update --restart` all use the API-plus-redirect path.
+
+## Pairing fails with `Connection refused`
+
+The **receiving server**, not your browser, fetches `/api/join` from the offering
+server's panel. A reachable tunnel port does not prove that the panel port is
+reachable. Do not paste the full setup link into a public issue: it contains
+panel credentials.
+
+1. On the **receiving** server, test the exact offering panel address directly
+   (replace the IP and port, without credentials):
+
+   ```bash
+   curl --noproxy '*' -v --connect-timeout 5 http://OFFERING_PANEL_IP:8787/healthz
+   ```
+
+   A healthy panel returns JSON containing `"ok":true`. `Connection refused`
+   means no listener accepted that TCP connection or a firewall rejected it; a
+   timeout points to routing/filtering instead.
+2. On the **offering** server, verify the local listener:
+
+   ```bash
+   curl -fsS http://127.0.0.1:8787/healthz
+   sudo ss -lntp | grep ':8787 '
+   ```
+
+   If loopback works but the other server cannot connect, allow only the
+   receiving server's IP through the local firewall and the provider's cloud
+   firewall/security group:
+
+   ```bash
+   sudo ufw allow from RECEIVING_SERVER_IP to any port 8787 proto tcp
+   ```
+
+3. Create a fresh link with the offering server's **public** `IP/domain[:port]`.
+   Never leave the address implicit as `127.0.0.1`/`localhost` when the servers
+   are different machines; that makes the receiver connect to itself. v3.2.10
+   rejects an accidental localhost browser address, bypasses inherited HTTP
+   proxies for this direct exchange, and reports the failing panel endpoint in
+   the error.
 
 ## The tunnel never comes up (direct mode)
 

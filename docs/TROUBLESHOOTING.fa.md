@@ -134,7 +134,7 @@ v3.2.4 به ریدایرکت رسمی `/releases/latest` گیت‌هاب fallbac
 fallback امنیت بررسی را کم نمی‌کند.
 
 فقط برای **این یک ارتقا از v3.2.3**، updater قدیمی نمی‌تواند اصلاح خودش را پیدا
-کند. یک بار همان نصاب واحد را برای رسیدن به v3.2.9 اجرا کنید:
+کند. یک بار همان نصاب واحد را برای رسیدن به v3.2.10 اجرا کنید:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
@@ -143,6 +143,42 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 `--force` اضافه نکنید و `/etc/simurgh` را حذف نکنید: اجرای عادی دوبارهٔ نصاب
 pairing، مپینگ‌ها، رمزها و سایر تنظیمات را حفظ می‌کند. از v3.2.4 به بعد، پنل، منو
 و `simurgh update --restart` همگی مسیر API همراه با fallback ریدایرکت را دارند.
+
+## Pair با خطای `Connection refused` متوقف می‌شود
+
+درخواست `/api/join` را **سرور گیرنده** می‌زند، نه مرورگر شما. بازبودن پورت تونل
+ثابت نمی‌کند پورت پنل هم reachable است. لینک کامل Pair را در issue یا چت عمومی
+نفرستید، چون رمز پنل داخل آن است.
+
+۱. روی سرور **گیرنده**، همان آدرس پنل ارائه‌دهنده را مستقیم و بدون رمز تست کنید
+   (IP و پورت را جایگزین کنید):
+
+   ```bash
+   curl --noproxy '*' -v --connect-timeout 5 http://OFFERING_PANEL_IP:8787/healthz
+   ```
+
+   پنل سالم JSON حاوی `"ok":true` برمی‌گرداند. `Connection refused` یعنی listener
+   اتصال TCP را نپذیرفته یا فایروال آن را reject کرده؛ timeout بیشتر نشانهٔ
+   مسیر/فیلترینگ است.
+۲. روی سرور **ارائه‌دهنده** listener محلی را بررسی کنید:
+
+   ```bash
+   curl -fsS http://127.0.0.1:8787/healthz
+   sudo ss -lntp | grep ':8787 '
+   ```
+
+   اگر loopback جواب می‌دهد ولی سرور دیگر نمی‌تواند وصل شود، فقط IP سرور گیرنده
+   را در فایروال محلی و Security Group/فایروال ابری اجازه دهید:
+
+   ```bash
+   sudo ufw allow from RECEIVING_SERVER_IP to any port 8787 proto tcp
+   ```
+
+۳. لینک را دوباره با `IP/domain[:port]` **عمومی** سرور ارائه‌دهنده بسازید. روی دو
+   سرور جدا نباید آدرس ضمنی `127.0.0.1`/`localhost` بماند، چون گیرنده به خودش وصل
+   می‌شود. نسخهٔ v3.2.10 آدرس localhost تصادفی مرورگر را رد می‌کند، این تبادل را
+   بدون proxy محیطی مستقیم انجام می‌دهد و endpoint پنلی را که خطا داده در پیام
+   نشان می‌دهد.
 
 ## تونل بالا نمی‌آید (حالت مستقیم)
 
