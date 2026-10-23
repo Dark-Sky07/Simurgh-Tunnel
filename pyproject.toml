@@ -1,34 +1,9 @@
 [build-system]
-requires = ["setuptools>=61"]
+# Ubuntu 22.04 ships setuptools 59.6 and wheel 0.37.  Keep the metadata in
+# setup.cfg so those distribution packages can build Simurgh without downloading
+# a newer build backend from PyPI (which is often unreachable from a relay).
+requires = ["setuptools>=59.6", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[project]
-name = "simurgh-tunnel"
-version = "3.2.6"
-description = "Simurgh Tunnel v2 — an Iran <-> Kharej transparent TCP/UDP relay for VPN panels (3x-ui, OMEGA, X-UI, ...)"
-readme = "README.md"
-requires-python = ">=3.9"
-license = { text = "MIT" }
-authors = [{ name = "Simurgh Tunnel contributors" }]
-keywords = ["tunnel", "relay", "iran", "kharej", "gost", "rathole", "3x-ui", "censorship"]
-dependencies = []
-
-[project.optional-dependencies]
-secure = ["cryptography>=41"]
-
-[project.scripts]
-simurgh = "simurgh.cli:main"
-
-[tool.setuptools.packages.find]
-include = ["simurgh*"]
-
-# the bundled TOML reader keeps its licence next to it, and ships a py.typed
-# marker so type checkers work on every supported Python.  The panel is also
-# package data: without these files a pip/venv install has a healthy /healthz
-# but no dashboard HTML, JavaScript, CSS, manifest, or icons.
-[tool.setuptools.package-data]
-"simurgh" = ["assets/*"]
-"simurgh._tomli" = ["LICENSE", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

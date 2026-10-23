@@ -96,6 +96,33 @@ Those asset routes are public by design; the dashboard and its APIs remain
 authenticated. If the files answer locally but the remote browser still fails,
 continue with the service, listener, firewall and SSH-tunnel checks above.
 
+## Installer fails at `ensurepip`, build dependencies, or `ModuleNotFoundError`
+
+On a stock Ubuntu 22.04 server, v3.2.6 and earlier could first fail to create a
+venv because `python3.10-venv` was absent. Their normal pip build then tried to
+download a newer `setuptools` from `files.pythonhosted.org`; a DNS or routing
+failure there could leave only the source-path fallback and end with
+`ModuleNotFoundError: No module named 'simurgh'`.
+
+**v3.2.7 installs the distribution's complete Python/venv/pip/setuptools/wheel
+stack before creating the environment.** Its packaging metadata supports the
+setuptools 59.6 and wheel 0.37 shipped by Ubuntu 22.04, and Simurgh itself is
+built with `--no-build-isolation --no-deps`: no PyPI access is needed for the
+core installation. The venv can see the distribution's `cryptography` package,
+and the installer no longer replaces a real package installation with a `.pth`
+source-path fallback.
+
+Run the same universal installer once, without `--force`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
+```
+
+It preserves `/etc/simurgh`, credentials and pairing. If the distribution's own
+APT/DNF/APK repositories are unreachable, repair DNS or the repository route
+first; required operating-system packages cannot be installed without a working
+package-manager source. PyPI is not required by the v3.2.7 core installer.
+
 ## Update stops at `GitHub answered 403`
 
 v3.2.3 and earlier discover releases only through `api.github.com`. A shared
@@ -108,7 +135,7 @@ official direct URLs for the engine and `SHA256SUMS.txt`. Binary installation
 still requires a matching checksum; the fallback does not weaken verification.
 
 For **this one upgrade from v3.2.3**, the old updater cannot load its own fix.
-Run the same universal installer once to bridge to v3.2.6:
+Run the same universal installer once to bridge to v3.2.7:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash

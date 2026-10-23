@@ -60,7 +60,7 @@ def _non_git_source(tmp_path: Path) -> Path:
     source.mkdir()
     shutil.copytree(ROOT / "simurgh", source / "simurgh",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for name in ("pyproject.toml", "README.md"):
+    for name in ("pyproject.toml", "setup.cfg", "README.md"):
         shutil.copy2(ROOT / name, source / name)
     return source
 
@@ -166,11 +166,25 @@ def test_installs_without_reaching_pypi(tmp_path):
     )
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
+    assert "local build tools (no PyPI needed)" in output, output
+    assert "normal install failed" not in output, output
+    assert not list((tmp_path / "venv").rglob("simurgh-src.pth"))
+    assert "include-system-site-packages = true" in (
+        tmp_path / "venv" / "pyvenv.cfg").read_text(encoding="utf-8")
     binary = tmp_path / "venv" / "bin" / "simurgh"
     assert binary.exists(), output
     version = subprocess.run([str(binary), "--version"], capture_output=True,
                              text=True, timeout=60)
     assert version.returncode == 0, version.stdout + version.stderr
+    _assert_installed_panel_assets(tmp_path, env)
+    metadata = subprocess.run([
+        str(tmp_path / "venv" / "bin" / "python"), "-I", "-c",
+        "import importlib.metadata as m; "
+        "print(m.version('simurgh-tunnel')); "
+        "print(m.distribution('simurgh-tunnel').read_text('entry_points.txt'))",
+    ], cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert metadata.returncode == 0, metadata.stdout + metadata.stderr
+    assert "simurgh = simurgh.cli:main" in metadata.stdout
 
 
 def test_install_survives_a_systemctl_without_root(tmp_path):
