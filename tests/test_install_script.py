@@ -247,6 +247,7 @@ def test_a_relay_without_a_token_is_installed_and_paired_later(tmp_path):
     # the normal next step is the panel, not a second role-specific CLI flow
     assert "not paired yet" in output, output
     assert "web panel:" in output and "Pair" in output, output
+    assert "http://<SERVER-IP>:8787/login" in output, output
     assert "sudo simurgh link" not in output and "sudo simurgh join" not in output, output
 
 
@@ -438,6 +439,7 @@ def test_exit_summary_points_to_the_panel_not_a_token_workflow(tmp_path):
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
     assert "web panel:" in output and "Pair" in output, output
+    assert "http://<SERVER-IP>:8787/login" in output, output
     assert "auto-token" not in output, output
     assert "relay setup link" not in output, output
 

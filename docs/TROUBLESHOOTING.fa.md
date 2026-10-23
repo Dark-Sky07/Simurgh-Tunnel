@@ -134,7 +134,7 @@ v3.2.4 به ریدایرکت رسمی `/releases/latest` گیت‌هاب fallbac
 fallback امنیت بررسی را کم نمی‌کند.
 
 فقط برای **این یک ارتقا از v3.2.3**، updater قدیمی نمی‌تواند اصلاح خودش را پیدا
-کند. یک بار همان نصاب واحد را برای رسیدن به v3.2.8 اجرا کنید:
+کند. یک بار همان نصاب واحد را برای رسیدن به v3.2.9 اجرا کنید:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash

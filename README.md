@@ -66,7 +66,7 @@ The installer detects an existing installation and otherwise uses the public IP'
 
 ### 2 — Open both web panels
 
-Open `http://<server-ip>:8787` on each server (or the panel port printed by the installer). The installer prints the login credentials. Keep the panels behind a firewall or SSH tunnel as described in [Web panel](#web-panel).
+Open `http://<server-ip>:8787/login` on each server (or the panel port printed by the installer). The installer prints the login credentials. Keep the panels behind a firewall or SSH tunnel as described in [Web panel](#web-panel).
 
 ### 3 — Pair and forward from the panel (direct mode)
 
@@ -95,9 +95,9 @@ Open the selected tunnel listener port on the relay instead of the exit. User-fa
 Release assets include `.deb`, `.rpm`, portable `.tar.gz` packages and compiled engines. A `Dockerfile` and `docker-compose.yml` are included as well.
 
 ```bash
-sudo dpkg -i simurgh_3.2.8_amd64.deb
-sudo dnf install ./simurgh-3.2.8-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.8-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.9_amd64.deb
+sudo dnf install ./simurgh-3.2.9-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.9-noarch.tar.gz -C /
 docker compose up -d                   # optional two-node development lab, not server installation
 ```
 
@@ -150,7 +150,7 @@ Run `simurgh <command> --help` for command-specific options.
 
 ## Web panel
 
-Open `http://<server-ip>:8787` on either role (or the configured panel port). The panel is bilingual **English / فارسی**, supports RTL/LTR and night/dawn themes, and serves every asset locally under a strict Content Security Policy.
+Open `http://<server-ip>:8787/login` on either role (or the configured panel port). The panel is bilingual **English / فارسی**, supports RTL/LTR and night/dawn themes, and serves every asset locally under a strict Content Security Policy.
 
 - **Dashboard:** live tunnel map, throughput chart, reconnects, RTT and exit-pool health.
 - **Pair:** create or import setup links on either role, including reverse mode, without reinstalling or using the CLI.
@@ -162,7 +162,7 @@ Open `http://<server-ip>:8787` on either role (or the configured panel port). Th
 
 Prefer the login form or a **single-use, 10-minute link** from **Security** / `simurgh web --link`. Legacy `?k=<password>` links now redirect to a clean URL after setting the session cookie.
 
-> The built-in panel uses HTTP. On a public server, restrict its source addresses with a firewall or use an SSH tunnel: `ssh -L 8787:127.0.0.1:8787 root@server`, then browse to `http://127.0.0.1:8787`.
+> The built-in panel uses HTTP. On a public server, restrict its source addresses with a firewall or use an SSH tunnel: `ssh -L 8787:127.0.0.1:8787 root@server`, then browse to `http://127.0.0.1:8787/login`.
 
 Full reference: **[Panel guide](docs/PANEL.md)**.
 

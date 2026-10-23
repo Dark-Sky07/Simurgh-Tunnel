@@ -668,7 +668,7 @@ except Exception:
     pass
 PY
 )"
-printf '%s\n' "  ${BOLD}web panel:${RESET} ${CYAN}http://<SERVER-IP>:$PANEL${RESET}"
+printf '%s\n' "  ${BOLD}web panel:${RESET} ${CYAN}http://<SERVER-IP>:$PANEL/login${RESET}"
 [ -n "$CREDS" ] && printf '%s\n' "  ${BOLD}login:${RESET} $CREDS"
 printf '%s\n' "  ${DIM}next: open Pair to create/import a setup link; use Ports and Settings for configuration${RESET}"
 if [ "$PAIR_LATER" = "1" ]; then
