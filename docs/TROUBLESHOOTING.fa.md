@@ -97,6 +97,31 @@ curl -fsS http://127.0.0.1:8787/app.js >/dev/null
 فایل‌ها محلی پاسخ بدهند ولی مرورگر از راه دور باز نکند، بررسی‌های سرویس،
 شنونده، فایروال و SSH tunnel بالا را ادامه دهید.
 
+## نصب روی `ensurepip`، build dependencies یا `ModuleNotFoundError` متوقف می‌شود
+
+روی Ubuntu 22.04 تازه، نسخهٔ v3.2.6 و قدیمی‌تر ممکن بود ابتدا به‌خاطر نبودن
+`python3.10-venv` نتواند venv بسازد. سپس pip برای build ایزوله می‌خواست نسخهٔ
+جدیدتری از `setuptools` را از `files.pythonhosted.org` بگیرد؛ اختلال DNS یا مسیر
+می‌توانست این مرحله را خراب کند و fallback مبتنی بر source هم ممکن بود با
+`ModuleNotFoundError: No module named 'simurgh'` تمام شود.
+
+**در v3.2.7 نصاب پیش از ساخت محیط، پکیج‌های کامل Python/venv/pip/setuptools/wheel
+را از package manager سیستم نصب می‌کند.** metadata پروژه با setuptools 59.6 و
+wheel 0.37 خود Ubuntu 22.04 سازگار است و ساخت Simurgh با
+`--no-build-isolation --no-deps` انجام می‌شود؛ نصب اصلی به PyPI نیاز ندارد. venv
+پکیج `cryptography` سیستم را هم می‌بیند و fallback نوع `.pth` دیگر جای نصب واقعی
+پکیج را نمی‌گیرد.
+
+یک بار همان نصاب واحد را بدون `--force` اجرا کنید:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
+```
+
+کانفیگ `/etc/simurgh`، رمزها و pairing حفظ می‌شوند. اگر مخازن خود APT/DNF/APK هم
+در دسترس نیستند، ابتدا باید DNS یا مسیر مخزن اصلی شود؛ نصب پکیج‌های سیستم‌عامل بدون
+یک منبع package manager سالم ممکن نیست. نصب اصلی v3.2.7 به PyPI وابسته نیست.
+
 ## ارتقا با خطای `GitHub answered 403` متوقف می‌شود
 
 در v3.2.3 و نسخه‌های پیشین، کشف ریلیز فقط از `api.github.com` انجام می‌شود. IP
@@ -109,7 +134,7 @@ v3.2.4 به ریدایرکت رسمی `/releases/latest` گیت‌هاب fallbac
 fallback امنیت بررسی را کم نمی‌کند.
 
 فقط برای **این یک ارتقا از v3.2.3**، updater قدیمی نمی‌تواند اصلاح خودش را پیدا
-کند. یک بار همان نصاب واحد را برای رسیدن به v3.2.6 اجرا کنید:
+کند. یک بار همان نصاب واحد را برای رسیدن به v3.2.7 اجرا کنید:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash

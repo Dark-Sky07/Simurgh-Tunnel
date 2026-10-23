@@ -291,8 +291,20 @@ ok "done."
 fi
 
 say "checking the prerequisites…"
+# Package names differ outside Debian/Ubuntu.  In particular, python3-venv is
+# an apt package, while apk prefixes its Python packages with py3-.
+case "$PKG" in
+  apt)      PYTHON_STACK="python3 python3-venv python3-pip python3-setuptools python3-wheel"
+            CRYPTO_PKG="python3-cryptography" ;;
+  dnf|yum)  PYTHON_STACK="python3 python3-pip python3-setuptools python3-wheel"
+            CRYPTO_PKG="python3-cryptography" ;;
+  apk)      PYTHON_STACK="python3 py3-pip py3-setuptools py3-wheel"
+            CRYPTO_PKG="py3-cryptography" ;;
+  *)        PYTHON_STACK="python3 python3-pip"
+            CRYPTO_PKG="python3-cryptography" ;;
+esac
 if ! command -v python3 >/dev/null 2>&1; then
-say "installing python…"; install_pkgs "python3 python3-venv python3-pip"
+say "installing python and its offline build tools…"; install_pkgs "$PYTHON_STACK"
 fi
 PY=python3
 PYVER="$($PY -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
@@ -300,12 +312,17 @@ say "python $PYVER found."
 case "$PYVER" in
 3.8|3.7|3.6|2.*) die "python 3.9 or newer is required (found: $PYVER)." ;;
 esac
-if ! $PY -c 'import venv' 2>/dev/null; then
-say "installing the venv module…"; install_pkgs "python3-venv"
+# A stock Ubuntu 22.04 installation may have Python but not ensurepip, wheel,
+# or setuptools.  Install the complete stack before creating the venv instead
+# of letting its first creation fail and then attempting a PyPI build.
+if ! $PY -c 'import venv, ensurepip' 2>/dev/null ||
+   ! $PY -c 'import setuptools, wheel' 2>/dev/null; then
+say "installing venv, pip and the offline package build tools…"
+  install_pkgs "$PYTHON_STACK"
 fi
 if ! $PY -c 'import cryptography' 2>/dev/null; then
 say "installing cryptography (needed for the raw carrier and certificates)…"
-  install_pkgs "python3-cryptography" || true
+  install_pkgs "$CRYPTO_PKG" || true
 fi
 command -v openssl >/dev/null 2>&1 || install_pkgs "openssl" || true
 
@@ -316,7 +333,8 @@ SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 fi
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/simurgh" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ] &&
+   [ -f "$SCRIPT_DIR/setup.cfg" ] && [ -d "$SCRIPT_DIR/simurgh" ]; then
   SRC="$SCRIPT_DIR"
 say "using the source next to this script: $SRC"
 elif [ -d "$SRC_DIR/.git" ]; then
@@ -328,11 +346,15 @@ say "updating the source in $SRC_DIR ($REF)…"
 git -C "$SRC_DIR" fetch --depth 1 origin "$REF" --quiet &&
 git -C "$SRC_DIR" checkout --quiet FETCH_HEAD ||
 warn "could not update the source; continuing with the existing copy."
+  # A cached checkout may legitimately predate setup.cfg; a successful fetch
+  # refreshes it.  Do not reject the old cache before the offline build gets a
+  # chance to use whatever compatible metadata that revision contains.
   [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/simurgh" ] ||
 die "the source in $SRC_DIR is incomplete; remove it or set SIMURGH_SRC to a complete checkout."
   SRC="$SRC_DIR"
 say "using the source in $SRC"
-elif [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/simurgh" ]; then
+elif [ -f "$SRC_DIR/pyproject.toml" ] && [ -f "$SRC_DIR/setup.cfg" ] &&
+     [ -d "$SRC_DIR/simurgh" ]; then
   # a source tree copied here by hand (without git metadata)
   SRC="$SRC_DIR"
 say "using the source in $SRC"
@@ -347,45 +369,33 @@ fi
 # --------------------------------------------------------------- virtualenv
 say "creating the python environment in $VENV_DIR…"
 mkdir -p "$(dirname "$VENV_DIR")" "$BIN_DIR"
-$PY -m venv "$VENV_DIR" 2>/dev/null || {
-  install_pkgs "python3-venv"; $PY -m venv "$VENV_DIR"; }
-"$VENV_DIR/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
-say "installing the simurgh package…"
+# Distribution packages (cryptography, setuptools and wheel) must be visible
+# inside the venv.  This also makes an offline rerun able to repair an older
+# environment without deleting it or touching /etc/simurgh.
+if ! $PY -m venv --system-site-packages "$VENV_DIR"; then
+  say "venv creation needs the distribution's Python packages; installing them…"
+  install_pkgs "$PYTHON_STACK"
+  $PY -m venv --system-site-packages "$VENV_DIR" ||
+    die "could not create the python environment in $VENV_DIR."
+fi
+# Do not upgrade pip here: ensurepip already supplied a working local copy and
+# contacting PyPI can fail even when apt and GitHub are reachable.
+say "installing the simurgh package with local build tools (no PyPI needed)…"
 install_pkg() {
   "$VENV_DIR/bin/pip" install --quiet "$@" && return 0
   return 1
 }
-if ! install_pkg "$SRC"; then
-  # No PyPI (usual on an Iranian server): build with the distribution's own
-  # setuptools and wheel, which the venv is then allowed to see.
-warn "the normal install failed; retrying without downloading build tools…"
-  install_pkgs "python3-setuptools python3-wheel python3-pip" || true
-  if ! "$VENV_DIR/bin/python" -c 'import setuptools, wheel' >/dev/null 2>&1; then
-say "recreating the environment with access to the system packages…"
-    case "$VENV_DIR" in ""|"/") die "refusing to remove '$VENV_DIR'." ;; esac
-    rm -rf "$VENV_DIR"
-    $PY -m venv --system-site-packages "$VENV_DIR" ||
-      die "could not create the python environment in $VENV_DIR."
-    "$VENV_DIR/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
-  fi
-  if install_pkg --no-build-isolation "$SRC"; then
-    :
-  else
-    # Last resort, and it needs no build tooling at all: point the interpreter
-    # at this checkout and start the CLI with `python -m simurgh`.
-warn "the package could not be built; running it from $SRC instead."
-    SITE="$("$VENV_DIR/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
-    [ -n "$SITE" ] && printf '%s\n' "$SRC" > "$SITE/simurgh-src.pth"
-    "$VENV_DIR/bin/python" -c 'import simurgh' >/dev/null 2>&1 ||
-      die "package installation failed (and $SRC cannot be imported either)."
-    printf '#!/bin/sh\nexec "%s/bin/python" -m simurgh "$@"\n' "$VENV_DIR" > "$VENV_DIR/bin/simurgh"
-    chmod +x "$VENV_DIR/bin/simurgh"
-  fi
-fi
+# --no-build-isolation is essential: an isolated PEP 517 environment would try
+# to download setuptools from files.pythonhosted.org before building Simurgh.
+# setup.cfg is compatible with the setuptools/wheel shipped by Ubuntu 22.04.
+# The core project has no mandatory runtime dependencies; the optional
+# cryptography package used by the raw carrier is handled explicitly below.
+install_pkg --no-build-isolation --no-deps "$SRC" ||
+  die "could not install Simurgh with the local Python build tools; check the package-manager errors above."
 
-# `cryptography` is optional for the package but needed by the raw carrier and
-# by the certificate helper, and the system package above does not reach into
-# this venv — so try the venv's own pip, and carry on when it is offline.
+# `cryptography` is optional for the core package but needed by the raw carrier
+# and certificate helper.  The distribution package is normally visible through
+# --system-site-packages; a custom Python may still need this pip fallback.
 if "$VENV_DIR/bin/python" -c 'import cryptography' >/dev/null 2>&1; then
   :
 elif install_pkg --timeout 20 --retries 2 "cryptography>=41" 2>/dev/null; then

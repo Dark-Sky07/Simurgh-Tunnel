@@ -102,6 +102,48 @@ jobs:
           shellcheck --version
           shellcheck -S warning install.sh tools/build-go.sh
 
+  offline-install:
+    name: offline install on Ubuntu 22.04
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      # Reproduce a stock Iranian relay: Ubuntu 22.04 supplies Python 3.10,
+      # setuptools 59.6 and wheel 0.37.  Python and its venv/build packages are
+      # initially absent.  pip may never use an index, while apt remains
+      # available just as it was in the reported installation log.
+      - name: Install on a fresh Python 3.10 system with PyPI disabled
+        run: |
+          docker run --rm -i \
+            --volume "$GITHUB_WORKSPACE:/source-ro:ro" \
+            --env PIP_NO_INDEX=1 \
+            --env PIP_RETRIES=0 \
+            --env PIP_TIMEOUT=1 \
+            --env SIMURGH_NO_TTY=1 \
+            ubuntu:22.04 \
+            bash -s <<'CONTAINER'
+          set -e
+          cp -a /source-ro /tmp/simurgh-source
+          SIMURGH_SRC=/tmp/simurgh-source \
+            bash /tmp/simurgh-source/install.sh \
+            --yes --no-go --no-systemd --role relay
+          simurgh --version
+          grep "include-system-site-packages = true" /opt/simurgh/venv/pyvenv.cfg
+          test -z "$(find /opt/simurgh/venv -name simurgh-src.pth -print -quit)"
+          /opt/simurgh/venv/bin/python -I - <<'PY'
+          import cryptography
+          import importlib.metadata as m
+          from simurgh import panel_ui
+
+          distribution = m.distribution("simurgh-tunnel")
+          assert "simurgh = simurgh.cli:main" in distribution.read_text("entry_points.txt")
+          assert panel_ui.read_asset("index.html")
+          assert panel_ui.read_asset("simurgh.png")
+          print("Ubuntu 22.04 offline installation: OK")
+          PY
+          CONTAINER
+
   packages:
     name: packages (.deb, .rpm, tarball, image)
     # ubuntu-latest moved during the 2026 runner migration and stalled in apt;
