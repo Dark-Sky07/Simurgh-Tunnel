@@ -627,6 +627,29 @@ async function waitForState(want, seconds) {
 }
 
 /* ---------------------------------------------------------------- tools */
+async function waitForUpdatedPanel(expectedVersion) {
+  // The restart response is sent before systemd stops the process.  Poll the
+  // unauthenticated liveness endpoint rather than mistaking a closed fetch for
+  // a failed update.  The old process can also remain healthy after a failed
+  // restart, so require the newly installed version before reloading.
+  await new Promise((r) => setTimeout(r, 1800));
+  for (let attempt = 0; attempt < 40; attempt++) {
+    try {
+      const res = await fetch('/healthz', { cache: 'no-store' });
+      if (res.ok) {
+        const body = await res.json();
+        if (body && body.ok && body.version === expectedVersion) {
+          location.reload();
+          return true;
+        }
+      }
+    } catch (e) { /* the expected restart window */ }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  toast(t('toast_update_restart_failed'), 'err');
+  return false;
+}
+
 function bindTools() {
   document.querySelectorAll('[data-act]').forEach((btn) => {
     btn.onclick = async () => {
@@ -634,6 +657,24 @@ function bindTools() {
       if (name === 'update-check') {
         const res = await api('/api/update', { method: 'GET' });
         toast(res.ok ? (res.update_available ? t('toast_update_available', { version: res.latest || '' }) : t('toast_up_to_date', { version: res.version || VERSION })) : t('toast_error', { msg: res.error || '' }), res.ok && !res.update_available ? '' : (res.ok ? 'warn' : 'err'));
+        return;
+      }
+      if (name === 'update-install') {
+        if (!confirm(t('confirm_update'))) return;
+        btn.disabled = true;
+        toast(t('toast_update_installing'), 'warn');
+        try {
+          const res = await api('/api/update', { method: 'POST', body: '{}' });
+          if (!res.ok) { toast(t('toast_error', { msg: res.error || '' }), 'err'); return; }
+          if (res.restarting) {
+            toast(t('toast_update_restarting'), 'warn');
+            await waitForUpdatedPanel(res.latest);
+          } else if (res.restart_required) {
+            toast(t('toast_update_restart_required'), 'warn');
+          } else {
+            toast(t('toast_up_to_date', { version: res.version || VERSION }));
+          }
+        } finally { btn.disabled = false; }
         return;
       }
       if (name === 'export') {

@@ -360,6 +360,31 @@ def test_a_rerun_keeps_the_role_that_is_already_installed(tmp_path):
     assert not (tmp_path / "etc" / "relay.toml").exists()
 
 
+def test_rerun_is_an_upgrade_and_preserves_pairing_ports_and_token(tmp_path):
+    """The universal command must never silently turn a paired relay into a
+    fresh, unpaired one.  That used to happen because the shell forced config
+    regeneration on every rerun."""
+    env = _env(tmp_path)
+    first = subprocess.run([
+        "bash", str(INSTALL), "--yes", "--no-go", "--role", "relay",
+        "--name", "keep-me", "--token", "keep-this-secret",
+        "--exit", "203.0.113.9:9443", "--mapping", "8443:9000",
+    ], env=env, capture_output=True, text=True, timeout=TIMEOUT)
+    assert first.returncode == 0, first.stdout + first.stderr
+    before = _config(tmp_path, "relay.toml")
+    assert "keep-this-secret" in before and "unpaired = true" not in before
+
+    # No role, token or endpoint on the second run: existing configuration is
+    # authoritative, just as it is when the panel or menu installs an update.
+    env["SIMURGH_COUNTRY"] = "DE"
+    second = subprocess.run(["bash", str(INSTALL), "--yes", "--no-go"],
+                            env=env, capture_output=True, text=True, timeout=TIMEOUT)
+    output = second.stdout + second.stderr
+    assert second.returncode == 0, output
+    assert "keeping the existing relay config" in output
+    assert _config(tmp_path, "relay.toml") == before
+
+
 def test_exit_summary_points_to_the_panel_not_a_token_workflow(tmp_path):
     proc = _auto(tmp_path, "DE")
     output = proc.stdout + proc.stderr

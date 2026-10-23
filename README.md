@@ -93,9 +93,9 @@ Open the selected tunnel listener port on the relay instead of the exit. User-fa
 Release assets include `.deb`, `.rpm`, portable `.tar.gz` packages and compiled engines. A `Dockerfile` and `docker-compose.yml` are included as well.
 
 ```bash
-sudo dpkg -i simurgh_3.2.1_amd64.deb
-sudo dnf install ./simurgh-3.2.1-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.1-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.2_amd64.deb
+sudo dnf install ./simurgh-3.2.2-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.2-noarch.tar.gz -C /
 docker compose up -d                   # optional two-node development lab, not server installation
 ```
 
@@ -130,7 +130,7 @@ Configuration is panel-first on both roles:
 | Preview, apply or roll back a configuration plan | **Wizard** |
 | Change engine, tunnel direction, reverse listener, performance, quotas or rate limits | **Settings** |
 | Run speed tests, inspect certificates and logs | **Speed test / Certificates / Logs** |
-| Restart, start, stop or reconnect; check updates; export config | **Tools** |
+| Restart, start, stop or reconnect; check and install updates; export config | **Tools** |
 
 The CLI remains useful for read-only diagnostics and automation:
 
@@ -139,7 +139,10 @@ simurgh status --detail            # service, pairing, mappings and tunnel state
 simurgh doctor                     # configuration and connectivity checks
 simurgh logs -f                    # follow the active role's log
 simurgh update --check             # check without changing the installation
+simurgh update --restart           # install, restart, then verify /healthz
 ```
+
+For a fully interactive update, use **Tools → Install update** in the panel or option **17** in `simurgh menu`. Updates reinstall the Python package and the checksummed Go engine without rewriting pairing, mappings, credentials or other configuration. Re-running the universal installer likewise preserves an existing config; only an explicit `--force` replaces it, with a backup.
 
 Run `simurgh <command> --help` for command-specific options.
 
@@ -151,7 +154,7 @@ Open `http://<server-ip>:8787` on either role (or the configured panel port). Th
 - **Pair:** create or import setup links on either role, including reverse mode, without reinstalling or using the CLI.
 - **Ports:** add, remove, enable and disable mappings without restarting the live node.
 - **Wizard:** preview configuration changes, apply them with a backup and roll back.
-- **Operations:** speed tests, certificates, filterable logs, service tools and update checks.
+- **Operations:** speed tests, certificates, filterable logs, service tools and one-click updates with a post-restart health check.
 - **Security:** failed-login state and single-use login links; five failed attempts from one address trigger a 300-second lockout.
 - **Monitoring:** authenticated `/metrics` and unauthenticated liveness-only `/healthz`.
 

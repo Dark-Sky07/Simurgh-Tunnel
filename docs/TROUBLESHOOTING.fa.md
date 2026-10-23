@@ -18,6 +18,17 @@ simurgh logs -f          # لاگ زنده (/etc/simurgh/logs/*.log)
 
 * پورت را باز کنید: `ufw allow 8787` (یا `firewall-cmd --add-port=8787/tcp`).
 * وضعیت سرویس: `systemctl status simurgh-relay` یا `simurgh status`.
+* پیش از v3.2.2 پیام `simurgh-relay: ok` فقط یعنی systemd دستور restart را
+  پذیرفته است؛ ثابت نمی‌کند پروسه زنده مانده یا پورت 8787 را باز کرده است. نصاب
+  و `simurgh update --restart` فعلی پاسخ واقعی `/healthz` روی loopback را لازم
+  دارند و بدون آن خلاصهٔ موفقیت چاپ نمی‌کنند. روی نصب قدیمی، خطای واقعی استارت
+  را این‌طور بگیرید:
+  ```bash
+  sudo systemctl status simurgh-relay --no-pager -l
+  sudo journalctl -u simurgh-relay -n 60 --no-pager
+  sudo tail -n 60 /etc/simurgh/logs/relay.log
+  sudo ss -lntp | grep -E '(:8787|simurgh)' || true
+  ```
 * اگر لاگ `error: unrecognized arguments: --home /etc/simurgh` می‌دهد و unit در
   چرخهٔ `auto-restart` است، نسخهٔ v3.2.0 آرگومان سراسری را بعد از نقش نوشته است.
   نسخهٔ v3.2.1 هم generator را اصلاح می‌کند و هم ترتیب قدیمی را هنگام ارتقا
@@ -138,8 +149,9 @@ systemctl stop simurgh-relay    # و دوباره start
 
 نسخه‌های قدیمی `install.sh` همان‌جا با `CONNECTIONS: unbound variable` می‌مردند و
 در حالت پایپ (`curl … | bash`) خطای `BASH_SOURCE[0]: unbound variable` هم می‌داد.
-اسکریپت را به‌روز کنید و دوباره اجرا کنید — اجرای دوم کانفیگ را درجای خود تازه
-می‌کند و لازم نیست چیزی را پاک کنید:
+اسکریپت را به‌روز کنید و دوباره اجرا کنید — نسخه‌های فعلی کانفیگ موجود را حفظ
+می‌کنند و برنامه و unitهای systemd را تازه می‌سازند؛ لازم نیست چیزی پاک شود.
+فقط `--force` صریح کانفیگ را جایگزین می‌کند و پیش از آن بکاپ زمانی می‌گیرد:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash

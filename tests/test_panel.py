@@ -984,6 +984,47 @@ async def test_the_update_button_asks_github_once(home, tmp_path, relay_cfg, mon
         await panel.stop()
 
 
+async def test_the_panel_can_install_an_update_then_schedules_restart(
+        home, tmp_path, relay_cfg, monkeypatch):
+    from simurgh import update as updater
+
+    calls, restarts = [], []
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(relay_cfg),
+                               on_action=lambda name: restarts.append(name))
+    try:
+        def install(path, verbose=True):
+            calls.append((path, verbose))
+            return {"current": "2.9.1", "latest": "3.0.0", "tag": "v3.0.0",
+                    "available": True, "action": "source install updated",
+                    "steps": ["python", "go"], "restart_required": True}
+
+        monkeypatch.setattr(updater, "update", install)
+        status, data = await _request(port, "/api/update", method="POST",
+                                      auth=f"{USER}:{PASSWORD}", body={})
+        assert status == 200 and data["ok"] is True
+        assert data["restarting"] is True and data["steps"] == ["python", "go"]
+        assert calls == [(home.path, False)]
+        assert panel._restart_timer is not None
+        assert restarts == []                 # the HTTP response comes first
+
+        # Fire the callback deterministically instead of making the test sleep.
+        panel._restart_timer.cancel()
+        panel._restart_timer = None
+        panel._restart_after_update()
+        assert restarts == ["restart"]
+
+        def boom(path, verbose=True):
+            raise updater.UpdateError("download failed; install unchanged")
+
+        monkeypatch.setattr(updater, "update", boom)
+        status, data = await _request(port, "/api/update", method="POST",
+                                      auth=f"{USER}:{PASSWORD}", body={})
+        assert status == 502 and data["ok"] is False
+        assert "unchanged" in data["error"]
+    finally:
+        await panel.stop()
+
+
 def test_every_element_the_script_touches_exists():
     """A `$('typo')` is a dead button: check the shell against the script."""
     import re

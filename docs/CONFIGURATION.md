@@ -428,21 +428,22 @@ with the Go engine it reads the `state.json` that engine keeps updated.
 
 ```bash
 simurgh update            # install the newest release
+simurgh update --restart   # install, restart and require a healthy /healthz
 simurgh update --check     # only report (exit code 3 when one is available)
 simurgh update --check --json
 ```
 
 The command works out what kind of install it is looking at:
 
-* **a git checkout** — it fetches the tags, checks out the newest release tag and
-  rebuilds the Go engine (`--no-rebuild` skips that);
+* **a git checkout** — it fetches the tags, checks out the newest release tag,
+  reinstalls the Python package into the running venv, and updates the actual
+  installed Go engine from the checksummed release asset (no compiler needed);
 * **a packaged install** — it downloads the asset for this OS/architecture,
   checks its SHA-256 against the release's `SHA256SUMS.txt` and replaces the
   running binary atomically, keeping the old one as `simurgh-go.bak`;
 * **a pip install** — it runs `pip install -U simurgh-tunnel`.
 
-With no network it says so and changes nothing. After an update, `simurgh
-restart` runs the new version.
+With no network it says so and changes nothing. The update never rewrites the TOML configuration. After an update, `simurgh restart` runs the new version; `--restart` performs that step and checks `/healthz`. The panel offers the same operation under **Tools → Install update**, and the text menu as option **17**.
 
 ## Alerts
 

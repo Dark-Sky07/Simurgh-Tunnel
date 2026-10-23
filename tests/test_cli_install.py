@@ -165,3 +165,84 @@ def test_join_keeps_refusing_a_paired_config_without_force(tmp_path, monkeypatch
                                 "--no-restart", "--force"])
     forced.home = str(tmp_path)
     assert cli.cmd_join(forced) == 0
+
+
+def test_install_rerun_preserves_an_existing_config(tmp_path):
+    """The Python entry point protects config even when called without the
+    shell wrapper (packages and advanced invocations use this path too)."""
+    first = _install_later(tmp_path, "--name", "before")
+    assert cli.cmd_install(first) == 0
+    cfg = load_relay(tmp_path / "relay.toml")
+    cfg.token = "paired-secret"
+    cfg.exit.address = "198.51.100.7"
+    cfg.unpaired = False
+    save_relay(cfg, tmp_path / "relay.toml")
+    before = (tmp_path / "relay.toml").read_text()
+
+    second = _install_later(tmp_path, "--name", "after")
+    assert cli.cmd_install(second) == 0
+    assert (tmp_path / "relay.toml").read_text() == before
+
+
+def test_install_does_not_report_success_without_a_healthy_panel(
+        tmp_path, monkeypatch, capsys):
+    args = cli.build_parser().parse_args([
+        "install", "--role", "relay", "--pair-later", "--engine", "python",
+    ])
+    args.home = str(tmp_path)
+    from simurgh import systemd
+
+    monkeypatch.setattr(systemd, "install_services", lambda *a, **k: {
+        "systemd": True, "write": True, "units": [],
+        "actions": {"simurgh-relay": "ok"},
+    })
+    monkeypatch.setattr(cli, "_wait_for_panel",
+                        lambda home, roles, expected_version=None:
+                        (False, "connection refused"))
+    monkeypatch.setattr(systemd, "journal_tail", lambda *a, **k: "startup traceback")
+    monkeypatch.setattr(cli, "_public_ip", lambda: "127.0.0.1")
+
+    assert cli.cmd_install(args) == 1
+    output = capsys.readouterr()
+    assert "NOT being reported as complete" in output.err
+    assert "startup traceback" in output.out
+
+
+def test_wait_for_panel_uses_the_real_health_endpoint(tmp_path):
+    """A listening socket alone is not enough: the JSON liveness response must
+    come from Simurgh.  This exercises the same loopback probe the installer
+    and post-update restart use."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"ok":true,"version":"test"}'
+            self.send_response(200 if self.path == "/healthz" else 404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Health)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        cfg = RelayConfig(token="", unpaired=True,
+                          panel_port=server.server_address[1])
+        save_relay(cfg, tmp_path / "relay.toml")
+        healthy, detail = cli._wait_for_panel(cli.Home(tmp_path), ("relay",), timeout=1)
+        assert healthy and "HTTP 200" in detail
+        healthy, detail = cli._wait_for_panel(
+            cli.Home(tmp_path), ("relay",), timeout=0.01, expected_version="new")
+        assert not healthy and "still runs vtest" in detail
+        healthy, _ = cli._wait_for_panel(
+            cli.Home(tmp_path), ("relay",), timeout=1, expected_version="test")
+        assert healthy
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
