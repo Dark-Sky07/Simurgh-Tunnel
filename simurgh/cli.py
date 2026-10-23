@@ -1912,8 +1912,8 @@ def cmd_update(args) -> int:
                 return 0 if not info["available"] else 3
             print(f"{__product__} {info['current']}   newest release: {info['latest']}")
             if info["available"]:
-                print(f"  an update is available: {info['tag']} "
-                      f"({info['published'][:10]})")
+                published = f" ({info['published'][:10]})" if info["published"] else ""
+                print(f"  an update is available: {info['tag']}{published}")
                 print(f"  run `simurgh update` to install it   {info['notes_url']}")
                 return 3
             print("  this install is already the newest release")

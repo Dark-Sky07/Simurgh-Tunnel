@@ -66,6 +66,28 @@ The update preserves `/etc/simurgh`, pairing, mappings and panel credentials;
 do not delete the configuration to clear this browser-side failure. Actual wrong
 Basic passwords and form submissions are still rate-limited.
 
+## Update stops at `GitHub answered 403`
+
+v3.2.3 and earlier discover releases only through `api.github.com`. A shared
+server address can exhaust the anonymous API quota, or a network can block that
+API hostname while the ordinary GitHub release page remains reachable.
+
+v3.2.4 adds a fallback to GitHub's canonical `/releases/latest` redirect. It
+validates the final HTTPS origin and release-tag path, then constructs the
+official direct URLs for the engine and `SHA256SUMS.txt`. Binary installation
+still requires a matching checksum; the fallback does not weaken verification.
+
+For **this one upgrade from v3.2.3**, the old updater cannot load its own fix.
+Run the same universal installer once to bridge to v3.2.4:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
+```
+
+Do not add `--force` and do not delete `/etc/simurgh`: the normal rerun preserves
+pairing, mappings, credentials and other configuration. From v3.2.4 onward, the
+panel, menu and `simurgh update --restart` all use the API-plus-redirect path.
+
 ## The tunnel never comes up (direct mode)
 
 0. Is the relay paired at all? `simurgh status` (and the panel) say

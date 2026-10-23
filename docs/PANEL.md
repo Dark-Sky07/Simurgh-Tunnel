@@ -165,7 +165,7 @@ options that do not have a dedicated control.
 
 Open **Tools → Updates**. **Check for updates** only reads the latest GitHub release. **Install update** asks for confirmation, installs the new Python code and the matching checksummed Go engine, answers the browser, and only then restarts the service. The page polls `/healthz`, requires the reported version to match the release it installed, and reloads only when that new panel is actually available. If the old process remains healthy or the listener never returns, it reports a failed restart instead of silently accepting the old version.
 
-Only one update can run at a time. Updating does not open or rewrite `relay.toml`, `exit.toml`, pairing state, port mappings or panel credentials. The same operation is option **17** in `simurgh menu`; automation can use `simurgh update --restart`, which also requires a healthy panel after the restart. On installations without service control, the files are updated and the UI asks for a manual restart instead.
+Only one update can run at a time. Updating does not open or rewrite `relay.toml`, `exit.toml`, pairing state, port mappings or panel credentials. Release discovery tries the GitHub API and then a validated `/releases/latest` redirect if the API is rate-limited or unreachable; direct engine downloads still require the release's matching SHA-256 checksum. The same operation is option **17** in `simurgh menu`; automation can use `simurgh update --restart`, which also requires a healthy panel after the restart. On installations without service control, the files are updated and the UI asks for a manual restart instead.
 
 ## The API
 
