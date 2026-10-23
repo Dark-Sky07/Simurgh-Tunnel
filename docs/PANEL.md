@@ -80,7 +80,7 @@ Everything on screen comes from one poll: `GET /api/layout` every two seconds
 | Ports | add/remove/enable/disable mappings; changes are written to the config and applied to the running node without a restart |
 | Wizard | preview → apply → rollback for a new tunnel; see below |
 | Speed test | download/upload against the exit, latency grades, session history in the browser |
-| Certificates | what `simurgh cert status` prints, with days left and fingerprints |
+| Certificates | request a public multi-domain certificate with `acme.sh`/`certbot`, then view days left and fingerprints |
 | Logs | the node's log tail, filter and auto-refresh |
 | Security | sessions, lockouts, failed logins, one-time links, the hardening rules |
 | Settings | name, log level, engine, tunnel direction and reverse listener, flow control, panel/speed-test ports, default quotas/rate limits and the masked tunnel token |
@@ -122,6 +122,28 @@ replaces the exit's tunnel listeners, preserves its local engine/limits, writes
 
 Setup links contain panel credentials; fetched payloads contain the tunnel
 secret. Use a private channel and a firewall/SSH tunnel for the panel itself.
+
+## Issuing certificates from the panel
+
+On **Certificates**, enter the primary public domain, optional subdomains (one per line
+or comma/space separated), and an optional ACME account email. All names are sent to one
+`acme.sh` or `certbot` HTTP-01 request and become SANs on the same certificate. Explicit
+names are supported; wildcards require DNS-01 and are rejected by this flow.
+
+* Every name must resolve to this server before requesting the certificate.
+* **Standalone** temporarily needs TCP port 80 free and publicly reachable.
+* **Webroot** needs an existing web server that serves `/.well-known/acme-challenge/`
+  from the entered directory for every requested name.
+* Install `acme.sh` or `certbot` first. The panel does not replace a missing client or
+  pretend that an attempted issuance succeeded.
+
+`POST /api/certificates/issue` requires normal panel authentication and allows one
+issuance at a time. The button stays pending while the real ACME command runs; its result
+or actionable error is rendered below the form. Only success wires and saves the
+certificate, with a `<config>.bak-cert` backup. Failure leaves the active certificate,
+mappings, token and pairing unchanged. The response explicitly requests a restart; the
+certificate is not described as active until **Tools → Restart** reloads the listener.
+This configures the tunnel certificate, not HTTPS for the panel's own web server.
 
 ## The wizard
 

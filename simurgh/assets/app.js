@@ -856,6 +856,67 @@ function renderCerts() {
   }).join('');
 }
 
+function syncCertMethod() {
+  const method = $('cert-method');
+  const field = $('cert-webroot-field');
+  if (field) field.hidden = !method || method.value !== 'webroot';
+}
+async function issueCertificate() {
+  const button = $('issue-cert');
+  const domain = ($('cert-domain') && $('cert-domain').value || '').trim();
+  const status = $('cert-issue-status');
+  const output = $('cert-issue-output');
+  if (!domain) {
+    if (status) status.textContent = t('cert_domain_required');
+    if ($('cert-domain')) $('cert-domain').focus();
+    return;
+  }
+  const method = ($('cert-method') && $('cert-method').value) || 'standalone';
+  const payload = {
+    domain,
+    subdomains: ($('cert-subdomains') && $('cert-subdomains').value || '').trim(),
+    email: ($('cert-email') && $('cert-email').value || '').trim(),
+    method,
+    webroot: ($('cert-webroot') && $('cert-webroot').value || '').trim(),
+  };
+  if (button) { button.disabled = true; button.textContent = t('cert_issuing'); }
+  if (status) status.textContent = t('cert_issuing');
+  if (output) { output.hidden = true; output.textContent = ''; }
+  try {
+    const res = await api('/api/certificates/issue', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      if (status) status.textContent = '';
+      if (output) { output.textContent = res.error || 'bad response'; output.hidden = false; }
+      toast(t('toast_error', { msg: res.error || '' }), 'err');
+      return;
+    }
+    const cert = res.certificate || {};
+    const domains = (res.domains || cert.domains || [domain]).join(', ');
+    const restart = t('cert_restart_required', { client: cert.client || 'ACME' });
+    if (status) status.textContent = t('cert_issue_ok', { domains }) + ' ' + restart;
+    if (output) {
+      const lines = Array.isArray(cert.steps) ? cert.steps.slice() : [];
+      if (cert.cert_file) lines.push('certificate: ' + cert.cert_file);
+      if (res.backup) lines.push('backup: ' + res.backup);
+      output.textContent = lines.join('\n');
+      output.hidden = lines.length === 0;
+    }
+    toast(t('cert_issue_ok', { domains }));
+    await load(true);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = t('cert_issue_button'); }
+  }
+}
+function bindCerts() {
+  const method = $('cert-method');
+  const button = $('issue-cert');
+  if (method) method.onchange = syncCertMethod;
+  if (button) button.onclick = issueCertificate;
+  syncCertMethod();
+}
+
 /* ------------------------------------------------------------------- poll */
 async function load(quiet) {
   const body = await api('/api/layout');
@@ -873,7 +934,7 @@ function boot() {
   applyTheme(storage.get(THEME_KEY, 'night'));
   applyLang();
   buildNav();
-  bindPorts(); bindLogs(); bindSpeed(); bindTune(); bindSecurity(); bindTools(); bindPair();
+  bindPorts(); bindLogs(); bindSpeed(); bindTune(); bindSecurity(); bindTools(); bindPair(); bindCerts();
   if ($('lang-toggle')) $('lang-toggle').onclick = () => {
     LANG = LANG === 'fa' ? 'en' : 'fa'; applyLang(); renderAll(); renderCerts();
     loadSettings(); loadLogs(); renderPairing();

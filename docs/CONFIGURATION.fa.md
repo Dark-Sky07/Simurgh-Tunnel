@@ -511,9 +511,22 @@ simurgh alert status --role exit
    sudo simurgh cert issue panel.example.com --email me@example.com \
         --webroot /var/www/html          # nginx/caddy همان را سرو می‌کند
    sudo simurgh cert issue panel.example.com --standalone   # پورت ۸۰ آزاد است
+   sudo simurgh cert issue example.com www.example.com api.example.com --standalone
    sudo simurgh cert issue panel.example.com --staging      # آزمایش با CA تستی
    sudo simurgh cert issue panel.example.com --port 8443     # فقط همین لیسنر
    ```
+
+   دامنه‌های اضافهٔ positional به‌صورت subject alternative name روی **همان یک گواهی**
+   قرار می‌گیرند، نه گواهی‌های جدا. DNS همهٔ نام‌های عمومی درخواستی باید به همین سرور
+   اشاره کند. در standalone برای HTTP-01 پورت TCP 80 باید آزاد و از اینترنت reachable
+   باشد؛ در webroot وب‌سرور باید مسیر `/.well-known/acme-challenge/` را از همان پوشه
+   سرو کند. wildcard رد می‌شود چون این مسیر HTTP-01 است، نه DNS-01.
+
+   همین صدور در بخش **Certificates** پنل هم موجود است. دامنهٔ اصلی و ساب‌دامنه‌ها را
+   وارد کنید، standalone یا webroot را انتخاب کنید و **Obtain certificate** را بزنید.
+   `acme.sh` یا `certbot` باید از قبل نصب باشد؛ نبود کلاینت یا خطای validation به‌صورت
+   خطا نمایش داده می‌شود و کانفیگ فعال دست‌نخورده می‌ماند. صدور موفق از پنل پیش از ذخیره
+   `<config>.bak-cert` می‌سازد؛ بعد از آن از **Tools ← Restart** سرویس را ری‌استارت کنید.
 
    گواهی در `exit.toml` نوشته می‌شود (یا با `--role relay` در بلوک
    `[tunnel]` رله)، `cert_auto` خاموش می‌شود تا موتور هرگز روی آن گواهی

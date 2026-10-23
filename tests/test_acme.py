@@ -145,6 +145,35 @@ def test_issue_with_acme_sh_creates_and_finds_the_certificate(fake_acme):
     assert "renewal hook installed" in result.steps[-1]
 
 
+def test_issue_adds_every_subdomain_to_one_acme_sh_certificate(fake_acme):
+    result = acme.issue(
+        "Example.COM.", additional_domains="www.example.com, api.example.com\nWWW.EXAMPLE.COM",
+        webroot="/var/www/html")
+    assert result.domains == ["example.com", "www.example.com", "api.example.com"]
+    assert result.as_dict()["domains"] == result.domains
+    issued = fake_acme["log"].read_text().splitlines()[0]
+    assert issued.count(" -d ") == 3
+    assert "-d example.com -d www.example.com -d api.example.com" in issued
+    assert result.cert_file.endswith("example.com_ecc/fullchain.cer")
+
+
+def test_certbot_receives_all_sans_and_still_uses_the_primary_store(fake_certbot, tmp_path):
+    store = tmp_path / "letsencrypt"
+    result = acme.issue("example.com", additional_domains=["www.example.com", "api.example.com"],
+                        standalone=True, prefer="certbot", config_dir=str(store))
+    issued = fake_certbot["log"].read_text().splitlines()[0]
+    assert issued.count(" -d ") == 3
+    assert "--cert-name example.com" in issued
+    assert result.cert_file == str(store / "live" / "example.com" / "fullchain.pem")
+
+
+@pytest.mark.parametrize("domain", ["*.example.com", "https://example.com", "localhost",
+                                    "bad_label.example.com", "-bad.example.com"])
+def test_http_01_rejects_names_it_cannot_validate(domain):
+    with pytest.raises(acme.AcmeError):
+        acme.normalize_domains(domain)
+
+
 def test_issue_standalone_and_staging_change_the_argv(fake_acme):
     acme.issue("panel.example.com", standalone=True, staging=True)
     issued = fake_acme["log"].read_text().splitlines()[0]
@@ -330,6 +359,16 @@ def test_cli_cert_issue_wires_the_config(tmp_path, fake_acme, capsys, monkeypatc
     assert Path(cfg.cert_file).is_file()
     # the reload hook names this service
     assert "simurgh-exit" in fake_acme["log"].read_text()
+
+
+def test_cli_cert_issue_accepts_additional_subdomains(tmp_path, fake_acme, capsys):
+    home = _exit_home(tmp_path)
+    code = _run(home, "cert", "issue", "example.com", "www.example.com", "api.example.com",
+                "--role", "exit", "--standalone")
+    assert code == 0, capsys.readouterr()
+    issued = fake_acme["log"].read_text().splitlines()[0]
+    assert "-d example.com -d www.example.com -d api.example.com" in issued
+    assert load_exit(home / "exit.toml").cert_file.endswith("example.com_ecc/fullchain.cer")
 
 
 def test_cli_cert_issue_for_one_listener(tmp_path, fake_acme, capsys):

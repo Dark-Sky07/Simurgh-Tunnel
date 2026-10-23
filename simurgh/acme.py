@@ -16,6 +16,7 @@ this project is upgraded, and they already know how to renew and reload.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -44,6 +45,7 @@ class Result:
 
     client: str = ""
     binary: str = ""
+    domains: list[str] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)
     cert_file: str = ""
     key_file: str = ""
@@ -51,7 +53,8 @@ class Result:
     staging: bool = False
 
     def as_dict(self) -> dict:
-        return {"client": self.client, "binary": self.binary, "steps": list(self.steps),
+        return {"client": self.client, "binary": self.binary,
+                "domains": list(self.domains), "steps": list(self.steps),
                 "cert_file": self.cert_file, "key_file": self.key_file,
                 "wired": self.wired, "staging": self.staging}
 
@@ -127,18 +130,64 @@ def _tail(output: str, lines: int = 12) -> str:
 
 
 # ------------------------------------------------------------------- issue it
-def issue(domain: str, *, email: str = "", webroot: str = "", standalone: bool = False,
-          staging: bool = False, prefer: str = "", reload_cmd: str = "",
-          config_dir: str = "", binary: str = "") -> Result:
-    """Obtain a certificate for *domain* and install a renewal hook.
+def _dns_name(value: str) -> str:
+    """Return a canonical public DNS name suitable for an HTTP-01 request."""
+    raw = str(value or "").strip().rstrip(".")
+    if raw.startswith("*."):
+        raise AcmeError("wildcard certificates need DNS-01; use explicit hostnames "
+                        "for the HTTP-01 standalone/webroot methods")
+    try:
+        name = raw.encode("idna").decode("ascii").lower()
+    except (UnicodeError, ValueError):
+        raise AcmeError(f"invalid DNS name: {raw!r}") from None
+    if len(name) > 253 or "." not in name:
+        raise AcmeError(f"use a public domain name, not {raw!r}")
+    labels = name.split(".")
+    if any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+           or re.fullmatch(r"[a-z0-9-]+", label) is None for label in labels):
+        raise AcmeError(f"invalid DNS name: {raw!r}")
+    return name
 
-    Either ``webroot`` (a directory a webserver serves) or ``standalone`` (the
-    client binds port 80 itself for a moment) has to be given.  The files land
-    in the client's own store; :func:`certificate_paths` knows where.
+
+def normalize_domains(domain: str, additional_domains=()) -> list[str]:
+    """Canonicalize and de-duplicate the primary name and optional SANs.
+
+    The panel accepts comma/whitespace-separated names; the CLI supplies a
+    list.  A list item may itself contain commas, which makes the API tolerant
+    without ever passing user input through a shell.
     """
-    domain = (domain or "").strip()
-    if not domain:
+    if isinstance(additional_domains, str):
+        extras = re.split(r"[\s,]+", additional_domains.strip())
+    else:
+        try:
+            extras = [part for item in additional_domains
+                      for part in re.split(r"[\s,]+", str(item).strip())]
+        except TypeError:
+            raise AcmeError("subdomains must be a list or comma-separated text") from None
+    domains = [_dns_name(domain)]
+    domains.extend(_dns_name(item) for item in extras if item)
+    unique = list(dict.fromkeys(domains))
+    if len(unique) > 100:  # Let's Encrypt's maximum names per certificate
+        raise AcmeError("a certificate can contain at most 100 DNS names")
+    return unique
+
+
+def issue(domain: str, *, additional_domains=(), email: str = "", webroot: str = "",
+          standalone: bool = False, staging: bool = False, prefer: str = "",
+          reload_cmd: str = "", config_dir: str = "", binary: str = "") -> Result:
+    """Obtain one certificate for a primary domain and optional SANs.
+
+    ``additional_domains`` accepts a list or comma/whitespace-separated text.
+    Every name gets its own ``-d`` argument and must resolve to this server for
+    HTTP-01.  Either ``webroot`` (a directory a webserver serves) or
+    ``standalone`` (the client binds port 80 itself for a moment) is required.
+    The files land under the primary name in the client's own store.
+    """
+    raw_domain = str(domain or "").strip()
+    if not raw_domain:
         raise AcmeError("a domain is required")
+    domains = normalize_domains(raw_domain, additional_domains)
+    domain = domains[0]
     if not webroot and not standalone:
         raise AcmeError("choose how to prove ownership: --webroot DIR (nginx/caddy "
                         "already serves it) or --standalone (port 80 must be free)")
@@ -149,9 +198,11 @@ def issue(domain: str, *, email: str = "", webroot: str = "", standalone: bool =
     if not name or not path:
         raise AcmeError(install_hint())
 
-    result = Result(client=name, binary=path, staging=staging)
+    result = Result(client=name, binary=path, domains=domains, staging=staging)
     if name == "acme.sh":
-        argv = [path, "--issue", "-d", domain]
+        argv = [path, "--issue"]
+        for hostname in domains:
+            argv += ["-d", hostname]
         if standalone:
             argv.append("--standalone")
         else:
@@ -166,8 +217,11 @@ def issue(domain: str, *, email: str = "", webroot: str = "", standalone: bool =
             raise AcmeError(f"acme.sh could not issue a certificate for {domain}:\n"
                             f"{_tail(out)}")
     else:
-        argv = [path, "certonly", "-d", domain, "--non-interactive",
-                "--agree-tos", "-m", email or f"admin@{domain}"]
+        argv = [path, "certonly"]
+        for hostname in domains:
+            argv += ["-d", hostname]
+        argv += ["--cert-name", domain, "--non-interactive", "--agree-tos",
+                 "-m", email or f"admin@{domain}"]
         if config_dir:
             argv += ["--config-dir", config_dir, "--work-dir",
                      str(Path(config_dir) / "work"), "--logs-dir",

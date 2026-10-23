@@ -135,7 +135,7 @@ official direct URLs for the engine and `SHA256SUMS.txt`. Binary installation
 still requires a matching checksum; the fallback does not weaken verification.
 
 For **this one upgrade from v3.2.3**, the old updater cannot load its own fix.
-Run the same universal installer once to bridge to v3.2.7:
+Run the same universal installer once to bridge to v3.2.8:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash

@@ -1720,7 +1720,8 @@ def cmd_cert(args) -> int:
             if shutil.which("systemctl") else "simurgh restart")
         try:
             result = acme.issue(
-                args.domain, email=args.email or "", webroot=args.webroot or "",
+                args.domain, additional_domains=args.extra_domains,
+                email=args.email or "", webroot=args.webroot or "",
                 standalone=bool(args.standalone), staging=bool(args.staging),
                 prefer=args.client, reload_cmd=reload_cmd,
                 config_dir=args.config_dir or "", binary=args.acme_sh or "")
@@ -2204,7 +2205,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("cert", help="Let's Encrypt certificates (acme.sh / certbot)")
     p.add_argument("action", nargs="?", default="status",
                    choices=["status", "issue", "renew"])
-    p.add_argument("domain", nargs="?", default="", help="the host name to certify")
+    p.add_argument("domain", nargs="?", default="", help="the primary host name to certify")
+    p.add_argument("extra_domains", nargs="*",
+                   help="optional subdomains/SANs for the same certificate")
     p.add_argument("--role", choices=["relay", "exit"], default=None,
                    help="exit | relay (auto-detected by default)")
     p.add_argument("--email", default="", help="ACME account e-mail")
