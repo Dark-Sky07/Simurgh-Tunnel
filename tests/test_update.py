@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -34,9 +35,13 @@ RELEASE = {
 class FakeResponse:
     """The tiny slice of ``urlopen`` this code uses."""
 
-    def __init__(self, payload: bytes):
+    def __init__(self, payload: bytes, url: str = ""):
         self.payload = payload
         self.pos = 0
+        self.url = url
+
+    def geturl(self) -> str:
+        return self.url
 
     # `read()` alone would be enough for the API calls; the download path goes
     # through shutil.copyfileobj, which wants a real file-like cursor
@@ -84,6 +89,44 @@ def test_check_reports_an_available_update(monkeypatch):
     assert info["available"] is True
     assert "simurgh-go-linux-amd64" in info["assets"]
     assert info["asset_urls"]["SHA256SUMS.txt"].endswith("SHA256SUMS.txt")
+
+
+def test_api_403_falls_back_to_the_canonical_release_redirect(monkeypatch):
+    """A rate-limited API must not block an otherwise reachable update."""
+    calls = []
+    final_url = "https://github.com/Dark-Sky07/Simurgh-Tunnel/releases/tag/v9.9.9"
+
+    def fake_open(url, timeout=updater.TIMEOUT):
+        calls.append(url)
+        if url == updater.API_LATEST:
+            raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+        assert url == updater.WEB_LATEST
+        return FakeResponse(b"", final_url)
+
+    monkeypatch.setattr(updater, "_open", fake_open)
+    info = updater.check()
+
+    assert calls == [updater.API_LATEST, updater.WEB_LATEST]
+    assert info["tag"] == "v9.9.9" and info["latest"] == "9.9.9"
+    assert info["available"] is True and info["published"] == ""
+    assert info["notes_url"] == final_url
+    name = updater.asset_name("x86_64", "Linux")
+    base = f"{updater.DOWNLOAD}/v9.9.9"
+    assert info["asset_urls"][name] == f"{base}/{name}"
+    assert info["asset_urls"]["SHA256SUMS.txt"] == f"{base}/SHA256SUMS.txt"
+    assert set(info["assets"]) == set(updater.RELEASE_ASSETS)
+
+
+@pytest.mark.parametrize("final_url", [
+    "https://example.invalid/Dark-Sky07/Simurgh-Tunnel/releases/tag/v9.9.9",
+    updater.WEB_LATEST,
+    "https://github.com/Dark-Sky07/Simurgh-Tunnel/releases/tag/",
+])
+def test_release_redirect_cannot_choose_an_untrusted_or_empty_tag(monkeypatch, final_url):
+    monkeypatch.setattr(updater, "_open",
+                        lambda url, timeout=updater.TIMEOUT: FakeResponse(b"", final_url))
+    with pytest.raises(updater.UpdateError, match="redirect|tag"):
+        updater._newest_release_from_redirect()
 
 
 def test_check_survives_no_network(monkeypatch):
@@ -265,6 +308,24 @@ def test_cli_update_check_stays_offline(capsys, monkeypatch, tmp_path):
     assert args.func(args) == 3
     payload = json.loads(capsys.readouterr().out)
     assert payload["latest"] == "9.9.9" and payload["available"] is True
+
+
+def test_cli_update_check_handles_redirect_metadata_without_a_date(
+        tmp_path, monkeypatch, capsys):
+    from simurgh import cli
+
+    monkeypatch.setattr(updater, "check", lambda: {
+        "current": "1.0.0", "latest": "9.9.9", "tag": "v9.9.9",
+        "published": "", "notes_url": "https://example.invalid/v9.9.9",
+        "available": True,
+    })
+    args = cli.build_parser().parse_args([
+        "--home", str(tmp_path), "update", "--check",
+    ])
+    assert args.func(args) == 3
+    output = capsys.readouterr().out
+    assert "an update is available: v9.9.9\n" in output
+    assert "()" not in output
 
 
 def test_cli_json_update_still_restarts_without_corrupting_json(

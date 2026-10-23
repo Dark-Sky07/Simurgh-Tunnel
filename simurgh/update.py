@@ -43,12 +43,21 @@ log = get_logger("simurgh.update")
 
 REPO = "Dark-Sky07/Simurgh-Tunnel"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
+WEB_LATEST = f"https://github.com/{REPO}/releases/latest"
 DOWNLOAD = f"https://github.com/{REPO}/releases/download"
 #: where install.sh puts the compiled engine
 BINARIES = {"linux": "simurgh-go-linux-{arch}", "darwin": "simurgh-go-darwin-{arch}",
             "windows": "simurgh-go-windows-amd64.exe"}
 ARCHES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64",
           "armv7l": "armv7", "armv6l": "armv7"}
+#: the redirect fallback can construct these immutable release asset names from
+#: its tag; it never has to scrape HTML or trust an API inventory.
+ENGINE_ASSETS = (
+    "simurgh-go-darwin-amd64", "simurgh-go-darwin-arm64",
+    "simurgh-go-linux-amd64", "simurgh-go-linux-arm64",
+    "simurgh-go-linux-armv7", "simurgh-go-windows-amd64.exe",
+)
+RELEASE_ASSETS = ("SHA256SUMS.txt", *ENGINE_ASSETS)
 TIMEOUT = 20.0
 
 
@@ -66,7 +75,8 @@ def _open(url: str, *, timeout: float = TIMEOUT):
         raise UpdateError("update downloads must use a valid HTTPS URL")
     request = urllib.request.Request(url, headers={
         "User-Agent": f"{__product__.replace(' ', '-')}/{__version__}",
-        "Accept": "application/vnd.github+json",
+        "Accept": ("application/vnd.github+json" if parsed.hostname == "api.github.com"
+                   else "*/*"),
     })
     return urllib.request.urlopen(request, timeout=timeout)   # noqa: S310
 
@@ -92,17 +102,71 @@ def parse_version(text: str) -> tuple:
     return tuple(numbers[:4]) + (rest,)
 
 
+def _release_from_tag(tag: str) -> dict:
+    """Build API-shaped release metadata from a trusted GitHub release tag.
+
+    GitHub's asset download URLs are deterministic.  The release API is handy
+    for dates and notes, but it is not required for a safe update: the engine
+    and its SHA-256 manifest can always be fetched directly from the tag.
+    """
+    raw = str(tag)
+    tag = raw.strip()
+    if (not tag or raw != tag or len(tag) > 200
+            or any(ch.isspace() or ch in "/\\?#" for ch in tag)):
+        raise UpdateError("GitHub sent an invalid latest-release tag")
+    encoded = quote(tag, safe="")
+    base = f"{DOWNLOAD}/{encoded}"
+    return {
+        "tag_name": tag,
+        "name": f"{__product__} {tag}",
+        "html_url": f"https://github.com/{REPO}/releases/tag/{encoded}",
+        "assets": [
+            {"name": name, "browser_download_url": f"{base}/{quote(name, safe='')}"}
+            for name in RELEASE_ASSETS
+        ],
+    }
+
+
+def _newest_release_from_redirect() -> dict:
+    """Discover the latest tag without using GitHub's rate-limited API.
+
+    ``/releases/latest`` is GitHub's public, canonical redirect to the newest
+    non-prerelease tag.  Validate the final origin and path before using any
+    part of it; a redirect must never choose where update artifacts come from.
+    """
+    with _open(WEB_LATEST) as response:
+        final_url = str(response.geturl() or "")
+    parsed = urlparse(final_url)
+    prefix = f"/{REPO}/releases/tag/"
+    if (parsed.scheme != "https" or parsed.netloc.lower() != "github.com"
+            or not parsed.path.startswith(prefix)):
+        raise UpdateError("GitHub's latest-release redirect was not a trusted release tag")
+    return _release_from_tag(unquote(parsed.path[len(prefix):]))
+
+
 def newest_release() -> dict:
-    """The newest published release, as the GitHub API describes it."""
+    """The newest published release, with a non-API fallback.
+
+    Shared hosting addresses frequently exhaust GitHub's anonymous API quota,
+    and some networks block only ``api.github.com``.  Neither case should make
+    an otherwise reachable release impossible to install.
+    """
     try:
         with _open(API_LATEST) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise UpdateError(f"GitHub answered {exc.code} for the latest release") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise UpdateError(f"cannot reach GitHub ({exc}); this install is unchanged") from exc
-    except ValueError as exc:
-        raise UpdateError(f"GitHub sent something unreadable ({exc})") from exc
+            payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("the release response is not an object")
+            return payload
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+            OSError, ValueError) as api_exc:
+        try:
+            return _newest_release_from_redirect()
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                OSError, ValueError, UpdateError) as web_exc:
+            raise UpdateError(
+                "cannot discover the latest GitHub release "
+                f"(API: {api_exc}; release page: {web_exc}); this install is unchanged"
+            ) from web_exc
 
 
 def asset_name(machine: str | None = None, system: str | None = None) -> str:
