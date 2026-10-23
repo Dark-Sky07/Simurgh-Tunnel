@@ -131,7 +131,7 @@
         <p class="hint" data-i18n="setup_offer_lead">Give this link to the other server. It can finish pairing from its own panel — no CLI needed.</p>
         <label for="setup-host" data-i18n="setup_host_label">Public panel address (optional)</label>
         <input id="setup-host" type="text" autocomplete="off" spellcheck="false" placeholder="203.0.113.9:8787" dir="ltr">
-        <div class="hint" data-i18n="setup_host_hint">Use a public IP or domain, optionally with :port. Leave empty to use the address of this panel.</div>
+        <div class="hint" data-i18n="setup_host_hint">Use the public IP/domain[:port] that the other server can reach. Its panel port (default 8787) must pass local/cloud firewalls during pairing. If this browser uses localhost or an SSH tunnel, enter the public address explicitly.</div>
         <div class="row" style="margin-top:12px">
           <button class="primary" id="setup-link-btn" data-i18n="setup_create">Create setup link</button>
         </div>

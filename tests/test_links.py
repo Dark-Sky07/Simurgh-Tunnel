@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import urllib.request
 
 import pytest
 
@@ -93,8 +94,17 @@ def test_payload_with_explicit_mappings_wins():
     assert cfg.mappings[0].udp is True
 
 
-async def test_fetch_setup_against_a_live_panel(home, certs):
-    """The whole one-string hand-over: link -> panel -> ready relay config."""
+async def test_fetch_setup_against_a_live_panel(home, certs, monkeypatch):
+    """The whole one-string hand-over: link -> panel -> ready relay config.
+
+    A dead inherited proxy must not intercept this direct server-to-server call.
+    """
+    dead_proxy = free_port()
+    for name in ("http_proxy", "HTTP_PROXY"):
+        monkeypatch.setenv(name, f"http://127.0.0.1:{dead_proxy}")
+    for name in ("no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
     save_exit(ExitConfig(token="join-token", name="omega-de",
                          cert_file=certs[0], key_file=certs[1], cert_auto=False,
                          push_ports=[443],
@@ -140,9 +150,15 @@ async def test_fetch_setup_with_wrong_password(home, certs):
 
 
 async def test_fetch_setup_without_a_panel():
-    link = build_join_link("127.0.0.1", free_port(), USER, PASSWORD, "")
-    with pytest.raises(LinkError):
+    port = free_port()
+    link = build_join_link("127.0.0.1", port, USER, PASSWORD, "")
+    with pytest.raises(LinkError) as caught:
         await asyncio.to_thread(fetch_setup, link, 2.0)
+    message = str(caught.value)
+    assert f"http://127.0.0.1:{port}" in message
+    assert "connection refused" in message.lower()
+    assert "firewall" in message
+    assert PASSWORD not in message
 
 
 def test_a_reverse_exit_dials_with_the_anti_dpi_split(tmp_path):
