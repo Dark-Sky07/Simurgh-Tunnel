@@ -26,3 +26,33 @@ def test_log_view_is_bounded_pauseable_and_never_uses_a_shell(
     assert "line-1\n" not in out
     assert "line-6" in out and "line-30" in out       # exactly the last 25 lines
     assert paused == [True]                            # the next redraw cannot erase it
+
+
+def test_menu_installs_updates_and_offers_a_health_checked_restart(
+        tmp_path, monkeypatch):
+    from simurgh import cli
+    from simurgh import update as updater
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(menu, "clear", lambda: None)
+    monkeypatch.setattr(menu, "pause", lambda: None)
+    monkeypatch.setattr(updater, "check", lambda: {
+        "current": "1.0.0", "latest": "9.9.9", "tag": "v9.9.9",
+        "available": True, "notes_url": "https://example.invalid/v9",
+    })
+    calls = []
+    monkeypatch.setattr(updater, "update", lambda path, verbose=True:
+                        calls.append(("update", path, verbose)) or {
+                            "action": "updated", "steps": ["python", "go"],
+                            "latest": "9.0.0", "restart_required": True,
+                        })
+    monkeypatch.setattr(cli, "_restart_updated_service",
+                        lambda given, expected=None:
+                        calls.append(("restart", given.path, expected)) or 0)
+    answers = iter([True, True])
+    monkeypatch.setattr(menu, "ask_yes", lambda *args: next(answers))
+
+    menu.software_update(home, "relay")
+
+    assert calls == [("update", tmp_path, False), ("restart", tmp_path, "9.0.0")]
+    assert "17" in menu.MENU_COMMON

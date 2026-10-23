@@ -483,6 +483,51 @@ def doctor(home: Home, role: str) -> None:
     pause()
 
 
+def software_update(home: Home, role: str) -> None:
+    """Check, install and optionally restart from the interactive menu."""
+    from . import update as updater
+
+    clear()
+    print(c("═" * 62, "cyan"))
+    print(c("  Software update", "bold"))
+    print(c("═" * 62, "cyan"))
+    print(f"  current version: {__version__}")
+    print(c("  checking GitHub…", "dim"))
+    try:
+        info = updater.check()
+    except Exception as exc:
+        print(c(f"  could not check for updates: {exc}", "red"))
+        pause()
+        return
+    if not info.get("available"):
+        print(c(f"  already up to date ({info.get('latest') or __version__}).", "green"))
+        pause()
+        return
+    print(f"  new version: {info.get('latest')} ({info.get('tag')})")
+    if info.get("notes_url"):
+        print(f"  release notes: {info['notes_url']}")
+    print(c("  Pairing, ports, credentials and other configuration are preserved.", "dim"))
+    if not ask_yes("install this update?", True):
+        return
+    try:
+        result = updater.update(home.path, verbose=False)
+    except Exception as exc:
+        print(c(f"  update failed: {exc}", "red"))
+        print(c("  The configuration was not changed; check the error above.", "yellow"))
+        pause()
+        return
+    print(c(f"  {result.get('action', 'update installed')}", "green"))
+    for step in result.get("steps", []) or []:
+        print(f"    - {step}")
+    if result.get("restart_required") and ask_yes("restart the service now?", True):
+        from .cli import _restart_updated_service
+
+        _restart_updated_service(home, result.get("latest"))
+    elif result.get("restart_required"):
+        print(c("  Restart later with option 5 to run the new version.", "yellow"))
+    pause()
+
+
 # ----------------------------------------------------------------------- loop
 MENU_EXIT = {
     "1": "Status and traffic",
@@ -494,6 +539,10 @@ MENU_EXIT = {
     "7": "Foreign server connection",
     "8": "Web panel",
     "9": "Speed test",
+}
+
+MENU_COMMON = {
+    "17": "Check for updates / install update",
 }
 
 MENU_RELAY = {
@@ -517,6 +566,8 @@ def menu_loop(home: Home, role: str) -> int:
         if role == "relay":
             for key, label in MENU_RELAY.items():
                 print(f"  {c('[' + key + ']', 'cyan')} {label}")
+        for key, label in MENU_COMMON.items():
+            print(f"  {c('[' + key + ']', 'cyan')} {label}")
         print(f"  {c('[q]', 'cyan')} quit")
         choice = ask("choice", "1")
         if choice in ("q", "quit", "exit"):
@@ -574,6 +625,8 @@ def menu_loop(home: Home, role: str) -> int:
             show_certificates(home, role)
         elif choice == "16":
             show_tuning(home, role)
+        elif choice == "17":
+            software_update(home, role)
         else:
             time.sleep(0.3)
 
@@ -644,9 +697,8 @@ def main(args=None) -> int:
     if not home.path.exists() or not (home.exit_cfg.exists() or home.relay_cfg.exists()):
         clear()
         print(c("  Nothing is installed yet.", "red"))
-        print("  Run one of these first:")
-        print(c("    sudo simurgh install --role exit    # on the foreign server", "cyan"))
-        print(c("    sudo simurgh install --role relay   # on the Iranian server", "cyan"))
+        print("  Run the same universal installation command on either server:")
+        print(c("    sudo simurgh install", "cyan"))
         return 2
     role = detect_role(home)
     try:

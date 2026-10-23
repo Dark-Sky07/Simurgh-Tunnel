@@ -120,8 +120,26 @@ jobs:
       - name: Test the Go data plane and race detector
         working-directory: go
         run: |
-          GOPROXY=off go test ./...
-          GOPROXY=off go test -race ./...
+          set -o pipefail
+          GOPROXY=off go test ./... 2>&1 | tee "$RUNNER_TEMP/go-test.log"
+          GOPROXY=off go test -race ./... 2>&1 | tee "$RUNNER_TEMP/go-race.log"
+
+      # Go failures need the same actionable annotations as the Python jobs;
+      # the raw Actions log archive is not always accessible to maintainers.
+      - name: Summarise Go failures
+        if: failure()
+        run: |
+          for log in "$RUNNER_TEMP"/go-*.log; do
+            [ -f "$log" ] || continue
+            title="go $(basename "$log")"
+            echo "::error title=$title::$(tail -n 30 "$log" | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
+            {
+              echo "### $(basename "$log")"
+              echo '```'
+              tail -n 60 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Build the compiled engine
         run: bash tools/build-go.sh --release dist

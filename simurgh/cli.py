@@ -482,9 +482,18 @@ def cmd_install(args) -> int:
     roles = ("exit", "relay") if args.both else (role,)
     if not args.config_only:
         for wanted in roles:
+            cfg_path = home.exit_cfg if wanted == "exit" else home.relay_cfg
+            if cfg_path.exists() and not args.force:
+                # Re-running the universal installer is an upgrade/repair, not
+                # permission to silently unpair the relay or erase its ports.
+                _ok(f"keeping the existing {wanted} config: {cfg_path}")
+                continue
+            if cfg_path.exists() and args.force:
+                backup = _backup_config(cfg_path, f"install-{int(time.time())}")
+                if backup:
+                    _info(f"previous {wanted} config backed up to {backup}")
             sub = argparse.Namespace(**{**vars(args), "role": wanted})
             code = _init_exit(home, sub) if wanted == "exit" else _init_relay(home, sub)
-            cfg_path = home.exit_cfg if wanted == "exit" else home.relay_cfg
             if code != 0 and not cfg_path.exists():
                 _err(f"could not build the {wanted} config; installation stopped.")
                 return 2
@@ -500,6 +509,23 @@ def cmd_install(args) -> int:
         _ok(f"created {unit}")
     for svc, result in report.get("actions", {}).items():
         (_ok if result == "ok" else _warn)(f"{svc}: {result}")
+    if any(result != "ok" for result in report.get("actions", {}).values()):
+        _err("systemd could not complete every requested action; installation is incomplete.")
+        return 1
+    started = (report.get("systemd") and report.get("write", True)
+               and not args.no_start and bool(report.get("actions")))
+    if started:
+        healthy, detail = _wait_for_panel(
+            home, roles, expected_version=__version__)
+        if not healthy:
+            _err(f"the service was started but the web panel is not healthy: {detail}")
+            _err("the installation is NOT being reported as complete; recent service log:")
+            for wanted in roles:
+                tail = systemd.journal_tail(f"simurgh-{wanted}", lines=30)
+                if tail:
+                    print(tail)
+            return 1
+        _ok(f"web panel health check: {detail}")
     print()
     _info(f"web panel: http://{_public_ip()}:{_panel_port_of(home, roles)}")
     _info("text menu: simurgh menu")
@@ -515,11 +541,55 @@ def cmd_install(args) -> int:
     return 0
 
 
+def _wait_for_panel(home: Home, roles, timeout: float = 20.0,
+                    expected_version: str | None = None) -> tuple[bool, str]:
+    """Require a real loopback ``/healthz`` response after a service restart.
+
+    ``systemctl restart`` returning zero only means systemd accepted the job;
+    it says nothing about argparse, imports or the HTTP listener.  Checking the
+    actual endpoint prevents the installer from printing a success banner for
+    a process which crashed a fraction of a second later.
+    """
+    import http.client
+
+    ports = sorted({_panel_port_of(home, (role,)) for role in roles})
+    deadline = time.monotonic() + timeout
+    last = "not attempted"
+    while True:
+        ready = []
+        for port in ports:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1.0)
+            try:
+                connection.request("GET", "/healthz", headers={"Connection": "close"})
+                response = connection.getresponse()
+                raw = response.read(4096)
+                payload = json.loads(raw.decode("utf-8"))
+                version = payload.get("version", "?")
+                if (response.status == 200 and payload.get("ok") is True
+                        and (expected_version is None or version == expected_version)):
+                    ready.append(port)
+                    last = f"HTTP 200 on 127.0.0.1:{port} (v{version})"
+                elif response.status == 200 and payload.get("ok") is True:
+                    last = (f"127.0.0.1:{port} still runs v{version}; "
+                            f"waiting for v{expected_version}")
+                else:
+                    last = f"HTTP {response.status} on 127.0.0.1:{port}"
+            except (OSError, ValueError, http.client.HTTPException) as exc:
+                last = f"127.0.0.1:{port}: {exc}"
+            finally:
+                connection.close()
+        if len(ready) == len(ports):
+            return True, last
+        if time.monotonic() >= deadline:
+            return False, last
+        time.sleep(0.4)
+
+
 def _panel_port_of(home: Home, roles) -> int:
     if "relay" in roles and home.relay_cfg.exists():
         try:
             return load_relay(home.relay_cfg).panel_port or RELAY_DEFAULT_PANEL
-        except ConfigError:
+        except (ConfigError, OSError):
             return RELAY_DEFAULT_PANEL
     return RELAY_DEFAULT_PANEL
 
@@ -1848,11 +1918,21 @@ def cmd_update(args) -> int:
                 return 3
             print("  this install is already the newest release")
             return 0
-        result = updater.update(home, force=args.force,
-                                rebuild=not args.no_rebuild)
+        result = updater.update(home.path, force=args.force)
         if getattr(args, "json", False):
+            restart_code = 0
+            if args.restart:
+                # Keep stdout machine-readable while still honouring --restart.
+                import contextlib
+                import io
+
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    restart_code = _restart_updated_service(
+                        home, result.get("latest"))
+                result["restart_ok"] = restart_code == 0
             print(json.dumps(result, ensure_ascii=False, indent=2))
-            return 0
+            return restart_code
         if result.get("available") is False and result.get("action") == "up to date":
             print(f"nothing to do: {__version__} is the newest release "
                   f"({result['latest']})")
@@ -1863,6 +1943,8 @@ def cmd_update(args) -> int:
             print(f"  - {step}")
         if result.get("notes_url"):
             print(f"  release notes: {result['notes_url']}")
+        if args.restart:
+            return _restart_updated_service(home, result.get("latest"))
         print("  restart the service to run the new version: "
               "simurgh restart" if shutil.which("systemctl") else
               "  restart the node to run the new version")
@@ -1870,6 +1952,32 @@ def cmd_update(args) -> int:
     except updater.UpdateError as exc:
         _err(str(exc))
         return 1
+
+
+def _restart_updated_service(home: Home, expected_version: str | None = None) -> int:
+    """Restart and require the new panel version, not a surviving old one."""
+    role = _detect_role(home, None)
+    result = _service_action("restart", role)
+    if result.get("ok") is False:
+        _err(str(result.get("error") or "service control is not available"))
+        return 1
+    failed = False
+    for service, text in result.items():
+        if text == "ok":
+            _ok(f"{service}: restart")
+        else:
+            _err(f"{service}: {text}")
+            failed = True
+    if failed:
+        return 1
+    healthy, detail = _wait_for_panel(
+        home, (role,), timeout=25.0, expected_version=expected_version)
+    if not healthy:
+        _err(f"updated files were installed, but the panel did not recover: {detail}")
+        _err("inspect: simurgh logs -n 80  (or journalctl -u simurgh-" + role + ")")
+        return 1
+    _ok(f"updated service is healthy: {detail}")
+    return 0
 
 
 def cmd_version(args) -> int:
@@ -2134,8 +2242,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="only report whether an update is available")
     p.add_argument("--force", action="store_true",
                    help="reinstall even when this version looks newest")
-    p.add_argument("--no-rebuild", action="store_true",
-                   help="git checkouts: skip rebuilding the Go engine")
+    # Kept as a hidden compatibility flag: updates now use the checksummed
+    # release assets rather than requiring a local Go rebuild.
+    p.add_argument("--no-rebuild", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--restart", action="store_true",
+                   help="restart the service afterwards and verify /healthz")
     p.add_argument("--json", action="store_true", help="machine readable output")
     p.set_defaults(func=cmd_update)
 

@@ -107,7 +107,7 @@ function makeNode(tag, id) {
 ids.forEach((id) => nodes.set(id, makeNode('div', id)));
 if (nodes.has('panel-meta')) {
   nodes.get('panel-meta').textContent = JSON.stringify({
-    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.1',
+    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.2',
   });
 }
 if (nodes.has('log-filter')) nodes.get('log-filter').value = '';
@@ -149,9 +149,12 @@ const ANSWERS = [
                               backup: '/etc/simurgh/relay.toml.bak-wizard' })],
   [/^\/api\/login-token/, () => ({ ok: true, url: 'http://127.0.0.1:8787/?t=abc',
                                    expires_in: 600 })],
-  [/^\/api\/update/, () => ({ ok: true, update_available: true, version: '3.0.0',
-                              latest: '3.1.0', notes_url: 'https://example.invalid' })],
-  [/^\/healthz/, () => ({ ok: true, version: '3.0.0' })],
+  [/^\/api\/update/, (init) => init.method === 'POST'
+    ? { ok: true, available: true, current: '3.0.0', latest: '3.1.0',
+        action: 'updated', restart_required: true, restarting: true }
+    : { ok: true, update_available: true, version: '3.0.0',
+        latest: '3.1.0', notes_url: 'https://example.invalid' }],
+  [/^\/healthz/, () => ({ ok: true, version: '3.1.0' })],
 ];
 const seen = [], bodies = [];
 
@@ -208,7 +211,8 @@ const localStorage = {
   removeItem(key) { delete this.store[key]; },
 };
 
-const location = { href: 'http://localhost/', hash: '', protocol: 'http:', host: 'localhost' };
+const location = { href: 'http://localhost/', hash: '', protocol: 'http:', host: 'localhost',
+                   reload() { this.reloaded = true; } };
 const window = { location, addEventListener() {}, matchMedia: () => ({ matches: false }) };
 
 const sandbox = {
@@ -230,7 +234,7 @@ const sandbox = {
     seen.push(path);
     if (init.body) bodies.push(JSON.parse(init.body));
     const answer = ANSWERS.find(([pattern]) => pattern.test(path));
-    const body = answer ? answer[1]() : { ok: false, error: `no stub for ${path}` };
+    const body = answer ? answer[1](init) : { ok: false, error: `no stub for ${path}` };
     return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
   },
   __listeners: {},
@@ -365,6 +369,10 @@ try {
       await new Promise((r) => setTimeout(r, 40));
     }
   }
+
+  // The install-update action waits for the restarted panel's new version.
+  await new Promise((r) => setTimeout(r, 2200));
+  if (!location.reloaded) problems.push('a healthy new panel version did not reload the page');
 
   const calls = new Set(seen.map((url) => url.split('?')[0]));
   const required = ['/api/layout'];

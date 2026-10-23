@@ -75,7 +75,7 @@ Everything on screen comes from one poll: `GET /api/layout` every two seconds
 | Logs | the node's log tail, filter and auto-refresh |
 | Security | sessions, lockouts, failed logins, one-time links, the hardening rules |
 | Settings | name, log level, engine, tunnel direction and reverse listener, flow control, panel/speed-test ports, default quotas/rate limits and the masked tunnel token |
-| Tools | restart / stop / start / reconnect, export the config, download the log, `/metrics` and `/healthz`, update check |
+| Tools | restart / stop / start / reconnect, export the config, download the log, `/metrics` and `/healthz`, check and install updates |
 
 ## Pairing entirely from the panel
 
@@ -158,6 +158,12 @@ options that do not have a dedicated control.
 | tokens masked wherever they are printed | logs and the panel never print a secret |
 | the panel is never in the data path | it can be stopped, restarted or broken without touching traffic |
 
+## Installing an update
+
+Open **Tools → Updates**. **Check for updates** only reads the latest GitHub release. **Install update** asks for confirmation, installs the new Python code and the matching checksummed Go engine, answers the browser, and only then restarts the service. The page polls `/healthz`, requires the reported version to match the release it installed, and reloads only when that new panel is actually available. If the old process remains healthy or the listener never returns, it reports a failed restart instead of silently accepting the old version.
+
+Only one update can run at a time. Updating does not open or rewrite `relay.toml`, `exit.toml`, pairing state, port mappings or panel credentials. The same operation is option **17** in `simurgh menu`; automation can use `simurgh update --restart`, which also requires a healthy panel after the restart. On installations without service control, the files are updated and the UI asks for a manual restart instead.
+
 ## The API
 
 Everything the panel does is one of these; they are all authenticated (Basic
@@ -180,6 +186,7 @@ auth, or the session cookie a login hands out):
 | POST | `/api/login-token` | mint a one-time login link |
 | POST | `/api/join` | authenticated setup payload fetched by the receiving server |
 | GET | `/api/update` | ask GitHub once whether a newer release exists |
+| POST | `/api/update` | install the newest release, then schedule a restart after the response |
 | GET | `/api/logs` | the bounded log tail |
 | GET | `/login`, `POST /login`, `GET /logout` | the form, the form's answer, and goodbye |
 | GET | `/metrics` | Prometheus text for the same numbers (`simurgh_listen_*`, `simurgh_panel_*`, …) |

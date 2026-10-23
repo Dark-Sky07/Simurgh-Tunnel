@@ -54,9 +54,10 @@ NO_SYSTEMD=0
 UNINSTALL=0
 PURGE=0
 BOTH=0
-# a re-run refreshes the configuration; that is what people expect from
-# "run the installer again" (back up /etc/simurgh first if you edited it by hand)
-FORCE=1
+# A re-run upgrades/repairs the program and regenerates its units, but keeps
+# pairing, mappings, credentials and every other existing setting.  Overwriting
+# the configuration is a separate, explicit --force decision.
+FORCE=0
 CARRIER=""
 SPLIT=""
 DOMAIN=""
@@ -134,7 +135,7 @@ main options:
                              (branch or tag, default: main)
   --uninstall [--purge]      remove the services (--purge also deletes the
                              config, the python environment and the source)
-  --force                    overwrite the existing config (this is the default)
+  --force                    overwrite the existing config (default: preserve it)
   --help                     this text
 EOF
 }
@@ -401,7 +402,8 @@ case ":$PATH:" in
   *) export PATH="$BIN_DIR:$PATH"
 warn "$BIN_DIR is not in your PATH; use $BIN_DIR/simurgh or add it to PATH." ;;
 esac
-ok "the simurgh command is installed: $(command -v simurgh)"
+INSTALLED_VERSION="$("$VENV_DIR/bin/python" -c 'import simurgh; print(simurgh.__version__)')"
+ok "the simurgh command is installed: $(command -v simurgh) (v$INSTALLED_VERSION)"
 
 # ------------------------------------------------------------- go engine
 # The compiled engine speaks the same protocol and keeps many users fast on
@@ -591,16 +593,20 @@ else
   ARGS+=(--token "$TOKEN")
 fi
 
-say "writing the config…"
-if [ "$HAS_TTY" = "1" ]; then
-  "$SIMURGH_BIN" install "${ARGS[@]}" </dev/tty || die "writing the config failed."
+if [ "$FORCE" != "1" ] && { [ -f "$CONF_HOME/relay.toml" ] || [ -f "$CONF_HOME/exit.toml" ]; }; then
+  say "keeping the existing config; updating the program and service…"
 else
-  "$SIMURGH_BIN" install "${ARGS[@]}" || die "writing the config failed."
+  say "writing the config…"
+fi
+if [ "$HAS_TTY" = "1" ]; then
+  "$SIMURGH_BIN" install "${ARGS[@]}" </dev/tty || die "installation/start failed; inspect the error and service log above."
+else
+  "$SIMURGH_BIN" install "${ARGS[@]}" || die "installation/start failed; inspect the error and service log above."
 fi
 
 # ------------------------------------------------------------------- finish
 echo
-ok "installation complete."
+ok "installation complete (v$INSTALLED_VERSION)."
 if [ -n "${SIMURGH_HOME:-}" ]; then SIMHOME="$SIMURGH_HOME"
 elif [ "$(id -u)" = "0" ]; then SIMHOME=/etc/simurgh
 else SIMHOME="$HOME/.simurgh"; fi

@@ -4,19 +4,26 @@ Two shapes of install have to be handled, and the command works out which one
 it is looking at:
 
 * **a git checkout** (what ``install.sh`` does by default): the newest tag is
-  fetched and checked out, and the Go engine is rebuilt from that source;
-* **a packaged install** (pip/wheel, or someone who copied the files):
-  the release asset for this OS/architecture is downloaded, its SHA-256 is
-  checked against the release's ``SHA256SUMS.txt``, and the running binary is
-  replaced atomically — the old one is kept as ``.bak``.
+  fetched and checked out, the Python package is reinstalled into the running
+  venv, and the actual installed Go engine is updated too;
+* **a packaged install** (pip/wheel, or someone who copied the files): Python
+  is installed from the same release tag, then the release asset for this
+  OS/architecture is downloaded, its SHA-256 is checked against the release's
+  ``SHA256SUMS.txt``, and the running binary is replaced atomically — the old
+  one is kept as ``.bak``.
+
+The web panel and text menu call this same implementation.  None of these
+paths opens, rewrites or deletes the relay/exit TOML configuration.
 
 Nothing here is needed to *run* Simurgh, and every network step is optional:
-with no network the command says so and exits with a non-zero status instead of
-touching the install.  ``--check`` only reports.
+when the release cannot be checked the command exits before touching the
+install.  A later failure is raised instead of being reported as a complete
+update.  ``--check`` only reports.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import platform
@@ -27,7 +34,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from . import __product__, __version__
 from .util import get_logger
@@ -159,6 +166,45 @@ def git_root(path: Path | None = None) -> Path | None:
     return None
 
 
+def _direct_url_checkout() -> Path | None:
+    """Find the source a pip-installed local checkout came from.
+
+    ``install.sh`` installs ``/opt/simurgh-src`` into its venv.  Once installed,
+    the module lives in site-packages, so walking its parents cannot discover
+    that checkout.  pip records the local source in ``direct_url.json``; use it
+    instead of pretending the installation is a stand-alone binary package.
+    """
+    try:
+        distribution = importlib.metadata.distribution("simurgh-tunnel")
+        raw = distribution.read_text("direct_url.json")
+        payload = json.loads(raw or "{}")
+        parsed = urlparse(str(payload.get("url") or ""))
+        if parsed.scheme == "file" and parsed.path:
+            return git_root(Path(unquote(parsed.path)))
+    except (importlib.metadata.PackageNotFoundError, OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def source_checkout() -> Path | None:
+    """The checkout used by the universal installer, if this is one."""
+    root = git_root()
+    if root is not None:
+        return root
+    root = _direct_url_checkout()
+    if root is not None:
+        return root
+    candidates = []
+    if os.environ.get("SIMURGH_SRC"):
+        candidates.append(Path(os.environ["SIMURGH_SRC"]))
+    candidates.append(Path("/opt/simurgh-src"))
+    for candidate in candidates:
+        root = git_root(candidate)
+        if root is not None:
+            return root
+    return None
+
+
 def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
     try:
         proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True,
@@ -190,7 +236,12 @@ def check() -> dict:
 
 
 def update_git(root: Path, tag: str, *, verbose: bool = True) -> list[str]:
-    """Move a checkout to *tag* (fetch, checkout, rebuild the engine)."""
+    """Move a checkout to *tag* without touching anything under ``/etc``.
+
+    The Python package and compiled engine are separate artifacts and are
+    updated explicitly below.  In particular, do not silently leave an old Go
+    engine behind merely because the server has no Go compiler installed.
+    """
     steps: list[str] = []
     code, out = _run(["git", "fetch", "--tags", "--force", "origin"], root)
     if code != 0:
@@ -200,19 +251,54 @@ def update_git(root: Path, tag: str, *, verbose: bool = True) -> list[str]:
     if code != 0:
         raise UpdateError(f"git checkout {tag} failed: {out.strip()[:200]}")
     steps.append(f"checked out {tag}")
-    builder = root / "tools" / "build-go.sh"
-    if builder.exists() and shutil.which("go"):
-        code, out = _run(["bash", str(builder)], root)
-        if code != 0:
-            steps.append(f"the Go engine did not rebuild ({out.strip()[:120]})")
-        else:
-            steps.append("rebuilt the Go engine")
-    elif builder.exists():
-        steps.append("no Go toolchain here: the engine stays as it is")
     if verbose:
         for step in steps:
             print(f"  - {step}")
     return steps
+
+
+def reinstall_package(root: Path) -> str:
+    """Reinstall the updated checkout into the *running* Python environment.
+
+    The first form is offline-friendly and uses the build tools the installer
+    already put in the venv.  The fallback retains support for environments
+    which need pip's isolated build environment instead.
+    """
+    base = [sys.executable, "-m", "pip", "install", "--no-deps",
+            "--force-reinstall"]
+    offline_cmd = [*base, "--no-build-isolation", str(root)]
+    code, out = _run(offline_cmd, root)
+    if code == 0:
+        return f"reinstalled the Python package in {sys.prefix}"
+    online_cmd = [*base, str(root)]
+    fallback_code, fallback_out = _run(online_cmd, root)
+    if fallback_code == 0:
+        return f"reinstalled the Python package in {sys.prefix}"
+    detail = (fallback_out or out).strip()[:300]
+    raise UpdateError(f"the source was fetched but pip could not reinstall it: {detail}")
+
+
+def reinstall_release(tag: str) -> str:
+    """Install Python code from the same release tag on non-git installs.
+
+    Updating only simurgh-go would leave the panel, CLI and protocol supervisor
+    on the old version.  Use pip's direct source URL rather than assuming this
+    project exists on PyPI; an externally-managed system Python can still
+    refuse the operation, in which case the user gets an error, not a false
+    "everything was updated" success.
+    """
+    url = (f"https://github.com/{REPO}/archive/refs/tags/"
+           f"{quote(tag, safe='')}.tar.gz")
+    base = [sys.executable, "-m", "pip", "install", "--no-deps",
+            "--force-reinstall"]
+    code, out = _run([*base, "--no-build-isolation", url])
+    if code == 0:
+        return f"installed the Python release {tag} in {sys.prefix}"
+    fallback_code, fallback_out = _run([*base, url])
+    if fallback_code == 0:
+        return f"installed the Python release {tag} in {sys.prefix}"
+    detail = (fallback_out or out).strip()[:300]
+    raise UpdateError(f"pip could not install the Python release {tag}: {detail}")
 
 
 def update_binary(dest: Path, tag: str, asset_urls: dict) -> str:
@@ -248,46 +334,69 @@ def update_binary(dest: Path, tag: str, asset_urls: dict) -> str:
                                             else "")
 
 
-def installed_binary(home: Path) -> Path | None:
-    """The compiled engine the running install would use."""
-    for candidate in (home / "bin" / "simurgh-go",
-                      home / "bin" / "simurgh-go.exe",
+def _home_path(home) -> Path:
+    """Accept both ``pathlib.Path`` and the CLI's ``util.Home`` safely."""
+    value = getattr(home, "path", home)
+    return Path(value) if value is not None else Path(sys.prefix)
+
+
+def installed_binary(home) -> Path | None:
+    """The compiled engine the running install would actually execute."""
+    base = _home_path(home)
+    for candidate in (base / "bin" / "simurgh-go",
+                      base / "bin" / "simurgh-go.exe",
                       Path(__file__).resolve().parent.parent / "bin" / "simurgh-go"):
         if candidate.exists():
             return candidate
-    return None
+    # The universal installer puts the engine in /usr/local/bin.  Reuse the
+    # runtime lookup instead of maintaining a second, incomplete path list.
+    from .engines import find_binary
+    from .util import Home
+
+    found = find_binary(Home(base))
+    return Path(found) if found else None
 
 
 def update(home: Path | None = None, *, check_only: bool = False, force: bool = False,
            rebuild: bool = True, verbose: bool = True) -> dict:
-    """Do the whole thing; returns what happened."""
+    """Do the whole thing; returns what happened.
+
+    ``rebuild`` remains in the signature for callers from older releases.  A
+    release update never requires a compiler: the engine comes from the same
+    checksummed release assets on every installation shape.
+    """
     info = check()
     result = dict(info)
     if not info["available"] and not force:
         result["action"] = "up to date"
+        result["restart_required"] = False
         return result
     if check_only:
         result["action"] = "check only"
+        result["restart_required"] = False
         return result
 
-    root = git_root()
+    home_path = _home_path(home)
+    root = source_checkout()
     if root is not None:
-        steps = update_git(root, info["tag"], verbose=verbose) if rebuild else []
-        result["action"] = f"git checkout updated to {info['tag']}"
+        steps = update_git(root, info["tag"], verbose=verbose)
+        # Checking out /opt/simurgh-src alone does not update the copy already
+        # installed in /opt/simurgh/venv.  This was the main reason `update`
+        # reported success while `simurgh --version` stayed on the old release.
+        steps.append(reinstall_package(root))
+        dest = installed_binary(home_path)
+        if dest is not None:
+            steps.append(update_binary(dest, info["tag"], info["asset_urls"]))
+        result["action"] = f"source install updated to {info['tag']}"
         result["steps"] = steps
+        result["restart_required"] = True
         return result
 
-    dest = installed_binary(home or Path(sys.prefix))
-    if dest is None:
-        pip = shutil.which("pip") or shutil.which("pip3")
-        if not pip:
-            raise UpdateError("this install is neither a git checkout nor a packaged "
-                              "one, and no pip is available to upgrade it")
-        code, out = _run([pip, "install", "-U", "simurgh-tunnel"])
-        if code != 0:
-            raise UpdateError(f"pip could not upgrade the package: {out.strip()[:200]}")
-        result["action"] = "installed the newest package with pip"
-        return result
-
-    result["action"] = update_binary(dest, info["tag"], info["asset_urls"])
+    steps = [reinstall_release(info["tag"])]
+    dest = installed_binary(home_path)
+    if dest is not None:
+        steps.append(update_binary(dest, info["tag"], info["asset_urls"]))
+    result["action"] = f"package install updated to {info['tag']}"
+    result["steps"] = steps
+    result["restart_required"] = True
     return result

@@ -189,6 +189,10 @@ class Panel:
         self.failed: dict[str, int] = {}
         self.locked: dict[str, float] = {}
         self.lockouts = 0
+        #: one privileged update at a time; the timer lets the HTTP response
+        #: reach the browser before systemd restarts this very process.
+        self._update_running = False
+        self._restart_timer = None
 
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -208,6 +212,9 @@ class Panel:
         log.info("panel on http://%s:%d (login: %s)", self.host, self.port, self.user)
 
     async def stop(self) -> None:
+        if self._restart_timer is not None:
+            self._restart_timer.cancel()
+            self._restart_timer = None
         if self._server is not None:
             self._server.close()
             try:
@@ -338,6 +345,8 @@ class Panel:
             return self.wizard(req.json())
         if req.method == "GET" and path == "/api/update":
             return await self.update_check()
+        if req.method == "POST" and path == "/api/update":
+            return await self.update_install()
         if req.method == "POST" and path == "/api/config":
             return await self.update_config(req.json())
         if req.method == "POST" and path == "/api/mappings":
@@ -625,6 +634,51 @@ class Panel:
         return json_response({"ok": True, "update_available": bool(info.get("available")),
                               "version": info.get("current"), "latest": info.get("latest"),
                               "tag": info.get("tag"), "notes_url": info.get("notes_url")})
+
+    async def update_install(self) -> bytes:
+        """Install the newest release, then restart only after answering.
+
+        The blocking git/pip/download work runs outside the event loop, so an
+        update cannot freeze health checks or other panel requests.  A second
+        click while one update is running is rejected rather than racing two
+        pip/git processes against the same installation.
+        """
+        from . import update as updater
+
+        if self._update_running:
+            return json_response(
+                {"ok": False, "error": "an update is already running"}, 409)
+        self._update_running = True
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: updater.update(self.home.path, verbose=False))
+        except Exception as exc:
+            return json_response({"ok": False, "error": str(exc)}, 502)
+        finally:
+            self._update_running = False
+
+        changed = bool(result.get("restart_required"))
+        restarting = changed and self.on_action is not None
+        if restarting:
+            self._restart_timer = loop.call_later(1.0, self._restart_after_update)
+        return json_response({
+            "ok": True,
+            "update_available": bool(result.get("available")),
+            "version": result.get("current"), "latest": result.get("latest"),
+            "tag": result.get("tag"), "notes_url": result.get("notes_url"),
+            "action": result.get("action"), "steps": result.get("steps") or [],
+            "restart_required": changed, "restarting": restarting,
+        })
+
+    def _restart_after_update(self) -> None:
+        self._restart_timer = None
+        if self.on_action is None:
+            return
+        try:
+            self.on_action("restart")
+        except Exception as exc:                              # pragma: no cover
+            log.error("could not restart after the update: %s", exc)
 
     # ---------------------------------------------------------- status/data
     def load_config(self):

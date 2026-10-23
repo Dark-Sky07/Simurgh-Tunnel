@@ -16,6 +16,17 @@ simurgh logs -f          # live log (/etc/simurgh/logs/*.log)
 
 * Open the port: `ufw allow 8787` (or `firewall-cmd --add-port=8787/tcp`).
 * Check the service: `systemctl status simurgh-relay` / `simurgh status`.
+* Before v3.2.2, `simurgh-relay: ok` only meant that systemd accepted the
+  restart; it did not prove that the process stayed alive or bound port 8787.
+  Current installers and `simurgh update --restart` require a real loopback
+  `/healthz` response and refuse to print the success summary without one. On
+  an older install, collect the actual startup error with:
+  ```bash
+  sudo systemctl status simurgh-relay --no-pager -l
+  sudo journalctl -u simurgh-relay -n 60 --no-pager
+  sudo tail -n 60 /etc/simurgh/logs/relay.log
+  sudo ss -lntp | grep -E '(:8787|simurgh)' || true
+  ```
 * If the log says `error: unrecognized arguments: --home /etc/simurgh` and the
   unit is in an `auto-restart` loop, it was written by v3.2.0 with the global
   option after the role. v3.2.1 fixes the generator and accepts the legacy
@@ -145,8 +156,10 @@ systemctl stop simurgh-relay    # then start it again
 
 An older `install.sh` aborted there with `CONNECTIONS: unbound variable`, and
 when the script was piped into `bash` it also printed
-`BASH_SOURCE[0]: unbound variable`. Update it and run it again — a second run
-refreshes the configuration in place, nothing has to be removed first:
+`BASH_SOURCE[0]: unbound variable`. Update it and run it again — current
+versions preserve the existing configuration and refresh the program and
+systemd units, so nothing has to be removed first. Only an explicit `--force`
+replaces config, and a timestamped backup is written first:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash

@@ -329,8 +329,11 @@
         </div>
         <div class="card">
           <h2 data-i18n="tools_update">Updates</h2>
-          <div class="row"><button data-act="update-check" data-i18n="btn_check_update">Check for updates</button></div>
-          <div class="hint" data-i18n="update_hint">simurgh update installs it; --check is what this button calls.</div>
+          <div class="row">
+            <button data-act="update-check" data-i18n="btn_check_update">Check for updates</button>
+            <button data-act="update-install" class="primary" data-i18n="btn_install_update">Install update</button>
+          </div>
+          <div class="hint" data-i18n="update_hint">Check GitHub, install the newest release safely, and restart with a health check. Your configuration is preserved.</div>
         </div>
         <div class="card">
           <h2 data-i18n="tools_export">Export</h2>

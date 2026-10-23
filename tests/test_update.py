@@ -157,7 +157,9 @@ def test_update_finds_a_packaged_binary(monkeypatch, tmp_path):
                                  "tag": "v9.9.9", "name": "x", "published": "",
                                  "notes_url": "", "assets": [name],
                                  "asset_urls": urls, "available": True})
-    monkeypatch.setattr(updater, "git_root", lambda path=None: None)
+    monkeypatch.setattr(updater, "source_checkout", lambda: None)
+    monkeypatch.setattr(updater, "reinstall_release",
+                        lambda tag: f"Python release {tag} installed")
 
     home = tmp_path / "home"
     dest = home / "bin" / "simurgh-go"
@@ -168,7 +170,8 @@ def test_update_finds_a_packaged_binary(monkeypatch, tmp_path):
     digest = hashlib.sha256(b"new").hexdigest()
     monkeypatch.setattr(updater, "checksums_for", lambda urls: {name: digest})
     result = updater.update(home, verbose=False)
-    assert "installed" in result["action"]
+    assert result["action"] == "package install updated to v9.9.9"
+    assert result["steps"][0] == "Python release v9.9.9 installed"
     assert dest.read_bytes() == b"new"
 
 
@@ -262,3 +265,107 @@ def test_cli_update_check_stays_offline(capsys, monkeypatch, tmp_path):
     assert args.func(args) == 3
     payload = json.loads(capsys.readouterr().out)
     assert payload["latest"] == "9.9.9" and payload["available"] is True
+
+
+def test_cli_json_update_still_restarts_without_corrupting_json(
+        tmp_path, monkeypatch, capsys):
+    from simurgh import cli
+
+    monkeypatch.setattr(updater, "update", lambda path, force=False: {
+        "current": "1.0.0", "latest": "9.9.9", "tag": "v9.9.9",
+        "available": True, "action": "updated", "restart_required": True,
+    })
+    calls = []
+
+    def restart(home, expected_version=None):
+        calls.append((home.path, expected_version))
+        print("human restart output that must be captured")
+        return 0
+
+    monkeypatch.setattr(cli, "_restart_updated_service", restart)
+    args = cli.build_parser().parse_args([
+        "--home", str(tmp_path), "update", "--restart", "--json",
+    ])
+    assert args.func(args) == 0
+    assert calls == [(tmp_path, "9.9.9")]
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["restart_ok"] is True
+    assert "human restart output" not in output
+
+
+def test_direct_url_recovers_the_installers_source_checkout(tmp_path, monkeypatch):
+    """site-packages is not inside /opt/simurgh-src; pip's direct_url is the
+    reliable link back to the checkout used by install.sh."""
+    root = tmp_path / "simurgh-src"
+    (root / ".git").mkdir(parents=True)
+    (root / "simurgh").mkdir()
+    (root / "simurgh" / "cli.py").write_text("# cli")
+
+    class Distribution:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return json.dumps({"url": root.as_uri()})
+
+    monkeypatch.setattr(updater.importlib.metadata, "distribution",
+                        lambda name: Distribution())
+    assert updater._direct_url_checkout() == root
+
+
+def test_source_update_reinstalls_python_and_the_real_engine(tmp_path, monkeypatch):
+    """The default install has three locations: source, venv and /usr/local.
+    A successful update must address all applicable ones and accept util.Home
+    without crashing on path operations."""
+    from simurgh.util import Home
+
+    root = tmp_path / "source"
+    root.mkdir()
+    home = Home(tmp_path / "etc")
+    engine = home.path / "bin" / "simurgh-go"
+    engine.parent.mkdir(parents=True)
+    engine.write_bytes(b"old")
+    urls = {"simurgh-go-linux-amd64": "https://example.invalid/engine"}
+    monkeypatch.setattr(updater, "check", lambda: {
+        "current": "1.0.0", "latest": "9.9.9", "tag": "v9.9.9",
+        "name": "new", "published": "", "notes_url": "", "assets": [],
+        "asset_urls": urls, "available": True,
+    })
+    monkeypatch.setattr(updater, "source_checkout", lambda: root)
+    monkeypatch.setattr(updater, "update_git",
+                        lambda root, tag, verbose=True: [f"checked out {tag}"])
+    calls = []
+    monkeypatch.setattr(updater, "reinstall_package",
+                        lambda source: calls.append(("python", source)) or "reinstalled")
+    monkeypatch.setattr(updater, "update_binary",
+                        lambda dest, tag, assets:
+                        calls.append(("go", dest, tag, assets)) or "engine updated")
+
+    result = updater.update(home, verbose=False)
+
+    assert result["restart_required"] is True
+    assert result["steps"] == ["checked out v9.9.9", "reinstalled", "engine updated"]
+    assert calls[0] == ("python", root)
+    assert calls[1] == ("go", engine, "v9.9.9", urls)
+
+
+def test_package_reinstall_uses_the_running_venv_first_offline(tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(updater, "_run",
+                        lambda cmd, cwd=None: commands.append((cmd, cwd)) or (0, ""))
+    root = tmp_path / "source"
+    assert "reinstalled" in updater.reinstall_package(root)
+    command, cwd = commands[0]
+    assert command[:3] == [updater.sys.executable, "-m", "pip"]
+    assert "--no-build-isolation" in command
+    assert command[-1] == str(root) and cwd == root
+
+
+def test_non_git_python_update_uses_the_same_release_tag(monkeypatch):
+    commands = []
+    monkeypatch.setattr(updater, "_run",
+                        lambda cmd, cwd=None: commands.append(cmd) or (0, ""))
+    assert "v9.9.9" in updater.reinstall_release("v9.9.9")
+    assert len(commands) == 1
+    assert commands[0][-1] == (
+        "https://github.com/Dark-Sky07/Simurgh-Tunnel/archive/refs/tags/v9.9.9.tar.gz")
+    assert commands[0][:3] == [updater.sys.executable, "-m", "pip"]
