@@ -93,9 +93,9 @@ Open the selected tunnel listener port on the relay instead of the exit. User-fa
 Release assets include `.deb`, `.rpm`, portable `.tar.gz` packages and compiled engines. A `Dockerfile` and `docker-compose.yml` are included as well.
 
 ```bash
-sudo dpkg -i simurgh_3.2.2_amd64.deb
-sudo dnf install ./simurgh-3.2.2-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.2-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.3_amd64.deb
+sudo dnf install ./simurgh-3.2.3-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.3-noarch.tar.gz -C /
 docker compose up -d                   # optional two-node development lab, not server installation
 ```
 

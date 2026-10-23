@@ -23,12 +23,27 @@ const VERSION = META.version || '';
 const THEME_KEY = 'simurgh.theme';
 const VIEW_KEY = 'simurgh.view';
 
-let LANG = localStorage.getItem('simurgh.lang');
+// Site storage can be disabled by browser policy even though the panel itself
+// is reachable.  Preferences are optional; a SecurityError must never abort
+// the entire script before the dashboard has a chance to load.
+const storage = {
+  get(key, fallback = null) {
+    try {
+      const value = localStorage.getItem(key);
+      return value === null ? fallback : value;
+    } catch (err) { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, value); } catch (err) { /* optional */ }
+  },
+};
+
+let LANG = storage.get('simurgh.lang');
 if (LANG !== 'en' && LANG !== 'fa') {
   LANG = (navigator.language || '').toLowerCase().startsWith('fa') ? 'fa' : 'en';
 }
 let data = null;                 // the last /api/layout payload
-let view = localStorage.getItem(VIEW_KEY) || 'dashboard';
+let view = storage.get(VIEW_KEY, 'dashboard');
 const sparks = {};               // per-mapping client-side throughput history
 const speedRuns = [];            // this session's speed tests
 let logsTimer = null, pollTimer = null, busy = 0;
@@ -105,7 +120,7 @@ function applyTheme(theme) {
 }
 function toggleTheme() {
   const next = document.documentElement.getAttribute('data-theme') === 'dawn' ? 'night' : 'dawn';
-  localStorage.setItem(THEME_KEY, next);
+  storage.set(THEME_KEY, next);
   applyTheme(next);
 }
 
@@ -113,7 +128,7 @@ function toggleTheme() {
 function applyLang() {
   document.documentElement.lang = LANG;
   document.documentElement.dir = LANG === 'fa' ? 'rtl' : 'ltr';
-  localStorage.setItem('simurgh.lang', LANG);
+  storage.set('simurgh.lang', LANG);
   document.querySelectorAll('[data-i18n]').forEach((node) => { node.textContent = t(node.dataset.i18n); });
   document.querySelectorAll('[data-i18n-ph]').forEach((node) => { node.placeholder = t(node.dataset.i18nPh); });
   const btn = $('lang-toggle');
@@ -122,8 +137,11 @@ function applyLang() {
 
 /* ------------------------------------------------------------------ views */
 function show(name) {
+  // A stale bookmark or a view saved by an older release must not hide every
+  // section.  Fall back to the dashboard whenever the target does not exist.
+  if (!document.getElementById('view-' + name)) name = 'dashboard';
   view = name;
-  localStorage.setItem(VIEW_KEY, name);
+  storage.set(VIEW_KEY, name);
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === 'view-' + name));
   document.querySelectorAll('.nav button').forEach((b) => b.setAttribute('aria-current', String(b.dataset.view === name)));
   location.hash = name;
@@ -830,7 +848,7 @@ async function load(quiet) {
 
 /* ------------------------------------------------------------------- boot */
 function boot() {
-  applyTheme(localStorage.getItem(THEME_KEY) || 'night');
+  applyTheme(storage.get(THEME_KEY, 'night'));
   applyLang();
   buildNav();
   bindPorts(); bindLogs(); bindSpeed(); bindTune(); bindSecurity(); bindTools(); bindPair();

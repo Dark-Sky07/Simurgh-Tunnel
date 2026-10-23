@@ -96,9 +96,9 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 فایل‌های هر ریلیز شامل `.deb`، `.rpm`، `.tar.gz` قابل‌حمل و موتورهای کامپایل‌شده است. `Dockerfile` و `docker-compose.yml` هم در مخزن هستند.
 
 ```bash
-sudo dpkg -i simurgh_3.2.2_amd64.deb
-sudo dnf install ./simurgh-3.2.2-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.2-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.3_amd64.deb
+sudo dnf install ./simurgh-3.2.3-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.3-noarch.tar.gz -C /
 docker compose up -d                   # آزمایشگاه توسعهٔ دونودی اختیاری، نه نصب سرور
 ```
 

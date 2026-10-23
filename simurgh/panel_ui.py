@@ -36,9 +36,10 @@ ASSET_TYPES = {
     ".svg": "image/svg+xml",
 }
 
-#: nothing external may load, and nothing inline may run: the panel is a page
-#: an operator reaches over a tunnel, so it does not need either
-CSP = ("default-src 'none'; img-src 'self' data:; style-src 'self'; "
+#: nothing external may load and no inline script may run.  Inline *style
+#: attributes* are part of the shipped layout and are allowed explicitly;
+#: blocking them made real browsers report CSP errors and broke the design.
+CSP = ("default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
        "script-src 'self'; connect-src 'self'; font-src 'self'; base-uri 'none'; "
        "form-action 'self'; frame-ancestors 'none'")
 
