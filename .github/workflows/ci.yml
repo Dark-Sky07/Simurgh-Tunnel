@@ -36,7 +36,10 @@ jobs:
           cache: false
 
       - name: Install test tooling
-        run: python -m pip install --quiet pytest "cryptography>=41" ruff
+        # Installer tests run without root and create system-site venvs.  Supply
+        # the same build tools that install.sh installs through the OS package
+        # manager on a real root server; Python 3.12 ensurepip omits setuptools.
+        run: python -m pip install --quiet pytest "cryptography>=41" ruff "setuptools>=59.6" wheel
 
       - name: Lint (undefined names, dead imports)
         run: ruff check simurgh tests --select F,E9
