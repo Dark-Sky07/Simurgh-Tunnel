@@ -526,9 +526,24 @@ it one:
    sudo simurgh cert issue panel.example.com --email me@example.com \
         --webroot /var/www/html          # nginx/caddy already serves it
    sudo simurgh cert issue panel.example.com --standalone   # port 80 is free
+   sudo simurgh cert issue example.com www.example.com api.example.com --standalone
    sudo simurgh cert issue panel.example.com --staging      # dry run, test CA
    sudo simurgh cert issue panel.example.com --port 8443     # this listener only
    ```
+
+   Extra positional domains become subject alternative names on **one** certificate,
+   not separate certificates. Every requested public hostname must have DNS pointing
+   to this server. Standalone HTTP-01 needs public TCP port 80 free and reachable;
+   webroot HTTP-01 needs the selected server to expose
+   `/.well-known/acme-challenge/` from that directory. Wildcards are rejected because
+   this flow uses HTTP-01, not DNS-01.
+
+   The same issuance flow is available in **Certificates** in the web panel. Enter the
+   primary domain and any subdomains, choose standalone or webroot, and press **Obtain
+   certificate**. `acme.sh` or `certbot` must already be installed; an absent client or
+   failed validation is shown as an error and leaves the active config untouched. A
+   successful panel request writes `<config>.bak-cert` before saving; use **Tools →
+   Restart** afterwards.
 
    The certificate is written into `exit.toml` (or the relay's
    `[tunnel]` block with `--role relay`), `cert_auto` is switched off so the

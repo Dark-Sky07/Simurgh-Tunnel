@@ -16,6 +16,7 @@ Endpoints
 ``POST /api/join``        authenticated setup payload for the other server
 ``POST /api/setup-link``  create a link on an exit or reverse relay
 ``POST /api/pair``        import a link on a direct relay or reverse exit
+``POST /api/certificates/issue`` obtain and wire a multi-domain ACME certificate
 ``GET  /logout``          revoke the browser session and return to the form
 ``GET  /healthz``         unauthenticated liveness probe
 """
@@ -200,6 +201,7 @@ class Panel:
         #: one privileged update at a time; the timer lets the HTTP response
         #: reach the browser before systemd restarts this very process.
         self._update_running = False
+        self._cert_issue_running = False
         self._restart_timer = None
 
     # ------------------------------------------------------------ lifecycle
@@ -356,6 +358,8 @@ class Panel:
             return await self.update_check()
         if req.method == "POST" and path == "/api/update":
             return await self.update_install()
+        if req.method == "POST" and path == "/api/certificates/issue":
+            return await self.issue_certificate(req.json())
         if req.method == "POST" and path == "/api/config":
             return await self.update_config(req.json())
         if req.method == "POST" and path == "/api/mappings":
@@ -757,6 +761,68 @@ class Panel:
             return cert_status(cfg, self.role)
         except Exception:                                      # pragma: no cover
             return []
+
+    async def issue_certificate(self, body: dict) -> bytes:
+        """Run ACME off the event loop, then atomically wire the result.
+
+        Only one issuance may run per panel.  The reload command is selected
+        here, never accepted from the browser, and the saved configuration gets
+        the same kind of backup as the other privileged panel operations.
+        """
+        if self._cert_issue_running:
+            return json_response(
+                {"ok": False, "error": "another certificate request is already running"},
+                409)
+        self._cert_issue_running = True
+        try:
+            status, payload, cfg = await asyncio.to_thread(
+                self._issue_certificate_sync, body)
+        finally:
+            self._cert_issue_running = False
+        if cfg is not None and self.node is not None:
+            self.node.cfg = cfg
+        return json_response(payload, status)
+
+    def _issue_certificate_sync(self, body: dict) -> tuple[int, dict, object]:
+        import shutil
+        from . import acme
+
+        cfg = self.load_config()
+        if cfg is None:
+            return 400, {"ok": False, "error": "no readable config"}, None
+        method = str(body.get("method") or "standalone").strip().lower()
+        if method not in ("standalone", "webroot"):
+            return 400, {"ok": False, "error": "method must be standalone or webroot"}, None
+        webroot = str(body.get("webroot") or "").strip() if method == "webroot" else ""
+        if method == "webroot" and not webroot:
+            return 400, {"ok": False, "error": "webroot directory is required"}, None
+        reload_cmd = (f"systemctl restart simurgh-{self.role}"
+                      if shutil.which("systemctl") else "simurgh restart")
+        try:
+            result = acme.issue(
+                str(body.get("domain") or ""),
+                additional_domains=body.get("subdomains") or body.get("additional_domains") or (),
+                email=str(body.get("email") or "").strip(),
+                webroot=webroot, standalone=method == "standalone",
+                staging=bool(body.get("staging")), reload_cmd=reload_cmd)
+        except acme.AcmeError as exc:
+            return 400, {"ok": False, "error": str(exc)}, None
+        try:
+            changed = acme.wire(cfg, self.role, result.cert_file, result.key_file)
+            path = self.home.exit_cfg if self.role == "exit" else self.home.relay_cfg
+            backup_file = backup(path, "cert")
+            if self.role == "exit":
+                save_exit(cfg, path)
+            else:
+                save_relay(cfg, path)
+        except (acme.AcmeError, OSError) as exc:
+            return 500, {"ok": False,
+                         "error": f"certificate was obtained but the config was not saved: {exc}",
+                         "certificate": result.as_dict()}, None
+        return 200, {"ok": True, "certificate": result.as_dict(),
+                     "domains": result.domains, "changed": changed,
+                     "backup": backup_file, "restart_required": True,
+                     "note": "certificate saved; restart the service to use it"}, cfg
 
     def layout_payload(self) -> dict:
         """The map, the cards and the chart in one payload."""

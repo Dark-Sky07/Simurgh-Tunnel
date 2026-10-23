@@ -6,6 +6,7 @@ import asyncio
 import base64
 import pathlib
 import json
+import threading
 import time
 
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from conftest import free_port
 from simurgh.config import (ExitConfig, ExitEndpoint, ListenSpec, Mapping,
                             RelayConfig, load_exit, load_relay, save_exit, save_relay)
-from simurgh import panel_ui
+from simurgh import acme, panel_ui
 from simurgh.panel import Panel
 
 pytestmark = pytest.mark.asyncio
@@ -228,6 +229,118 @@ async def test_assets_are_served_from_the_package(home, tmp_path, relay_cfg):
         assert (await _raw(port, "/assets/../panel.py")).status == 404
     finally:
         await panel.stop()
+
+
+async def test_certificate_issue_accepts_subdomains_and_backs_up_config(
+        home, tmp_path, monkeypatch):
+    cfg = ExitConfig(token="tok", name="de", cert_auto=True,
+                     listen=[ListenSpec(carrier="tls", port=443)])
+    save_exit(cfg, home.exit_cfg)
+    before = home.exit_cfg.read_text()
+    cert_dir = tmp_path / "acme-store"
+    cert_dir.mkdir()
+    cert_file, key_file = cert_dir / "fullchain.cer", cert_dir / "example.com.key"
+    cert_file.write_text("certificate")
+    key_file.write_text("key")
+    called = {}
+
+    def fake_issue(domain, **kwargs):
+        called["domain"] = domain
+        called.update(kwargs)
+        return acme.Result(
+            client="acme.sh", domains=[domain, "www.example.com", "api.example.com"],
+            cert_file=str(cert_file), key_file=str(key_file), steps=["issued all names"])
+
+    monkeypatch.setattr(acme, "issue", fake_issue)
+    panel, port = await _panel(home, tmp_path, role="exit")
+    body = {"domain": "example.com", "subdomains": "www.example.com, api.example.com",
+            "email": "admin@example.com", "method": "standalone"}
+    try:
+        status, _ = await _request(port, "/api/certificates/issue", method="POST", body=body)
+        assert status == 401 and not called
+        status, data = await _request(port, "/api/certificates/issue", method="POST",
+                                      body=body, auth=f"{USER}:{PASSWORD}")
+        assert status == 200, data
+        assert data["ok"] is True and data["restart_required"] is True
+        assert data["domains"] == ["example.com", "www.example.com", "api.example.com"]
+        assert data["certificate"]["cert_file"] == str(cert_file)
+        assert called["additional_domains"] == body["subdomains"]
+        assert called["standalone"] is True and called["webroot"] == ""
+        assert called["email"] == "admin@example.com"
+        assert called["reload_cmd"].endswith("simurgh-exit") or called["reload_cmd"] == "simurgh restart"
+        saved = load_exit(home.exit_cfg)
+        assert saved.cert_file == str(cert_file) and saved.key_file == str(key_file)
+        assert saved.cert_auto is False
+        assert saved.token == "tok" and saved.name == "de"
+        backup = pathlib.Path(data["backup"])
+        assert backup.name.endswith(".bak-cert") and backup.read_text() == before
+        assert panel._cert_issue_running is False
+    finally:
+        await panel.stop()
+
+
+async def test_certificate_issue_failure_does_not_rewrite_config(home, tmp_path, monkeypatch):
+    cfg = ExitConfig(token="tok", cert_auto=True,
+                     listen=[ListenSpec(carrier="tls", port=443)])
+    save_exit(cfg, home.exit_cfg)
+    before = home.exit_cfg.read_bytes()
+
+    def fail_issue(domain, **kwargs):
+        raise acme.AcmeError("port 80 is not reachable")
+
+    monkeypatch.setattr(acme, "issue", fail_issue)
+    panel, port = await _panel(home, tmp_path, role="exit")
+    try:
+        status, data = await _request(
+            port, "/api/certificates/issue", method="POST", auth=f"{USER}:{PASSWORD}",
+            body={"domain": "example.com", "method": "standalone"})
+        assert status == 400 and "port 80" in data["error"]
+        assert home.exit_cfg.read_bytes() == before
+        assert panel._cert_issue_running is False
+        # A webroot request without its directory is rejected before ACME runs.
+        status, data = await _request(
+            port, "/api/certificates/issue", method="POST", auth=f"{USER}:{PASSWORD}",
+            body={"domain": "example.com", "method": "webroot", "webroot": ""})
+        assert status == 400 and "webroot" in data["error"]
+    finally:
+        await panel.stop()
+
+
+async def test_certificate_issue_rejects_a_concurrent_request(home, tmp_path, monkeypatch):
+    save_exit(ExitConfig(token="tok", cert_auto=True,
+                         listen=[ListenSpec(carrier="tls", port=443)]), home.exit_cfg)
+    cert_file, key_file = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert_file.write_text("certificate")
+    key_file.write_text("key")
+    started, release = threading.Event(), threading.Event()
+
+    def slow_issue(domain, **kwargs):
+        started.set()
+        release.wait(2)
+        return acme.Result(client="acme.sh", domains=[domain], cert_file=str(cert_file),
+                           key_file=str(key_file))
+
+    monkeypatch.setattr(acme, "issue", slow_issue)
+    panel, port = await _panel(home, tmp_path, role="exit")
+    body = {"domain": "example.com", "method": "standalone"}
+    first = asyncio.create_task(_request(port, "/api/certificates/issue", method="POST",
+                                         body=body, auth=f"{USER}:{PASSWORD}"))
+    try:
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set()
+        second_status, second = await _request(
+            port, "/api/certificates/issue", method="POST", body=body,
+            auth=f"{USER}:{PASSWORD}")
+    finally:
+        release.set()
+    first_status, first = await first
+    await panel.stop()
+    assert second_status == 409 and "already running" in second["error"]
+    assert first_status == 200 and first["ok"] is True
+    assert panel._cert_issue_running is False
 
 
 async def test_mapping_lifecycle_is_saved_and_applied(home, tmp_path, relay_cfg):

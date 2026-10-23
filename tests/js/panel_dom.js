@@ -107,7 +107,7 @@ function makeNode(tag, id) {
 ids.forEach((id) => nodes.set(id, makeNode('div', id)));
 if (nodes.has('panel-meta')) {
   nodes.get('panel-meta').textContent = JSON.stringify({
-    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.7',
+    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.8',
   });
 }
 if (nodes.has('log-filter')) nodes.get('log-filter').value = '';
@@ -137,6 +137,19 @@ const ANSWERS = [
   [/^\/api\/config/, () => CONFIG],
   [/^\/api\/logs/, () => LOGS],
   [/^\/api\/action/, () => ({ ok: true, speedtest: SPEEDTEST, action: 'speedtest' })],
+  [/^\/api\/certificates\/issue/, (init) => {
+    const request = JSON.parse(init.body);
+    if (request.domain === 'fail.example.com') {
+      return { ok: false, error: 'port 80 is not reachable; open it or choose webroot' };
+    }
+    return {
+      ok: true, domains: ['example.com', 'www.example.com', 'api.example.com'],
+      certificate: { client: 'acme.sh', domains: ['example.com', 'www.example.com', 'api.example.com'],
+                     cert_file: '/acme/example.com/fullchain.cer', key_file: '/acme/example.com/example.com.key',
+                     steps: ['acme.sh --issue -> exit 0'] },
+      backup: '/etc/simurgh/exit.toml.bak-cert', restart_required: true,
+    };
+  }],
   [/^\/api\/mappings/, () => ({ ok: true, mappings: payload.mappings })],
   [/^\/api\/setup-link/, () => ({ ok: true, target: role === 'exit' ? 'relay' : 'exit',
                                   url: 'simurgh://203.0.113.9:8787/setup?u=admin&p=c2VjcmV0' })],
@@ -387,6 +400,44 @@ try {
     if (typeof node.onclick === 'function') {
       node.onclick();
       await new Promise((r) => setTimeout(r, 40));
+    }
+  }
+
+  // Certificate issuance sends the primary name, all SANs and the selected
+  // HTTP-01 method from the same tab, then renders the real client result.
+  const certMethod = nodes.get('cert-method');
+  const certRootField = nodes.get('cert-webroot-field');
+  if (certMethod && typeof certMethod.onchange === 'function') {
+    certMethod.value = 'webroot'; certMethod.onchange();
+    if (certRootField.hidden) problems.push('webroot selection did not reveal its directory');
+    certMethod.value = 'standalone'; certMethod.onchange();
+    if (!certRootField.hidden) problems.push('standalone selection left webroot visible');
+  }
+  nodes.get('cert-domain').value = 'example.com';
+  nodes.get('cert-subdomains').value = 'www.example.com, api.example.com';
+  nodes.get('cert-email').value = 'admin@example.com';
+  const issueCert = nodes.get('issue-cert');
+  if (!issueCert || typeof issueCert.onclick !== 'function') problems.push('certificate issue button is not wired');
+  else {
+    nodes.get('cert-domain').value = 'fail.example.com';
+    issueCert.onclick();
+    await new Promise((r) => setTimeout(r, 100));
+    if (!(nodes.get('cert-issue-output').textContent || '').includes('port 80')) {
+      problems.push('certificate API failure was not shown to the operator');
+    }
+    if (issueCert.disabled || issueCert.textContent === 'cert_issuing') {
+      problems.push('certificate button stayed pending after a failure');
+    }
+    nodes.get('cert-domain').value = 'example.com';
+    issueCert.onclick();
+    await new Promise((r) => setTimeout(r, 100));
+    if (!seen.includes('/api/certificates/issue')) problems.push('certificate form never called its API');
+    const sent = bodies.find((body) => body.domain === 'example.com');
+    if (!sent || sent.subdomains !== 'www.example.com, api.example.com' || sent.method !== 'standalone') {
+      problems.push('certificate form did not send the domain/SAN/method fields');
+    }
+    if (!(nodes.get('cert-issue-output').textContent || '').includes('fullchain.cer')) {
+      problems.push('certificate result was not rendered');
     }
   }
 

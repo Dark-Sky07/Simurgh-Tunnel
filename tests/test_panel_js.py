@@ -115,7 +115,8 @@ def test_the_page_draws_and_every_button_works(tmp_path, role):
         assert element in drew, (element, drew)
     called = proc.stdout.split("called:", 1)[1].splitlines()[0]
     for path in ("/api/layout", "/api/config", "/api/tune", "/api/wizard",
-                 "/api/login-token", "/api/update", "/api/logs"):
+                 "/api/login-token", "/api/update", "/api/logs",
+                 "/api/certificates/issue"):
         assert path in called, (path, called)
     if role == "relay":                       # an exit has listeners, not ports
         assert "/api/mappings" in called, called

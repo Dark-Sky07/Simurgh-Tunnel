@@ -240,6 +240,23 @@
 
     <!-- ----------------------------------------------------------- certs -->
     <section class="view" id="view-certs">
+      <div class="card" style="margin-bottom:14px">
+        <h2 data-i18n="cert_issue_title">Obtain a trusted certificate</h2>
+        <div class="hint" data-i18n="cert_issue_hint">Use an installed acme.sh or certbot. Every DNS name must point to this server; standalone needs inbound TCP port 80 free and reachable, while webroot must serve /.well-known/acme-challenge/ from the entered directory.</div>
+        <div class="cols2" style="margin-top:12px">
+          <div class="field"><label for="cert-domain" data-i18n="cert_domain">Primary domain</label><input id="cert-domain" dir="ltr" autocomplete="off" spellcheck="false" placeholder="panel.example.com" data-i18n-ph="cert_domain_ph"></div>
+          <div class="field"><label for="cert-email" data-i18n="cert_email">ACME email (optional)</label><input id="cert-email" dir="ltr" type="email" autocomplete="off" spellcheck="false" placeholder="admin@example.com"></div>
+        </div>
+        <div class="field"><label for="cert-subdomains" data-i18n="cert_subdomains">Subdomains / additional names</label><textarea id="cert-subdomains" dir="ltr" rows="3" spellcheck="false" placeholder="www.example.com, api.example.com" data-i18n-ph="cert_subdomains_ph"></textarea></div>
+        <div class="hint" data-i18n="cert_subdomains_hint">Separate names with commas or new lines. They share one certificate; wildcard names require DNS-01 and are not accepted here.</div>
+        <div class="cols2" style="margin-top:8px">
+          <div class="field"><label for="cert-method" data-i18n="cert_method">Ownership check</label><select id="cert-method"><option value="standalone" data-i18n="cert_method_standalone">Standalone — client temporarily uses port 80</option><option value="webroot" data-i18n="cert_method_webroot">Webroot — existing web server</option></select></div>
+          <div class="field" id="cert-webroot-field" hidden><label for="cert-webroot" data-i18n="cert_webroot">Webroot directory</label><input id="cert-webroot" dir="ltr" value="/var/www/html" placeholder="/var/www/html"></div>
+        </div>
+        <div class="row" style="margin-top:14px"><button class="primary" id="issue-cert" data-i18n="cert_issue_button">Obtain and install certificate</button></div>
+        <div class="hint" id="cert-issue-status" role="status" aria-live="polite"></div>
+        <pre class="logs" id="cert-issue-output" hidden style="margin-top:12px"></pre>
+      </div>
       <div class="card table-card">
         <h2 data-i18n="certs_title">Certificates in use</h2>
         <table>
