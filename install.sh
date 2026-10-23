@@ -403,6 +403,18 @@ case ":$PATH:" in
 warn "$BIN_DIR is not in your PATH; use $BIN_DIR/simurgh or add it to PATH." ;;
 esac
 INSTALLED_VERSION="$("$VENV_DIR/bin/python" -c 'import simurgh; print(simurgh.__version__)')"
+# A source checkout can make a broken wheel look healthy in development.  Check
+# the actual installed package in isolated mode before printing a success
+# banner: /healthz alone does not prove that the dashboard files exist.
+"$VENV_DIR/bin/python" -I -c '
+from simurgh import panel_ui
+required = ("index.html", "app.css", "app.js", "login.js",
+            "manifest.webmanifest", "favicon.png", "simurgh.png")
+missing = [name for name in required if panel_ui.read_asset(name) is None]
+if missing:
+    raise SystemExit("panel assets missing from installed package: " + ", ".join(missing))
+panel_ui.dashboard_html("relay", "test", "Simurgh Tunnel")
+' || die "the installed package is incomplete (panel assets); installation stopped."
 ok "the simurgh command is installed: $(command -v simurgh) (v$INSTALLED_VERSION)"
 
 # ------------------------------------------------------------- go engine

@@ -65,6 +65,36 @@ def _non_git_source(tmp_path: Path) -> Path:
     return source
 
 
+def _assert_installed_panel_assets(tmp_path: Path, env: dict) -> None:
+    """Inspect the installed wheel, not the source tree next to the tests.
+
+    Running ``python -c`` from the repository would import the checkout and
+    hide a missing package-data rule.  The temporary cwd and explicit venv-root
+    assertion keep this regression tied to the artifact users actually run.
+    """
+    code = r"""
+import sys
+from pathlib import Path
+from simurgh import panel_ui
+root = Path(sys.argv[1]).resolve()
+assert root in panel_ui.ASSETS_DIR.resolve().parents, panel_ui.ASSETS_DIR
+names = ("index.html", "app.css", "app.js", "login.js",
+         "manifest.webmanifest", "favicon.png", "simurgh.png")
+missing = [name for name in names if panel_ui.read_asset(name) is None]
+assert not missing, f"panel assets missing from installed package: {missing}"
+html = panel_ui.dashboard_html("relay", "test", "Simurgh Tunnel")
+assert "<!DOCTYPE html>" in html and "__META__" not in html
+print("installed panel assets OK")
+"""
+    proc = subprocess.run(
+        [str(tmp_path / "venv" / "bin" / "python"), "-c", code,
+         str(tmp_path / "venv")],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "installed panel assets OK" in proc.stdout
+
+
 def test_install_script_has_no_syntax_errors():
     subprocess.run(["bash", "-n", str(INSTALL)], check=True, timeout=60)
 
@@ -87,13 +117,16 @@ def test_install_from_a_file_forwards_every_option(tmp_path):
     """``sudo bash install.sh --role exit …`` with no --connections flag.
 
     ``--connections`` used to be read without ever being set, which aborted the
-    install right before the config was written.
+    install right before the config was written.  The final probe also requires
+    every panel asset inside the installed venv: running the tests only from a
+    source checkout previously hid their omission from the Python wheel.
     """
+    env = _env(tmp_path)
     proc = subprocess.run(
         ["bash", str(INSTALL), "--yes", "--no-go", "--role", "exit",
          "--name", "omega-de", "--token", "test-token",
          "--listen", "8443,9443", "--panel-port", "9999"],
-        env=_env(tmp_path), capture_output=True, text=True, timeout=TIMEOUT,
+        env=env, capture_output=True, text=True, timeout=TIMEOUT,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "unbound variable" not in (proc.stdout + proc.stderr)
@@ -102,6 +135,7 @@ def test_install_from_a_file_forwards_every_option(tmp_path):
     assert "omega-de" in cfg
     for port in ("8443", "9443"):
         assert port in cfg, f"--listen {port} was dropped"
+    _assert_installed_panel_assets(tmp_path, env)
 
 
 def test_install_when_the_script_is_piped_into_bash(tmp_path):

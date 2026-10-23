@@ -66,6 +66,36 @@ The update preserves `/etc/simurgh`, pairing, mappings and panel credentials;
 do not delete the configuration to clear this browser-side failure. Actual wrong
 Basic passwords and form submissions are still rate-limited.
 
+### `/healthz` is healthy but the dashboard is blank on v3.2.4 or earlier
+
+The default pip/venv installation could omit every file in `simurgh/assets/`
+because they were not declared as setuptools package data. `/healthz` and the
+login shell could still answer while `/app.css`, `/app.js`, the manifest and the
+icons returned 404; rendering the authenticated dashboard could disconnect the
+request. Running from a source checkout did not show this packaging defect.
+
+**Upgrade to v3.2.5**. It ships all seven panel assets in the installed package
+and makes the installer load and render them in isolated Python mode before it
+can report success. The normal non-destructive update preserves the existing
+configuration and credentials:
+
+```bash
+sudo simurgh update --restart
+```
+
+If the installed updater itself cannot discover the release, use the installer
+bridge in the next section without `--force`. After upgrading, check the actual
+panel files rather than relying only on `/healthz`:
+
+```bash
+curl -fsS http://127.0.0.1:8787/app.css >/dev/null
+curl -fsS http://127.0.0.1:8787/app.js >/dev/null
+```
+
+Those asset routes are public by design; the dashboard and its APIs remain
+authenticated. If the files answer locally but the remote browser still fails,
+continue with the service, listener, firewall and SSH-tunnel checks above.
+
 ## Update stops at `GitHub answered 403`
 
 v3.2.3 and earlier discover releases only through `api.github.com`. A shared
@@ -78,7 +108,7 @@ official direct URLs for the engine and `SHA256SUMS.txt`. Binary installation
 still requires a matching checksum; the fallback does not weaken verification.
 
 For **this one upgrade from v3.2.3**, the old updater cannot load its own fix.
-Run the same universal installer once to bridge to v3.2.4:
+Run the same universal installer once to bridge to v3.2.5:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash

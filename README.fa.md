@@ -96,9 +96,9 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 فایل‌های هر ریلیز شامل `.deb`، `.rpm`، `.tar.gz` قابل‌حمل و موتورهای کامپایل‌شده است. `Dockerfile` و `docker-compose.yml` هم در مخزن هستند.
 
 ```bash
-sudo dpkg -i simurgh_3.2.4_amd64.deb
-sudo dnf install ./simurgh-3.2.4-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.4-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.5_amd64.deb
+sudo dnf install ./simurgh-3.2.5-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.5-noarch.tar.gz -C /
 docker compose up -d                   # آزمایشگاه توسعهٔ دونودی اختیاری، نه نصب سرور
 ```
 
@@ -146,7 +146,7 @@ simurgh update --check             # فقط بررسی، بدون تغییر ن�
 simurgh update --restart           # نصب، ری‌استارت و بررسی /healthz
 ```
 
-برای ارتقای تعاملی، در پنل از **Tools ← Install update** یا در `simurgh menu` از گزینهٔ **17** استفاده کنید. ارتقا پکیج Python و موتور Go دارای checksum را نصب می‌کند و pairing، مپینگ‌ها، رمزها و سایر تنظیمات را بازنویسی نمی‌کند. اگر API گیت‌هاب rate-limit شود، کشف ریلیز به ریدایرکت اعتبارسنجی‌شدهٔ `/releases/latest` برمی‌گردد و بررسی checksum همچنان اجباری است. اجرای دوبارهٔ نصاب واحد نیز کانفیگ موجود را حفظ می‌کند؛ فقط `--force` صریح آن را با بکاپ جایگزین می‌کند.
+برای ارتقای تعاملی، در پنل از **Tools ← Install update** یا در `simurgh menu` از گزینهٔ **17** استفاده کنید. ارتقا پکیج Python و موتور Go دارای checksum را نصب می‌کند و pairing، مپینگ‌ها، رمزها و سایر تنظیمات را بازنویسی نمی‌کند. اگر API گیت‌هاب rate-limit شود، کشف ریلیز به ریدایرکت اعتبارسنجی‌شدهٔ `/releases/latest` برمی‌گردد و بررسی checksum همچنان اجباری است. اجرای دوبارهٔ نصاب واحد نیز کانفیگ موجود را حفظ می‌کند؛ فقط `--force` صریح آن را با بکاپ جایگزین می‌کند. نصاب همچنین assetهای پنل را در پکیج نصب‌شده بررسی می‌کند، نه فقط در source یا از طریق `/healthz`.
 
 برای گزینه‌های هر فرمان: `simurgh <command> --help`.
 
