@@ -438,7 +438,7 @@ def panel_info(home: Home, role: str) -> None:
     print(c("═" * 62, "cyan"))
     print(c("  Web panel", "bold"))
     print(c("═" * 62, "cyan"))
-    print(f"  url:  {c('http://%s:%d' % (ip, port), 'cyan')}")
+    print(f"  url:  {c('http://%s:%d/login' % (ip, port), 'cyan')}")
     print(f"  user: {auth.get('user', 'admin')}")
     print(f"  pass: {auth.get('password', '—')}")
     print()

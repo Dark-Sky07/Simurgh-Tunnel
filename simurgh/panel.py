@@ -219,7 +219,7 @@ class Panel:
                 if len(name) > 1 and name[1]:
                     self.port = name[1]
                     break
-        log.info("panel on http://%s:%d (login: %s)", self.host, self.port, self.user)
+        log.info("panel on http://%s:%d/login (login: %s)", self.host, self.port, self.user)
 
     async def stop(self) -> None:
         if self._restart_timer is not None:

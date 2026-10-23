@@ -56,3 +56,18 @@ def test_menu_installs_updates_and_offers_a_health_checked_restart(
 
     assert calls == [("update", tmp_path, False), ("restart", tmp_path, "9.0.0")]
     assert "17" in menu.MENU_COMMON
+
+
+def test_panel_info_links_directly_to_the_login_form(tmp_path, monkeypatch, capsys):
+    from simurgh.config import RelayConfig, save_relay
+
+    home = Home(tmp_path).ensure()
+    save_relay(RelayConfig(panel_port=8787), home.relay_cfg)
+    monkeypatch.setattr(menu, "_guess_ip", lambda: "203.0.113.10")
+    monkeypatch.setattr(menu, "clear", lambda: None)
+    monkeypatch.setattr(menu, "pause", lambda: None)
+
+    menu.panel_info(home, "relay")
+
+    output = capsys.readouterr().out
+    assert "http://203.0.113.10:8787/login" in output

@@ -527,7 +527,7 @@ def cmd_install(args) -> int:
             return 1
         _ok(f"web panel health check: {detail}")
     print()
-    _info(f"web panel: http://{_public_ip()}:{_panel_port_of(home, roles)}")
+    _info(f"web panel: http://{_public_ip()}:{_panel_port_of(home, roles)}/login")
     _info("text menu: simurgh menu")
     _info("status: simurgh status")
     if not report.get("systemd"):

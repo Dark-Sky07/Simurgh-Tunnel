@@ -93,14 +93,16 @@ def _install_later(tmp_path, *extra):
     return args
 
 
-def test_install_pair_later_writes_an_unpaired_config(tmp_path):
+def test_install_pair_later_writes_an_unpaired_config(tmp_path, monkeypatch, capsys):
     """The Iranian server can be installed before the foreign one exists."""
+    monkeypatch.setattr(cli, "_public_ip", lambda: "203.0.113.10")
     assert cli.cmd_install(_install_later(tmp_path)) == 0
 
     cfg = load_relay(tmp_path / "relay.toml")
     assert cfg.unpaired is True and cfg.paired is False
     assert cfg.token == "" and cfg.exit.address == ""
     assert cfg.panel_port == 8787          # still a normal, reachable panel
+    assert "web panel: http://203.0.113.10:8787/login" in capsys.readouterr().out
 
 
 def test_concise_exit_option_matches_the_documented_install_example(tmp_path):
