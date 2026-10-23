@@ -179,7 +179,10 @@ async def test_dashboard_is_a_page(home, tmp_path, relay_cfg):
         assert "/api/layout" in panel_ui.read_asset("app.js")[0].decode()
         raw = await _raw(port, "/", auth=f"{USER}:{PASSWORD}")
         assert "content-security-policy" in raw.headers
-        assert "default-src 'none'" in raw.headers["content-security-policy"]
+        csp = raw.headers["content-security-policy"]
+        assert "default-src 'none'" in csp
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        assert "script-src 'self';" in csp  # inline scripts remain forbidden
         assert "x-frame-options" in raw.headers
     finally:
         await panel.stop()
@@ -570,6 +573,25 @@ async def test_metrics_from_a_go_engine_state_file(home, tmp_path):
 
 
 # ------------------------------------------------- brute force protection
+async def test_anonymous_page_views_are_not_bad_passwords(home, tmp_path, relay_cfg):
+    """The first 401 is a login challenge, not a failed login attempt.
+
+    Browsers can make that challenge several times before the user submits a
+    password.  Counting those visits used to lock the operator out after five
+    ordinary page loads, and then even the correct password received 429.
+    """
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(relay_cfg))
+    try:
+        for _ in range(Panel.MAX_FAILURES + 2):
+            status, _ = await _request(port, "/")
+            assert status == 401
+        assert panel.failed == {} and panel.lockouts == 0
+        status, body = await _request(port, "/", auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and b"Simurgh" in body
+    finally:
+        await panel.stop()
+
+
 class RecordingAlerts:
     """Stands in for ``node.alerts`` and remembers what was announced."""
 

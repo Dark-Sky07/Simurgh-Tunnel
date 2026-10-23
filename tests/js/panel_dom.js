@@ -107,7 +107,7 @@ function makeNode(tag, id) {
 ids.forEach((id) => nodes.set(id, makeNode('div', id)));
 if (nodes.has('panel-meta')) {
   nodes.get('panel-meta').textContent = JSON.stringify({
-    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.2',
+    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.3',
   });
 }
 if (nodes.has('log-filter')) nodes.get('log-filter').value = '';
@@ -187,8 +187,16 @@ const document = {
         return node;
       });
     } else if (sel.startsWith('.')) {
-      out = [...html.matchAll(new RegExp('class="([^"]*' + sel.slice(1) + '[^"]*)"', 'g'))]
-        .map(() => makeNode('div'));
+      // Preserve the real element's id as well as its class.  View switching
+      // compares section ids; anonymous class-only stubs made every section
+      // look inactive even when the application had selected the dashboard.
+      const className = sel.slice(1);
+      const tags = new RegExp('<([a-z][a-z0-9-]*)\\b(?=[^>]*class="[^"]*\\b'
+        + className + '\\b[^"]*")[^>]*>', 'g');
+      out = [...html.matchAll(tags)].map((match) => {
+        const id = (match[0].match(/\bid="([^"]+)"/) || [])[1] || '';
+        return (id && nodes.get(id)) || makeNode(match[1], id);
+      });
     }
     this._collections.set(sel, out);
     return out;
@@ -210,6 +218,13 @@ const localStorage = {
   setItem(key, value) { this.store[key] = String(value); },
   removeItem(key) { delete this.store[key]; },
 };
+if (process.env.PANEL_TEST_STORAGE === 'blocked') {
+  localStorage.getItem = () => { throw new Error('SecurityError: storage disabled'); };
+  localStorage.setItem = () => { throw new Error('SecurityError: storage disabled'); };
+}
+if (process.env.PANEL_TEST_VIEW === 'removed-view') {
+  localStorage.store['simurgh.view'] = 'removed-view';
+}
 
 const location = { href: 'http://localhost/', hash: '', protocol: 'http:', host: 'localhost',
                    reload() { this.reloaded = true; } };
@@ -260,6 +275,11 @@ try {
   await new Promise((r) => setTimeout(r, 120));
   const afterBoot = drawn();
   if (!afterBoot.length) throw new Error('the page drew nothing after boot');
+  const activeViews = document.querySelectorAll('.view')
+    .filter((node) => node.classList.contains('on'));
+  if (activeViews.length !== 1) {
+    problems.push(`a stale saved view did not fall back to one visible dashboard (active=${activeViews.length}, view=${vm.runInContext('view', sandbox)})`);
+  }
 
   // Every row that is actually attached to either Ports table must own live
   // buttons. Testing only document.created used to miss handlers lost by

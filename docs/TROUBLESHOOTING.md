@@ -44,6 +44,28 @@ simurgh logs -f          # live log (/etc/simurgh/logs/*.log)
   `http://<server>:8787/?k=<panel-password>` form still works, but immediately
   redirects to `/` so the password does not remain in the address bar.
 
+### Blank dashboard or unexpected `429` on v3.2.2
+
+v3.2.2 could count an anonymous HTTP Basic challenge as a wrong password. Five
+ordinary visits or refreshes could therefore block the browser for 300 seconds,
+and the next request received `429 too many failed logins` even with the correct
+password. The same release could also leave every view hidden when an old
+`localStorage` value named a removed view, abort dashboard startup when browser
+storage was disabled, and block the shipped inline style attributes through CSP.
+
+**Upgrade to v3.2.3**. It counts only explicit bad credentials as failed logins,
+falls back to the dashboard for an unknown saved view, treats browser storage as
+optional, and permits the shipped styles without permitting inline scripts. From
+the authenticated panel use **Tools → Updates → Install update**, or run:
+
+```bash
+sudo simurgh update --restart
+```
+
+The update preserves `/etc/simurgh`, pairing, mappings and panel credentials;
+do not delete the configuration to clear this browser-side failure. Actual wrong
+Basic passwords and form submissions are still rate-limited.
+
 ## The tunnel never comes up (direct mode)
 
 0. Is the relay paired at all? `simurgh status` (and the panel) say

@@ -308,7 +308,13 @@ class Panel:
                 {"ok": False, "error": "too many failed logins; try again later"},
                 429)
         if not self._authorised(req):
-            self._register_failure(peer_ip, req)
+            # A browser's first visit normally has no credentials at all: the
+            # 401 is an invitation to log in, not a wrong password.  Count only
+            # an explicit credential attempt, otherwise five ordinary refreshes
+            # lock the operator out even though the password was never wrong.
+            basic = req.headers.get("authorization", "")
+            if basic.lower().startswith("basic ") or req.query.get("k"):
+                self._register_failure(peer_ip, req)
             return http_response(
                 b"<html><body><h3>Simurgh Tunnel</h3><p>Login required.</p></body></html>",
                 401, extra={"WWW-Authenticate": 'Basic realm="simurgh"'})

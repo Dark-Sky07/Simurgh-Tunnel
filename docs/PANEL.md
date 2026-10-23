@@ -138,6 +138,9 @@ options that do not have a dedicated control.
 
 * `night` is the default; `dawn` is the light theme. The choice is per browser
   (`localStorage`), as is the language.
+* Storage is only a preference cache: if browser policy blocks it, the panel
+  uses its defaults and keeps working. An unknown saved view falls back to the
+  dashboard instead of hiding every section.
 * English and Persian ship together (`simurgh/panel_i18n.py`), `dir` flips to
   `rtl` for Persian, and a test fails if the two tables drift apart.
 * Under 720 px the sidebar becomes a bottom bar, the map stacks the wings above
@@ -149,11 +152,11 @@ options that do not have a dedicated control.
 
 | Rule | Why |
 |---|---|
-| strict CSP (`default-src 'none'`), no inline script or style | a page that pulls nothing in cannot be made to pull something in |
+| strict CSP (`default-src 'none'`), no inline script or external style; the panel's inline style attributes are allowed | no third-party code or styling, without breaking the shipped layout |
 | assets served from the package by name | `read_asset` refuses anything with a path in it; no traversal is possible |
 | `Cache-Control: no-store` on every API answer and on the code | a browser never shows a stale number or a stale page |
 | `X-Frame-Options: DENY` | the panel cannot be framed by a phishing page |
-| five failed logins from one address → 300 s lockout (`429`) | brute force, on the panel and on `/metrics` |
+| five explicit failed logins from one address → 300 s lockout (`429`); anonymous challenges do not count | brute-force protection without locking out ordinary visits, on the panel and `/metrics` |
 | one-time links hashed, single-use, 10-minute TTL, at most 5 outstanding | a leaked link is worthless; `revoke` drops them all |
 | tokens masked wherever they are printed | logs and the panel never print a secret |
 | the panel is never in the data path | it can be stopped, restarted or broken without touching traffic |

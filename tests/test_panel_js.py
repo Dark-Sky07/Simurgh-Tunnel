@@ -13,6 +13,7 @@ Node is required; without it the module is skipped, like the rpm build is.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -91,12 +92,15 @@ def panel_payload(role: str = "relay") -> dict:
     return payload
 
 
-def run_panel_js(tmp_path: Path, role: str = "relay", payload: dict | None = None):
+def run_panel_js(tmp_path: Path, role: str = "relay", payload: dict | None = None,
+                 extra_env: dict | None = None):
     path = tmp_path / f"payload-{role}.json"
     path.write_text(json.dumps(payload if payload is not None else panel_payload(role)),
                     encoding="utf-8")
+    env = os.environ.copy()
+    env.update(extra_env or {})
     return subprocess.run([shutil.which("node"), str(RUNNER), str(path)],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, env=env)
 
 
 @pytest.mark.parametrize("role", ["relay", "exit"])
@@ -118,6 +122,19 @@ def test_the_page_draws_and_every_button_works(tmp_path, role):
     else:
         assert "/api/setup-link" in called, called
         assert "/api/pair" in called, called
+
+
+def test_the_page_boots_when_browser_storage_is_disabled(tmp_path):
+    """A blocked localStorage must not abort the entire dashboard script."""
+    proc = run_panel_js(tmp_path, extra_env={"PANEL_TEST_STORAGE": "blocked"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_stale_saved_view_falls_back_to_the_dashboard(tmp_path):
+    """An unknown view from an old release must not hide every section."""
+    proc = run_panel_js(tmp_path, extra_env={"PANEL_TEST_VIEW": "removed-view"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "stale saved view" not in proc.stdout
 
 
 def test_unpaired_and_reverse_pairing_controls_call_their_apis(tmp_path):
