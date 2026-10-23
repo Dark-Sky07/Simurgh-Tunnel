@@ -37,6 +37,12 @@ start it from the menu.
 > plane: `ssh -L 8787:127.0.0.1:8787 root@server` and browse to
 > `http://127.0.0.1:8787`.
 
+The top-bar **Log out** button revokes the current form-login session on the
+server and expires its cookie. Form sessions are opaque and expire after 12
+hours; HTTP Basic credentials remain available for scripts and are managed by
+the browser. For server pairing, firewall rules and a disposable end-to-end
+response test, see **[Connecting and testing](CONNECTING.md)**.
+
 ## The map
 
 The dashboard draws the tunnel as the bird it is named after:

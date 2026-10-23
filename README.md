@@ -78,6 +78,8 @@ Open `http://<server-ip>:8787` on each server (or the panel port printed by the 
 
 The setup link carries panel credentials and the fetched payload contains the tunnel token. Treat both as secrets and send the link only over a private channel.
 
+For the complete firewall, Direct/Reverse and independent end-to-end testing walkthrough, follow **[Connect the servers and test the tunnel](docs/CONNECTING.md)**.
+
 ### Reverse mode (optional, also panel-only)
 
 Use reverse mode when the foreign exit should dial the Iranian relay:
@@ -93,9 +95,9 @@ Open the selected tunnel listener port on the relay instead of the exit. User-fa
 Release assets include `.deb`, `.rpm`, portable `.tar.gz` packages and compiled engines. A `Dockerfile` and `docker-compose.yml` are included as well.
 
 ```bash
-sudo dpkg -i simurgh_3.2.5_amd64.deb
-sudo dnf install ./simurgh-3.2.5-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.5-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.6_amd64.deb
+sudo dnf install ./simurgh-3.2.6-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.6-noarch.tar.gz -C /
 docker compose up -d                   # optional two-node development lab, not server installation
 ```
 
@@ -216,6 +218,7 @@ The suite covers protocol/mux behaviour, all carriers, direct and reverse pairin
 
 | Guide | Contents |
 |---|---|
+| [Connecting & testing](docs/CONNECTING.md) | Direct/Reverse pairing, firewalls, disposable end-to-end response, speed and UDP tests |
 | [Configuration](docs/CONFIGURATION.md) | Every setting, carriers, mappings, pools, performance profiles and systemd |
 | [Panel](docs/PANEL.md) | Views, authentication, API, security and monitoring |
 | [Packages](docs/PACKAGING.md) | deb/rpm/tarball, Docker, offline installation and upgrades |

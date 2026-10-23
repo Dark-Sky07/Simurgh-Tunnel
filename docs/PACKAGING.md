@@ -10,9 +10,9 @@ answer — and for the people who cannot run a script from the internet at all.
 | | Command | Covers |
 |---|---|---|
 | **one command** | `curl … \| sudo bash` | everything, builds the Go engine |
-| **`.deb`** | `sudo dpkg -i simurgh_3.2.5_amd64.deb` | Debian, Ubuntu, Proxmox |
-| **`.rpm`** | `sudo dnf install ./simurgh-3.2.5-1.x86_64.rpm` | RHEL, Fedora, Alma, Rocky, openSUSE |
-| **tarball** | `tar -xzf simurgh-3.2.5-noarch.tar.gz -C /` | anything with Python 3.9+ |
+| **`.deb`** | `sudo dpkg -i simurgh_3.2.6_amd64.deb` | Debian, Ubuntu, Proxmox |
+| **`.rpm`** | `sudo dnf install ./simurgh-3.2.6-1.x86_64.rpm` | RHEL, Fedora, Alma, Rocky, openSUSE |
+| **tarball** | `tar -xzf simurgh-3.2.6-noarch.tar.gz -C /` | anything with Python 3.9+ |
 | **container** | `docker compose up -d` | both roles, one machine, or one role per host |
 
 ## What is inside
@@ -29,9 +29,9 @@ leave behind:
 | `/usr/lib/systemd/system/simurgh-{relay,exit}.service` | one unit per role; the package enables a role only if **its** config already exists |
 | `/usr/share/doc/simurgh/` | this file, the README (both languages) and the configuration reference |
 
-The two variants are deliberate: `simurgh_3.2.5_all.deb` /
-`simurgh-3.2.5-1.noarch.rpm` are pure Python and run anywhere, while
-`simurgh_3.2.5_amd64.deb` / `…-1.x86_64.rpm` also carry the compiled engine —
+The two variants are deliberate: `simurgh_3.2.6_all.deb` /
+`simurgh-3.2.6-1.noarch.rpm` are pure Python and run anywhere, while
+`simurgh_3.2.6_amd64.deb` / `…-1.x86_64.rpm` also carry the compiled engine —
 which the CLI picks up from `/usr/bin/simurgh-go` by itself, so
 `engine = "go"` works with no path to configure.
 
@@ -60,7 +60,7 @@ the six engine binaries.
 ### Debian, Ubuntu, Proxmox
 
 ```bash
-sudo dpkg -i simurgh_3.2.5_amd64.deb      # apt -f install, if you skipped the deps
+sudo dpkg -i simurgh_3.2.6_amd64.deb      # apt -f install, if you skipped the deps
 sudo simurgh install                         # same command on every server; choose the role if asked
 # the installer enables and starts the selected role's systemd unit
 ```
@@ -72,7 +72,7 @@ sudo simurgh install                         # same command on every server; cho
 ### RHEL, Fedora, Alma, Rocky, openSUSE
 
 ```bash
-sudo dnf install ./simurgh-3.2.5-1.x86_64.rpm
+sudo dnf install ./simurgh-3.2.6-1.x86_64.rpm
 sudo simurgh install                         # identical on foreign and Iranian servers; choose the role if asked
 # the installer enables and starts the selected role's systemd unit
 ```
@@ -82,7 +82,7 @@ sudo simurgh install                         # identical on foreign and Iranian 
 It is rooted at `/`, so it unpacks over a system that has Python 3.9+:
 
 ```bash
-sudo tar -xzf simurgh-3.2.5-noarch.tar.gz -C /
+sudo tar -xzf simurgh-3.2.6-noarch.tar.gz -C /
 sudo simurgh install                         # the same command; choose the role if asked
 # without systemd, run the exit or relay role named by the installer
 ```

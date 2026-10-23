@@ -77,12 +77,14 @@ def dashboard_html(role: str, version: str, product: str = "Simurgh Tunnel") -> 
 
 
 def login_page(lang: str = "en", error: str = "", version: str = "",
-               product: str = "Simurgh Tunnel") -> str:
+               product: str = "Simurgh Tunnel", signed_out: bool = False) -> str:
     """A real login form (the Basic-auth prompt is a fallback for scripts)."""
     text = I18N_FA if lang == "fa" else I18N_EN
     other = "en" if lang == "fa" else "fa"
     strings = {
         "title": text.get("login_title", "Sign in"),
+        "kicker": text.get("login_kicker", "Secure control plane"),
+        "notice": text.get("login_signed_out", "Signed out") if signed_out else "",
         "sub": text.get("login_sub", "the tunnel keeps running without this panel"),
         "user": text.get("login_user", "user"),
         "password": text.get("login_password", "password"),
@@ -98,7 +100,8 @@ def login_page(lang: str = "en", error: str = "", version: str = "",
                      .replace("__LANG__", lang) \
                      .replace("__DIR__", strings["dir"]) \
                      .replace("__OTHER__", other) \
-                     .replace("__VERSION__", version) \
+                     .replace("__PRODUCT__", html_escape(product)) \
+                     .replace("__VERSION__", html_escape(version)) \
                      .replace("__ERROR__", html_escape(error))
 
 
@@ -127,10 +130,13 @@ LOGIN_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="login-body">
+  <div class="login-aura" aria-hidden="true"></div>
   <div class="login">
-    <img src="/assets/simurgh.png" alt="Simurgh" width="96" height="96">
+    <div class="login-emblem"><img src="/assets/simurgh.png" alt="Simurgh" width="108" height="108"></div>
+    <div class="eyebrow login-kicker" data-s="kicker">Secure control plane</div>
     <h1 data-s="product">__PRODUCT__</h1>
     <p data-s="sub">the tunnel keeps running without this panel</p>
+    <p class="login-notice" data-s="notice" hidden></p>
     <form method="post" action="/login">
       <input type="hidden" name="lang" value="__LANG__">
       <label for="user" data-s="user">user</label>

@@ -16,6 +16,7 @@ Endpoints
 ``POST /api/join``        authenticated setup payload for the other server
 ``POST /api/setup-link``  create a link on an exit or reverse relay
 ``POST /api/pair``        import a link on a direct relay or reverse exit
+``GET  /logout``          revoke the browser session and return to the form
 ``GET  /healthz``         unauthenticated liveness probe
 """
 
@@ -26,6 +27,7 @@ import base64
 import hmac
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -49,6 +51,8 @@ CARRIERS = ("tls", "wss", "raw", "plain", "udp")
 log = get_logger("simurgh.panel")
 
 SESSION_COOKIE = "simurgh_session"
+SESSION_TTL = 12 * 60 * 60
+SESSION_MAX = 128
 
 
 # ---------------------------------------------------------------- http bits
@@ -183,6 +187,10 @@ class Panel:
         self.rates = RateTracker()
         #: single-use login links (simurgh web --link, Security page)
         self.login_tokens = LoginTokens()
+        #: Opaque browser sessions live only in this process.  Logout removes
+        #: the presented token, so clearing the cookie is not the only barrier
+        #: against replaying it.  Basic auth remains available for scripts.
+        self.sessions: dict[str, float] = {}
         self.last_layout: dict = {}
         #: brute-force protection: failed logins per peer, and when they are
         #: blocked until (see _register_failure / _locked_out)
@@ -271,21 +279,18 @@ class Panel:
         if req.method == "GET" and req.path.rstrip("/") in ("/login", ""):
             if req.path.startswith("/login"):
                 lang = "fa" if (req.query.get("lang") or "").lower().startswith("fa") else "en"
-                return http_response(login_page(lang, version=__version__,
-                                                product=__product__).encode("utf-8"))
+                return http_response(login_page(
+                    lang, version=__version__, product=__product__,
+                    signed_out=req.query.get("signed_out") == "1").encode("utf-8"))
         if req.method == "POST" and req.path == "/login":
             return self.handle_login(req, peer_ip)
         if req.method == "GET" and req.path == "/logout":
-            return http_response(
-                b"<html><body>signed out</body></html>", 200,
-                extra={"Set-Cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly"})
+            return self.handle_logout(req)
         # a one-time link signs this browser in and dies right here
         if req.method == "GET" and req.query.get("t") \
                 and self.login_tokens.consume(req.query["t"]):
             return http_response(b"", 303, extra={
-                "Location": "/",
-                "Set-Cookie": (f"{SESSION_COOKIE}={self._session_value()}; "
-                               "Path=/; HttpOnly; SameSite=Lax")})
+                "Location": "/", "Set-Cookie": self._session_cookie()})
         if req.path == "/api/join":
             if self.role != "exit" and not self._relay_is_reverse():
                 return json_response(
@@ -325,9 +330,7 @@ class Panel:
             # browser history. Prefer the single-use login links for sharing.
             if self.password and self._query_password_ok(req):
                 return http_response(b"", 303, extra={
-                    "Location": "/",
-                    "Set-Cookie": (f"{SESSION_COOKIE}={self._session_value()}; "
-                                   "Path=/; HttpOnly; SameSite=Lax"),
+                    "Location": "/", "Set-Cookie": self._session_cookie(),
                 })
             return http_response(self.dashboard().encode("utf-8"))
         if req.method == "GET" and path == "/api/status":
@@ -415,10 +418,29 @@ class Panel:
                     and hmac.compare_digest(str(password), self.password))
         return self._authorised(req) if req is not None else False
 
-    def _session_value(self) -> str:
-        import hashlib
+    def _new_session(self) -> str:
+        """Mint an opaque, expiring browser session with a bounded server map."""
+        now = time.time()
+        self.sessions = {token: expires for token, expires in self.sessions.items()
+                         if expires > now}
+        while len(self.sessions) >= SESSION_MAX:
+            self.sessions.pop(next(iter(self.sessions)))
+        token = secrets.token_urlsafe(32)
+        self.sessions[token] = now + SESSION_TTL
+        return token
 
-        return hashlib.sha256(("simurgh-panel|" + self.password).encode()).hexdigest()[:32]
+    def _session_cookie(self) -> str:
+        return (f"{SESSION_COOKIE}={self._new_session()}; Path=/; HttpOnly; "
+                f"SameSite=Lax; Max-Age={SESSION_TTL}")
+
+    @staticmethod
+    def _session_token(req: Request) -> str:
+        cookie = req.headers.get("cookie", "")
+        for part in cookie.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE:
+                return value.strip()
+        return ""
 
     def _query_password_ok(self, req: Request) -> bool:
         given = req.query.get("k", "")
@@ -429,12 +451,13 @@ class Panel:
             return True
         if req.method == "GET" and self._query_password_ok(req):
             return True          # one-click link: /?k=<panel password>
-        cookie = req.headers.get("cookie", "")
-        for part in cookie.split(";"):
-            name, _, value = part.strip().partition("=")
-            if name == SESSION_COOKIE and hmac.compare_digest(value.strip(),
-                                                              self._session_value()):
-                return True
+        token = self._session_token(req)
+        if token:
+            expires = self.sessions.get(token)
+            if expires is not None:
+                if expires > time.time():
+                    return True
+                self.sessions.pop(token, None)
         header = req.headers.get("authorization", "")
         if not header.lower().startswith("basic "):
             return False
@@ -463,6 +486,23 @@ class Panel:
         return login_page(lang, error=error, version=__version__, product=__product__)
 
     # ------------------------------------------------------- login handling
+    def handle_logout(self, req: Request) -> bytes:
+        """Revoke this browser session and expire its cookie immediately.
+
+        The login form is public, so the redirect also works for browsers that
+        used HTTP Basic.  Basic credentials themselves are managed by the
+        browser and remain suitable for scripts; form sessions are revoked.
+        """
+        token = self._session_token(req)
+        if token:
+            self.sessions.pop(token, None)
+        lang = "fa" if (req.query.get("lang") or "").lower().startswith("fa") else "en"
+        return http_response(b"", 303, extra={
+            "Location": f"/login?lang={lang}&signed_out=1",
+            "Set-Cookie": (f"{SESSION_COOKIE}=; Path=/; Max-Age=0; "
+                           "HttpOnly; SameSite=Lax"),
+        })
+
     def handle_login(self, req: Request, peer_ip: str) -> bytes:
         """A real form login; the Basic-auth prompt stays for scripts."""
         if self._locked_out(peer_ip):
@@ -483,9 +523,7 @@ class Panel:
                                 login_error(str(form.get("lang") or "en"))).encode("utf-8"),
                 401)
         return http_response(b"", 303, extra={
-            "Location": "/",
-            "Set-Cookie": (f"{SESSION_COOKIE}={self._session_value()}; "
-                           "Path=/; HttpOnly; SameSite=Lax")})
+            "Location": "/", "Set-Cookie": self._session_cookie()})
 
     def create_login_token(self, req: Request) -> bytes:
         """Mint a single-use link for this panel (the Kariz-style hand-off)."""

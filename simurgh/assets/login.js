@@ -9,6 +9,7 @@
   document.querySelectorAll('[data-s]').forEach((node) => {
     const value = strings[node.dataset.s];
     if (value) node.textContent = value;
+    if (node.dataset.s === 'notice') node.hidden = !value;
   });
   if (strings.dir === 'rtl') {
     const form = document.querySelector('.login form');

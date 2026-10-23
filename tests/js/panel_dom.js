@@ -41,8 +41,8 @@ function makeNode(tag, id) {
     style: {},
     classList: {
       _set: new Set(),
-      add(c) { this._set.add(c); },
-      remove(c) { this._set.delete(c); },
+      add(...cs) { cs.forEach((c) => this._set.add(c)); },
+      remove(...cs) { cs.forEach((c) => this._set.delete(c)); },
       contains(c) { return this._set.has(c); },
       toggle(c, on) {
         if (on === undefined ? !this._set.has(c) : on) this._set.add(c);
@@ -107,7 +107,7 @@ function makeNode(tag, id) {
 ids.forEach((id) => nodes.set(id, makeNode('div', id)));
 if (nodes.has('panel-meta')) {
   nodes.get('panel-meta').textContent = JSON.stringify({
-    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.5',
+    i18n: { en: {}, fa: {} }, role, product: 'Simurgh Tunnel', version: '3.2.6',
   });
 }
 if (nodes.has('log-filter')) nodes.get('log-filter').value = '';

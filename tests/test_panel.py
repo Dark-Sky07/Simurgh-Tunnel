@@ -57,13 +57,15 @@ class _Raw:
         return self.headers[name.lower()]
 
 
-async def _raw(port, path, *, method="GET", body=None, auth=None) -> _Raw:
+async def _raw(port, path, *, method="GET", body=None, auth=None, cookie=None) -> _Raw:
     """One request, headers and all (``_request`` decodes JSON for us)."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     head = [f"{method} {path} HTTP/1.1", "Host: localhost", "Connection: close"]
     if auth:
         token = base64.b64encode(auth.encode()).decode()
         head.append(f"Authorization: Basic {token}")
+    if cookie:
+        head.append(f"Cookie: simurgh_session={cookie}")
     payload = b""
     if body is not None:
         payload = (json.dumps(body).encode() if not isinstance(body, bytes) else body)
@@ -813,16 +815,26 @@ async def test_one_time_login_link(home, tmp_path, relay_cfg):
         # and it is spent: the second visit is not a login
         assert (await _raw(port, f"/?t={token}")).status == 401
 
-        # the cookie still works, and logout clears it
-        reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        writer.write(f"GET /api/layout HTTP/1.1\r\nHost: x\r\n"
-                     f"Cookie: simurgh_session={cookie}\r\nConnection: close\r\n\r\n".encode())
-        await writer.drain()
-        answer = await asyncio.wait_for(reader.read(-1), 10)
-        writer.close()
-        assert b"200 OK" in answer
-        raw = await _raw(port, "/logout")
-        assert raw.status == 200 and "Max-Age=0" in raw.headers["set-cookie"]
+        # The opaque cookie works until logout. Logout both expires it in the
+        # browser and revokes it server-side, so replaying the old value fails.
+        assert (await _raw(port, "/api/layout", cookie=cookie)).status == 200
+        raw = await _raw(port, "/logout?lang=en", cookie=cookie)
+        assert raw.status == 303 and "Max-Age=0" in raw.headers["set-cookie"]
+        assert raw.headers["location"] == "/login?lang=en&signed_out=1"
+        assert (await _raw(port, "/api/layout", cookie=cookie)).status == 401
+        notice = await _raw(port, raw.headers["location"])
+        assert notice.status == 200 and b"signed out safely" in notice.body
+
+        # A fresh login creates a different session and does not resurrect the
+        # revoked token. This guards the old deterministic-cookie behaviour.
+        fresh = await _raw(port, "/login", method="POST",
+                           body=f"user={USER}&password={PASSWORD}".encode())
+        new_cookie = fresh.headers["set-cookie"].split("simurgh_session=")[1].split(";")[0]
+        assert fresh.status == 303 and new_cookie != cookie
+        assert (await _raw(port, "/api/layout", cookie=new_cookie)).status == 200
+        assert (await _raw(port, "/api/layout", cookie=cookie)).status == 401
+        panel.sessions[new_cookie] = time.time() - 1
+        assert (await _raw(port, "/api/layout", cookie=new_cookie)).status == 401
     finally:
         await panel.stop()
 

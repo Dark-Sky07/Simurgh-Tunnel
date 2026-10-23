@@ -133,6 +133,19 @@ function applyLang() {
   document.querySelectorAll('[data-i18n-ph]').forEach((node) => { node.placeholder = t(node.dataset.i18nPh); });
   const btn = $('lang-toggle');
   if (btn) btn.textContent = LANG === 'fa' ? 'EN' : 'فا';
+  updatePageTitle();
+}
+const VIEW_TITLES = {
+  dashboard: 'title_dashboard', pair: 'title_pair', ports: 'title_ports',
+  wizard: 'title_wizard', speed: 'title_speed', certs: 'title_certs',
+  logs: 'title_logs', security: 'title_security', settings: 'title_settings',
+  tools: 'title_tools',
+};
+function updatePageTitle() {
+  const key = VIEW_TITLES[view] || 'title_dashboard';
+  const title = $('page-title');
+  if (title) title.textContent = t(key);
+  document.title = t(key) + ' · ' + PRODUCT;
 }
 
 /* ------------------------------------------------------------------ views */
@@ -145,6 +158,7 @@ function show(name) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('on', v.id === 'view-' + name));
   document.querySelectorAll('.nav button').forEach((b) => b.setAttribute('aria-current', String(b.dataset.view === name)));
   location.hash = name;
+  updatePageTitle();
   if (name === 'logs') loadLogs();
   if (name === 'dashboard') renderAll();
 }
@@ -159,7 +173,7 @@ function buildNav() {
 function renderMap() {
   const svg = $('map');
   if (!data) return;
-  const W = 760, H = 300;
+  const W = 760, H = 330;
   const [rateIn, rateOut] = [data.rates.in, data.rates.out];
   const hot = rateIn + rateOut > 2048;
   const stateColor = data.state === 'up' ? 'var(--ok)' : data.state === 'connecting' ? 'var(--warn)' : 'var(--err)';
@@ -176,13 +190,13 @@ function renderMap() {
 
   const tail = rows.map((m, i) => {
     const x = 300 + (i + 1) * (160 / (rows.length + 1));
-    const y = 236 + (i % 2) * 16;
+    const y = 260 + (i % 2) * 16;
     const load = (m.in_rate + m.out_rate) > 1024 ? ' hot' : '';
     const quota = m.quota && m.quota.limit ? Math.min(1, (m.quota.used || 0) / m.quota.limit) : 0;
     const ring = quota ? `<circle class="ring-bg" cx="${x}" cy="${y}" r="11" stroke-dasharray="${(quota * 69).toFixed(1)} 69"/>` : '';
     return `
       <g class="tail-feather" data-key="${esc(m.key)}" tabindex="0">
-        <path class="spur${load}" d="M380 200 C${(380 + x) / 2} 218 ${x} 220 ${x} ${y - 12}"/>
+        <path class="spur${load}" d="M380 224 C${(380 + x) / 2} 238 ${x} 240 ${x} ${y - 12}"/>
         ${ring}
         <circle cx="${x}" cy="${y}" r="7" fill="var(--surface2)" stroke="var(--gold)" stroke-width="2"/>
         <text class="ip" x="${x}" y="${y + 24}" text-anchor="middle">${m.listen || (m.udp ? 'udp' : '')}</text>
@@ -202,7 +216,7 @@ function renderMap() {
   </defs>
   <circle cx="380" cy="150" r="132" fill="url(#halo)"/>
   ${wings.join('')}
-  <path class="link${hot ? ' hot dash' : ''}" d="M300 180 C340 206 420 206 460 180" stroke-width="9" opacity="${data.state === 'up' ? '1' : '.35'}"/>
+  <path class="link${hot ? ' hot dash' : ''}" d="M300 170 C340 190 420 190 460 170" stroke-width="8" opacity="${data.state === 'up' ? '1' : '.35'}"/>
   <path class="link" d="M300 150 C345 128 415 128 460 150" stroke-width="3" opacity=".5"/>
   <g>
     <rect class="node-box pulse" x="150" y="44" width="150" height="52" rx="13" opacity="${data.state === 'up' ? '.4' : '.9'}"/>
@@ -217,9 +231,9 @@ function renderMap() {
   <text class="ip" x="380" y="132" text-anchor="middle">${data.state === 'up' ? '══ tunnel ══' : (data.state === 'connecting' ? '... dialling ...' : '✕ down ✕')}</text>
   <circle cx="380" cy="150" r="26" fill="var(--surface2)" stroke="${stateColor}" stroke-width="3"/>
   <text x="380" y="155" text-anchor="middle" font-size="13" font-weight="700" fill="${stateColor}">${data.state === 'up' ? 'UP' : data.state === 'connecting' ? '…' : 'DOWN'}</text>
-  <text class="ip" x="380" y="196" text-anchor="middle">${bitrate(rateIn)} ↓ · ${bitrate(rateOut)} ↑</text>
+  <text class="ip" x="380" y="214" text-anchor="middle">${bitrate(rateIn)} ↓ · ${bitrate(rateOut)} ↑</text>
   ${tail}
-  <text class="node-state" x="380" y="286" text-anchor="middle" fill="${stateColor}">${data.last_error ? esc(String(data.last_error).slice(0, 80)) : (peer.rtt_ms != null ? data.rtt_ms + ' ms' : '')}</text>`;
+  <text class="node-state" x="380" y="320" text-anchor="middle" fill="${stateColor}">${data.last_error ? esc(String(data.last_error).slice(0, 80)) : (peer.rtt_ms != null ? data.rtt_ms + ' ms' : '')}</text>`;
 
   svg.querySelectorAll('.tail-feather').forEach((g) => {
     const open = () => { show('ports'); const row = document.querySelector(`[data-row="${CSS.escape(g.dataset.key)}"]`); if (row) { row.scrollIntoView({ block: 'center' }); row.classList.add('pill', 'hot'); setTimeout(() => row.classList.remove('pill', 'hot'), 1600); } };
@@ -305,8 +319,8 @@ function renderCards() {
     [t('card_total'), bytes(totals.sum), `${t('lbl_ports')}: ${totals.mappings || 0}`],
   ];
   box.innerHTML = cards.map(([title, big, sub], i) => `
-    <div class="card"><h2>${esc(title)}</h2>
-      <div class="big">${esc(big)}${i === 0 ? '' : ''}</div>
+    <div class="card${i === 0 ? ' metric-' + esc(data.state) : ''}"><h2>${esc(title)}</h2>
+      <div class="big">${esc(big)}</div>
       <div class="sub">${esc(sub)}</div>
     </div>`).join('');
 }
@@ -362,8 +376,8 @@ function renderStateBadge() {
   const key = data.state === 'up' ? 'state_up'
     : data.state === 'connecting' ? 'state_connecting' : 'state_down';
   badge.textContent = t(key);
-  badge.classList.toggle('on', data.state === 'up');
-  badge.classList.toggle('off', data.state !== 'up');
+  badge.classList.remove('ok', 'err', 'warn', 'on', 'off');
+  badge.classList.add(data.state === 'up' ? 'ok' : data.state === 'connecting' ? 'warn' : 'err');
 }
 
 function renderAll() {
@@ -537,6 +551,13 @@ function bindTune() {
 }
 
 /* ----------------------------------------------------------- security tab */
+function signOut() {
+  // Stop polling before the server revokes this session; otherwise an in-flight
+  // layout request can race the redirect and produce a misleading error toast.
+  if (pollTimer) clearInterval(pollTimer);
+  if (logsTimer) clearInterval(logsTimer);
+  location.href = '/logout?lang=' + encodeURIComponent(LANG);
+}
 async function loadSecurity() {
   const box = $('security-info');
   if (!box || !data) return;
@@ -549,7 +570,8 @@ async function loadSecurity() {
     <div class="kv"><span>${esc(t('lbl_failed'))}</span><span class="v">${p.failed_logins || 0}</span></div>`;
 }
 function bindSecurity() {
-  if ($('logout')) $('logout').onclick = () => { window.location.href = '/logout'; };
+  if ($('logout')) $('logout').onclick = signOut;
+  if ($('logout-top')) $('logout-top').onclick = signOut;
   if (!$('make-link')) return;
   $('make-link').onclick = async () => {
     const ttl = parseInt($('link-ttl').value || '600', 10);

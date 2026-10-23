@@ -22,5 +22,5 @@ Design goals (in order):
    one-string setup links.
 """
 
-__version__ = "3.2.5"
+__version__ = "3.2.6"
 __product__ = "Simurgh Tunnel"
