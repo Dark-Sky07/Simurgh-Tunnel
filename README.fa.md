@@ -81,6 +81,8 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 
 لینک راه‌اندازی حاوی رمز پنل است و payload دریافتی شامل توکن تونل می‌شود. هر دو را محرمانه نگه دارید و لینک را فقط از یک کانال خصوصی منتقل کنید.
 
+راهنمای کامل فایروال، حالت Direct/Reverse و تست مستقل سرتاسری را در **[اتصال دو سرور و تست واقعی تونل](docs/CONNECTING.fa.md)** ببینید.
+
 ### حالت معکوس (اختیاری، کاملاً از پنل)
 
 اگر اگزیت خارج باید به رلهٔ ایران وصل شود:
@@ -96,9 +98,9 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 فایل‌های هر ریلیز شامل `.deb`، `.rpm`، `.tar.gz` قابل‌حمل و موتورهای کامپایل‌شده است. `Dockerfile` و `docker-compose.yml` هم در مخزن هستند.
 
 ```bash
-sudo dpkg -i simurgh_3.2.5_amd64.deb
-sudo dnf install ./simurgh-3.2.5-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.5-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.6_amd64.deb
+sudo dnf install ./simurgh-3.2.6-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.6-noarch.tar.gz -C /
 docker compose up -d                   # آزمایشگاه توسعهٔ دونودی اختیاری، نه نصب سرور
 ```
 
@@ -223,6 +225,7 @@ GOPROXY=off go test -race ./...
 
 | راهنما | محتوا |
 |---|---|
+| [اتصال و تست](docs/CONNECTING.fa.md) | جفت‌سازی Direct/Reverse، فایروال، پاسخ آزمایشی سرتاسری، تست سرعت و UDP |
 | [تنظیمات](docs/CONFIGURATION.fa.md) | همهٔ کلیدها، حامل‌ها، مپینگ، استخر، پروفایل کارایی و systemd |
 | [پنل](docs/PANEL.fa.md) | نماها، احراز هویت، API، امنیت و مانیتورینگ |
 | [بسته‌ها](docs/PACKAGING.fa.md) | deb/rpm/tarball، Docker، نصب آفلاین و ارتقا |
