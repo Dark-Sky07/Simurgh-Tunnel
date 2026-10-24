@@ -13,6 +13,11 @@
   [Quick start](#quick-start) · [Iran playbook](#iran-operations-playbook) · [Panel](#web-panel) · [Security](#security) · [Documentation](#documentation)
 </div>
 
+<div align="center">
+  <a href="https://drive.google.com/file/d/1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5/view?usp=drivesdk"><img src="assets/tutorial-cover-v3.2.10.jpg" width="720" alt="Watch the complete Simurgh Tunnel Persian video tutorial (17 minutes)"></a>
+  <p><strong>Persian video tutorial · 17:34</strong> · <a href="https://drive.google.com/file/d/1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5/view?usp=drivesdk">Watch in Google Drive</a> · <a href="https://drive.google.com/uc?id=1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5&export=download">Download MP4</a></p>
+</div>
+
 ---
 
 Simurgh moves traffic from user-facing ports on an **Iranian relay** to services on a **foreign exit**, without turning client applications into tunnel-aware clients. Users normally keep their ports, credentials, TLS settings and subscriptions; they only connect to the relay address instead of the foreign address.
@@ -95,9 +100,9 @@ Open the selected tunnel listener port on the relay instead of the exit. User-fa
 Release assets include `.deb`, `.rpm`, portable `.tar.gz` packages and compiled engines. A `Dockerfile` and `docker-compose.yml` are included as well.
 
 ```bash
-sudo dpkg -i simurgh_3.2.10_amd64.deb
-sudo dnf install ./simurgh-3.2.10-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.10-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.11_amd64.deb
+sudo dnf install ./simurgh-3.2.11-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.11-noarch.tar.gz -C /
 docker compose up -d                   # optional two-node development lab, not server installation
 ```
 
