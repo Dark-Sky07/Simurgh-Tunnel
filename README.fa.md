@@ -13,6 +13,11 @@
   [شروع سریع](#quick-start) · [راهنمای مسیرهای ایران](#iran-playbook) · [پنل](#web-panel) · [امنیت](#security) · [مستندات](#documentation)
 </div>
 
+<div align="center">
+  <a href="https://drive.google.com/file/d/1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5/view?usp=drivesdk"><img src="assets/tutorial-cover-v3.2.10.jpg" width="720" alt="تماشای آموزش ویدیویی فارسی سیمرغ تانل (۱۷ دقیقه)"></a>
+  <p><strong>آموزش ویدیویی فارسی · ۱۷:۳۴</strong> · <a href="https://drive.google.com/file/d/1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5/view?usp=drivesdk">تماشا در گوگل‌درایو</a> · <a href="https://drive.google.com/uc?id=1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5&export=download">دانلود فایل MP4</a></p>
+</div>
+
 ---
 
 <div dir="rtl">
@@ -98,9 +103,9 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 فایل‌های هر ریلیز شامل `.deb`، `.rpm`، `.tar.gz` قابل‌حمل و موتورهای کامپایل‌شده است. `Dockerfile` و `docker-compose.yml` هم در مخزن هستند.
 
 ```bash
-sudo dpkg -i simurgh_3.2.10_amd64.deb
-sudo dnf install ./simurgh-3.2.10-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.10-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.11_amd64.deb
+sudo dnf install ./simurgh-3.2.11-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.11-noarch.tar.gz -C /
 docker compose up -d                   # آزمایشگاه توسعهٔ دونودی اختیاری، نه نصب سرور
 ```
 
