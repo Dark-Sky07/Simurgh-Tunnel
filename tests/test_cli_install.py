@@ -44,6 +44,43 @@ def test_interactive_universal_install_asks_for_the_role(tmp_path, monkeypatch):
     assert called == [("relay", True)]
 
 
+def test_interactive_universal_install_can_choose_exit(tmp_path, monkeypatch):
+    args = _install_args(tmp_path)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "_ask", lambda *a, **k: "1")
+    monkeypatch.setattr(cli, "_init_exit", lambda home, given: 0)
+    assert cli.cmd_install(args) == 0
+
+
+def test_noninteractive_fresh_install_fails_before_creating_home(tmp_path, monkeypatch, capsys):
+    args = _install_args(tmp_path)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    assert cli.cmd_install(args) == 2
+    output = capsys.readouterr().err
+    assert "--role exit" in output and "--role relay" in output
+    assert not (tmp_path / "relay.toml").exists()
+    assert not (tmp_path / "exit.toml").exists()
+
+    # Even a supplied endpoint does not silently choose a role on a fresh,
+    # unattended install; the role itself must be explicit.
+    with_endpoint = _install_args(tmp_path, "--exit", "203.0.113.9:443")
+    assert cli.cmd_install(with_endpoint) == 2
+    assert "--role exit" in capsys.readouterr().err
+    assert not (tmp_path / "relay.toml").exists()
+
+
+def test_explicit_noninteractive_relay_role_starts_unpaired(tmp_path, monkeypatch):
+    args = cli.build_parser().parse_args([
+        "install", "--role", "relay", "--engine", "python",
+        "--no-units", "--no-start", "--no-enable",
+    ])
+    args.home = str(tmp_path)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    assert cli.cmd_install(args) == 0
+    cfg = load_relay(tmp_path / "relay.toml")
+    assert cfg.unpaired is True and cfg.exit.address == ""
+
+
 def test_install_both_on_one_box_finalises_the_local_pair(tmp_path):
     args = _install_args(tmp_path, "--both", "--listen", "9443,9444")
     assert cli.cmd_install(args) == 0

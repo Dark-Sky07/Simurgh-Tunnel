@@ -16,6 +16,7 @@
 <div align="center">
   <a href="https://drive.google.com/file/d/1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5/view?usp=drivesdk"><img src="assets/tutorial-cover-v3.2.10.jpg" width="720" alt="Watch the complete Simurgh Tunnel Persian video tutorial (17 minutes)"></a>
   <p><strong>Persian video tutorial · 17:34</strong> · <a href="https://drive.google.com/file/d/1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5/view?usp=drivesdk">Watch in Google Drive</a> · <a href="https://drive.google.com/uc?id=1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5&export=download">Download MP4</a></p>
+  <p><em>Recorded for v3.2.10; the current installer asks you to choose the role on a fresh install and never infers it from location.</em></p>
 </div>
 
 ---
@@ -61,13 +62,13 @@ Iran relay :8443 ──user traffic──► exit target 127.0.0.1:8443
 
 ### 1 — Install every server with the same command
 
-Run **this exact command on both the foreign server and the Iranian server**. Do not add a role-specific option:
+Run **this exact command on both the foreign server and the Iranian server**. The command is universal; on a fresh interactive install, select that server's role when prompted:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
-The installer detects an existing installation and otherwise uses the public IP's country to select the role; if that is unavailable, it asks on the terminal. A direct relay is deliberately installed **unpaired**, so its panel can start before the exit address or token exists. Re-running the installer refreshes its source checkout rather than mixing a new script with an old cached CLI.
+The installer never infers a server's role from its IP address or country. Existing configuration remains authoritative on reruns. For a fresh noninteractive install, specify `--role exit` or `--role relay` (when piping, pass it after `bash -s --`); without a terminal or explicit role, the installer stops before system changes. A direct relay is deliberately installed **unpaired**, so its panel can start before the exit address or token exists. Re-running the installer refreshes its source checkout rather than mixing a new script with an old cached CLI.
 
 ### 2 — Open both web panels
 
@@ -100,9 +101,9 @@ Open the selected tunnel listener port on the relay instead of the exit. User-fa
 Release assets include `.deb`, `.rpm`, portable `.tar.gz` packages and compiled engines. A `Dockerfile` and `docker-compose.yml` are included as well.
 
 ```bash
-sudo dpkg -i simurgh_3.2.11_amd64.deb
-sudo dnf install ./simurgh-3.2.11-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.11-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.12_amd64.deb
+sudo dnf install ./simurgh-3.2.12-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.12-noarch.tar.gz -C /
 docker compose up -d                   # optional two-node development lab, not server installation
 ```
 
