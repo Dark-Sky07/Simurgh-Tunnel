@@ -50,7 +50,6 @@ EXIT_PORT=""
 LISTEN=""
 MAPPING=""
 PANEL_PORT=""
-ASSUME_YES=0
 NO_SYSTEMD=0
 UNINSTALL=0
 PURGE=0
@@ -130,7 +129,7 @@ main options:
                              much less cpu per gigabyte), "python" the portable
                              one. auto = go when it can be built (default)
   --no-go                    shortcut for --engine python
-  --yes                      accept non-role questions (fresh unattended installs still need --role)
+  --yes                      accepted for compatibility; never chooses a server role
   --no-systemd               do not create a systemd service (run manually)
   --ref REF                  git ref to download when the source is missing
                              (branch or tag, default: main)
@@ -163,7 +162,7 @@ while [ $# -gt 0 ]; do
     --split)       SPLIT="${2:-}"; shift 2 ;;
     --engine)      ENGINE="${2:-auto}"; shift 2 ;;
     --no-go)       ENGINE="python"; shift ;;
-    --yes|-y)      ASSUME_YES=1; shift ;;
+    --yes|-y)      shift ;;
     --no-systemd)  NO_SYSTEMD=1; shift ;;
     --ref)         REF="${2:-main}"; shift 2 ;;
     --uninstall)   UNINSTALL=1; shift ;;
