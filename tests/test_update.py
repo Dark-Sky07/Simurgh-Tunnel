@@ -79,6 +79,24 @@ def test_asset_name_follows_the_release_matrix():
         updater.asset_name("mips", "Linux")
 
 
+def test_native_package_layout_is_distinguished_from_a_pip_install(tmp_path):
+    library = tmp_path / "usr" / "lib" / "simurgh"
+    package = library / "simurgh"
+    package.mkdir(parents=True)
+    (package / "cli.py").write_text("# launcher target")
+    module = package / "update.py"
+    module.write_text("# updater")
+
+    assert updater.packaged_library_root(module) == library
+
+    site_packages = tmp_path / "venv" / "lib" / "python3.12" / "site-packages"
+    pip_package = site_packages / "simurgh"
+    pip_package.mkdir(parents=True)
+    pip_module = pip_package / "update.py"
+    pip_module.write_text("# updater")
+    assert updater.packaged_library_root(pip_module) is None
+
+
 def test_check_reports_an_available_update(monkeypatch):
     monkeypatch.setattr(updater, "_open",
                         lambda url, timeout=updater.TIMEOUT:
@@ -87,6 +105,7 @@ def test_check_reports_an_available_update(monkeypatch):
     assert info["current"] == __version__
     assert info["latest"] == "9.9.9" and info["tag"] == "v9.9.9"
     assert info["available"] is True
+    assert info["self_update_supported"] is True
     assert "simurgh-go-linux-amd64" in info["assets"]
     assert info["asset_urls"]["SHA256SUMS.txt"].endswith("SHA256SUMS.txt")
 
@@ -186,6 +205,25 @@ def test_binary_install_is_verified_and_keeps_a_backup(monkeypatch, tmp_path):
         updater.update_binary(dest, "v9.9.9", urls)
     assert "checksum" in str(err.value)
     assert dest.read_bytes() == payload
+
+
+def test_native_package_update_refuses_to_partially_reinstall_with_pip(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(updater, "check", lambda: {
+        "current": "1.0.0", "latest": "9.9.9", "tag": "v9.9.9",
+        "available": True, "asset_urls": {},
+    })
+    monkeypatch.setattr(updater, "source_checkout", lambda: tmp_path / "checkout")
+    monkeypatch.setattr(updater, "packaged_library_root", lambda: tmp_path / "lib")
+    monkeypatch.setattr(updater, "update_git",
+                        lambda *a, **k: pytest.fail("must not update a separate checkout"))
+    monkeypatch.setattr(updater, "reinstall_release",
+                        lambda tag: pytest.fail("must not pip-install over a native package"))
+    monkeypatch.setattr(updater, "update_binary",
+                        lambda *args: pytest.fail("must not update only the Go half"))
+
+    with pytest.raises(updater.UpdateError, match="pip cannot replace"):
+        updater.update(tmp_path, verbose=False)
 
 
 def test_update_finds_a_packaged_binary(monkeypatch, tmp_path):
@@ -310,6 +348,24 @@ def test_cli_update_check_stays_offline(capsys, monkeypatch, tmp_path):
     assert payload["latest"] == "9.9.9" and payload["available"] is True
 
 
+def test_cli_update_check_explains_system_package_updates(
+        tmp_path, monkeypatch, capsys):
+    from simurgh import cli
+
+    monkeypatch.setattr(updater, "check", lambda: {
+        "current": "1.0.0", "latest": "9.9.9", "tag": "v9.9.9",
+        "published": "", "notes_url": "https://example.invalid/v9.9.9",
+        "available": True, "self_update_supported": False,
+    })
+    args = cli.build_parser().parse_args([
+        "--home", str(tmp_path), "update", "--check",
+    ])
+    assert args.func(args) == 3
+    output = capsys.readouterr().out
+    assert "must be upgraded with apt/dnf" in output
+    assert "run `simurgh update`" not in output
+
+
 def test_cli_update_check_handles_redirect_metadata_without_a_date(
         tmp_path, monkeypatch, capsys):
     from simurgh import cli
@@ -353,6 +409,33 @@ def test_cli_json_update_still_restarts_without_corrupting_json(
     payload = json.loads(output)
     assert payload["restart_ok"] is True
     assert "human restart output" not in output
+
+
+def test_health_checked_update_restart_restarts_both_configured_roles(
+        tmp_path, monkeypatch):
+    from simurgh import cli, systemd
+    from simurgh.util import Home
+
+    home = Home(tmp_path)
+    home.exit_cfg.touch()
+    home.relay_cfg.touch()
+    service_calls, health_calls = [], []
+    monkeypatch.setattr(systemd, "available", lambda: True)
+
+    def control(action, services):
+        service_calls.append((action, services))
+        return {service: "ok" for service in services}
+
+    def healthy(given, roles, timeout=20.0, expected_version=None):
+        health_calls.append((given.path, roles, expected_version))
+        return True, "healthy"
+
+    monkeypatch.setattr(systemd, "control", control)
+    monkeypatch.setattr(cli, "_wait_for_panel", healthy)
+
+    assert cli._restart_updated_service(home, "9.9.9") == 0
+    assert service_calls == [("restart", ("simurgh-exit", "simurgh-relay"))]
+    assert health_calls == [(tmp_path, ("exit", "relay"), "9.9.9")]
 
 
 def test_direct_url_recovers_the_installers_source_checkout(tmp_path, monkeypatch):

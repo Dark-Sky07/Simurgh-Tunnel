@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from simurgh import menu
 from simurgh.util import Home
 
@@ -47,10 +49,11 @@ def test_log_view_is_bounded_pauseable_and_never_uses_a_shell(
 
 def test_menu_installs_updates_and_offers_a_health_checked_restart(
         tmp_path, monkeypatch):
-    from simurgh import cli
+    from simurgh import cli, systemd
     from simurgh import update as updater
 
     home = Home(tmp_path)
+    monkeypatch.setattr(systemd, "available", lambda: True)
     monkeypatch.setattr(menu, "clear", lambda: None)
     monkeypatch.setattr(menu, "pause", lambda: None)
     monkeypatch.setattr(updater, "check", lambda: {
@@ -73,6 +76,52 @@ def test_menu_installs_updates_and_offers_a_health_checked_restart(
 
     assert calls == [("update", tmp_path, False), ("restart", tmp_path, "9.0.0")]
     assert "17" in menu.MENU_COMMON
+
+
+def test_menu_reports_system_package_updates_without_running_pip(tmp_path, monkeypatch, capsys):
+    from simurgh import update as updater
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(menu, "clear", lambda: None)
+    monkeypatch.setattr(menu, "pause", lambda: None)
+    monkeypatch.setattr(updater, "check", lambda: {
+        "current": "1.0.0", "latest": "9.9.9", "tag": "v9.9.9",
+        "available": True, "self_update_supported": False,
+        "notes_url": "https://example.invalid/v9",
+    })
+    monkeypatch.setattr(updater, "update", lambda *a, **k:
+                        (_ for _ in ()).throw(AssertionError("unsafe updater called")))
+
+    menu.software_update(home, "relay")
+
+    output = capsys.readouterr().out
+    assert "apt/dnf" in output and "matching release package" in output
+
+
+def test_menu_does_not_offer_a_systemd_restart_without_systemd(
+        tmp_path, monkeypatch, capsys):
+    from simurgh import cli, systemd, update as updater
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(menu, "clear", lambda: None)
+    monkeypatch.setattr(menu, "pause", lambda: None)
+    monkeypatch.setattr(systemd, "available", lambda: False)
+    monkeypatch.setattr(updater, "check", lambda: {
+        "current": "1.0.0", "latest": "9.9.9", "tag": "v9.9.9",
+        "available": True, "notes_url": "https://example.invalid/v9",
+    })
+    monkeypatch.setattr(updater, "update", lambda *a, **k: {
+        "action": "updated", "steps": ["python"], "latest": "9.9.9",
+        "restart_required": True,
+    })
+    monkeypatch.setattr(cli, "_restart_updated_service", lambda *a, **k:
+                        pytest.fail("systemd restart should not be attempted"))
+    monkeypatch.setattr(menu, "ask_yes", lambda *a, **k: True)
+
+    menu.software_update(home, "relay")
+
+    output = capsys.readouterr().out
+    assert "systemd is unavailable" in output and "simurgh relay" in output
 
 
 def test_panel_info_links_directly_to_the_login_form(tmp_path, monkeypatch, capsys):

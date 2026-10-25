@@ -696,7 +696,13 @@ function bindTools() {
       const name = btn.dataset.act;
       if (name === 'update-check') {
         const res = await api('/api/update', { method: 'GET' });
-        toast(res.ok ? (res.update_available ? t('toast_update_available', { version: res.latest || '' }) : t('toast_up_to_date', { version: res.version || VERSION })) : t('toast_error', { msg: res.error || '' }), res.ok && !res.update_available ? '' : (res.ok ? 'warn' : 'err'));
+        const updateMessage = res.update_available
+          ? (res.self_update_supported === false
+            ? t('toast_update_package_manager', { version: res.latest || '' })
+            : t('toast_update_available', { version: res.latest || '' }))
+          : t('toast_up_to_date', { version: res.version || VERSION });
+        toast(res.ok ? updateMessage : t('toast_error', { msg: res.error || '' }),
+          res.ok && !res.update_available ? '' : (res.ok ? 'warn' : 'err'));
         return;
       }
       if (name === 'update-install') {
@@ -710,7 +716,9 @@ function bindTools() {
             toast(t('toast_update_restarting'), 'warn');
             await waitForUpdatedPanel(res.latest);
           } else if (res.restart_required) {
-            toast(t('toast_update_restart_required'), 'warn');
+            toast(res.foreground_restart
+              ? t('toast_update_restart_foreground', { role: ROLE })
+              : t('toast_update_restart_required'), 'warn');
           } else {
             toast(t('toast_up_to_date', { version: res.version || VERSION }));
           }

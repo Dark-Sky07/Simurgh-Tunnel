@@ -740,7 +740,7 @@ async def _run_exit(home: Home, args) -> int:
                       port=args.panel_port or _exit_panel_port(home),
                       user=_load_panel_user(home), password=password,
                       allow_ips=tuple(cfg.allow_ips),
-                      on_action=lambda name: _service_action(name, "exit"))
+                      on_action=lambda name: _service_action(name, "exit", home))
         try:
             await panel.start()
         except OSError as exc:
@@ -781,7 +781,7 @@ async def _run_relay(home: Home, args) -> int:
         panel = Panel(home, "relay", node=node, host=args.panel_host,
                       port=args.panel_port or cfg.panel_port or RELAY_DEFAULT_PANEL,
                       user=_load_panel_user(home), password=_load_panel_password(home),
-                      on_action=lambda name: _service_action(name, "relay"))
+                      on_action=lambda name: _service_action(name, "relay", home))
         try:
             await panel.start()
         except OSError as exc:
@@ -826,13 +826,22 @@ async def _state_writer(home: Home, role: str, node, panel) -> None:
         await asyncio.sleep(3.0)
 
 
-def _service_action(name: str, role: str) -> dict:
+def _installed_roles(home: Home, fallback: str | None = None) -> tuple[str, ...]:
+    """Roles actually configured on this host, for update/restart handoffs."""
+    roles = tuple(role for role in ("exit", "relay")
+                  if (home.exit_cfg if role == "exit" else home.relay_cfg).exists())
+    return roles or (fallback or _detect_role(home, None),)
+
+
+def _service_action(name: str, role: str, home: Home | None = None) -> dict:
     from . import systemd
 
     if not systemd.available():
         return {"ok": False, "error": "systemd is not available"}
     action = _SYSTEMCTL_ACTION.get(name, name)
-    return systemd.control(action, _service_names(role))
+    roles = _installed_roles(home, role) if action == "restart" and home else (role,)
+    services = tuple(f"simurgh-{item}" for item in roles)
+    return systemd.control(action, services)
 
 
 def _load_panel_user(home: Home) -> str:
@@ -938,7 +947,7 @@ async def _run_go(home: Home, args, binary: str) -> int:
                       port=port, user=_load_panel_user(home),
                       password=_load_panel_password(home),
                       allow_ips=tuple(getattr(cfg, "allow_ips", ()) or ()),
-                      on_action=lambda name: _service_action(name, role))
+                      on_action=lambda name: _service_action(name, role, home))
         try:
             await panel.start()
         except OSError as exc:
@@ -1959,7 +1968,12 @@ def cmd_update(args) -> int:
             if info["available"]:
                 published = f" ({info['published'][:10]})" if info["published"] else ""
                 print(f"  an update is available: {info['tag']}{published}")
-                print(f"  run `simurgh update` to install it   {info['notes_url']}")
+                if info.get("self_update_supported") is False:
+                    print("  this system-library install must be upgraded with apt/dnf "
+                          "or by installing the matching release package/tarball")
+                    print(f"  release: {info['notes_url']}")
+                else:
+                    print(f"  run `simurgh update` to install it   {info['notes_url']}")
                 return 3
             print("  this install is already the newest release")
             return 0
@@ -2001,8 +2015,9 @@ def cmd_update(args) -> int:
 
 def _restart_updated_service(home: Home, expected_version: str | None = None) -> int:
     """Restart and require the new panel version, not a surviving old one."""
-    role = _detect_role(home, None)
-    result = _service_action("restart", role)
+    roles = _installed_roles(home)
+    role = roles[0]
+    result = _service_action("restart", role, home)
     if result.get("ok") is False:
         _err(str(result.get("error") or "service control is not available"))
         return 1
@@ -2016,7 +2031,7 @@ def _restart_updated_service(home: Home, expected_version: str | None = None) ->
     if failed:
         return 1
     healthy, detail = _wait_for_panel(
-        home, (role,), timeout=25.0, expected_version=expected_version)
+        home, roles, timeout=25.0, expected_version=expected_version)
     if not healthy:
         _err(f"updated files were installed, but the panel did not recover: {detail}")
         _err("inspect: simurgh logs -n 80  (or journalctl -u simurgh-" + role + ")")

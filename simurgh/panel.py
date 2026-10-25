@@ -704,11 +704,12 @@ class Panel:
         except Exception as exc:
             return json_response({"ok": False, "error": str(exc)}, 502)
         return json_response({"ok": True, "update_available": bool(info.get("available")),
+                              "self_update_supported": info.get("self_update_supported", True),
                               "version": info.get("current"), "latest": info.get("latest"),
                               "tag": info.get("tag"), "notes_url": info.get("notes_url")})
 
     async def update_install(self) -> bytes:
-        """Install the newest release, then restart only after answering.
+        """Install the newest release, then restart systemd only after answering.
 
         The blocking git/pip/download work runs outside the event loop, so an
         update cannot freeze health checks or other panel requests.  A second
@@ -731,7 +732,14 @@ class Panel:
             self._update_running = False
 
         changed = bool(result.get("restart_required"))
-        restarting = changed and self.on_action is not None
+        can_restart = self.on_action is not None
+        foreground_restart = False
+        if changed and can_restart:
+            from . import systemd
+
+            can_restart = await asyncio.to_thread(systemd.available)
+            foreground_restart = not can_restart
+        restarting = changed and can_restart
         if restarting:
             self._restart_timer = loop.call_later(1.0, self._restart_after_update)
         return json_response({
@@ -741,6 +749,7 @@ class Panel:
             "tag": result.get("tag"), "notes_url": result.get("notes_url"),
             "action": result.get("action"), "steps": result.get("steps") or [],
             "restart_required": changed, "restarting": restarting,
+            "foreground_restart": foreground_restart,
         })
 
     def _restart_after_update(self) -> None:

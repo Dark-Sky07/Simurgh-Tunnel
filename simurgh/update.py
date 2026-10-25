@@ -6,11 +6,13 @@ it is looking at:
 * **a git checkout** (what ``install.sh`` does by default): the newest tag is
   fetched and checked out, the Python package is reinstalled into the running
   venv, and the actual installed Go engine is updated too;
-* **a packaged install** (pip/wheel, or someone who copied the files): Python
-  is installed from the same release tag, then the release asset for this
-  OS/architecture is downloaded, its SHA-256 is checked against the release's
-  ``SHA256SUMS.txt``, and the running binary is replaced atomically — the old
-  one is kept as ``.bak``.
+* **a pip/wheel install**: Python is installed from the same release tag, then
+  the release asset for this OS/architecture is downloaded, its SHA-256 is
+  checked against the release's ``SHA256SUMS.txt``, and the running binary is
+  replaced atomically — the old one is kept as ``.bak``;
+* **a system package or extracted tarball**: these load Python directly from
+  their library tree, so pip cannot replace the running installation. The
+  updater refuses to make a partial update and points to the package manager.
 
 The web panel and text menu call this same implementation.  None of these
 paths opens, rewrites or deletes the relay/exit TOML configuration.
@@ -250,6 +252,22 @@ def _direct_url_checkout() -> Path | None:
     return None
 
 
+def packaged_library_root(module_file: Path | None = None) -> Path | None:
+    """Return a distro/tarball library root whose files are not pip-managed.
+
+    Debian/RPM/tarball launchers load ``<prefix>/lib/simurgh/simurgh`` directly.
+    Installing a wheel with pip does not replace those files (and may fail on
+    PEP 668 systems), so the self-updater must not claim it updated this layout.
+    """
+    module = (module_file or Path(__file__)).resolve()
+    root = module.parent.parent
+    if (root.name.lower() == "simurgh"
+            and (root / "simurgh" / "cli.py").is_file()
+            and not (root / ".git").exists()):
+        return root
+    return None
+
+
 def source_checkout() -> Path | None:
     """The checkout used by the universal installer, if this is one."""
     root = git_root()
@@ -296,6 +314,7 @@ def check() -> dict:
         "asset_urls": {str(a.get("name", "")): str(a.get("browser_download_url", ""))
                        for a in assets},
         "available": parse_version(tag) > parse_version(__version__),
+        "self_update_supported": packaged_library_root() is None,
     }
 
 
@@ -439,6 +458,14 @@ def update(home: Path | None = None, *, check_only: bool = False, force: bool = 
         result["action"] = "check only"
         result["restart_required"] = False
         return result
+
+    if packaged_library_root() is not None:
+        raise UpdateError(
+            "this install loads Python files from a system package or tarball; "
+            "pip cannot replace those files. Update it with your OS package "
+            "manager (apt/dnf) or install the matching release package/tarball from "
+            f"{WEB_LATEST}. No installed files or configuration were changed."
+        )
 
     home_path = _home_path(home)
     root = source_checkout()

@@ -145,6 +145,19 @@ Do not add `--force` and do not delete `/etc/simurgh`: the normal rerun preserve
 pairing, mappings, credentials and other configuration. From v3.2.4 onward, the
 panel, menu and `simurgh update --restart` all use the API-plus-redirect path.
 
+## Panel or menu says to update with apt/dnf
+
+System-package (`.deb`/`.rpm`) and extracted tarball installs load Python directly
+from their installed library directory. The self-updater intentionally refuses
+to pip-install over those files: that can leave Python and the Go engine on
+different releases, or be blocked by PEP 668. Install the matching release with
+your configured package manager, or download the matching `.deb`, `.rpm`, or
+`.tar.gz` from the [latest release](https://github.com/Dark-Sky07/Simurgh-Tunnel/releases/latest).
+The error is reported before any installed file or configuration is changed.
+
+Pip/venv installs and the universal installer's git checkout remain self-updatable
+from the panel, terminal menu, or `simurgh update`.
+
 ## Pairing fails with `Connection refused`
 
 The **receiving server**, not your browser, fetches `/api/join` from the offering
