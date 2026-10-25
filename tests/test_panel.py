@@ -1219,6 +1219,15 @@ async def test_the_update_button_asks_github_once(home, tmp_path, relay_cfg, mon
         assert status == 200 and data["ok"] is True
         assert data["update_available"] is True and data["latest"] == "3.0.0"
         assert data["notes_url"].endswith("/v3")
+        assert data["self_update_supported"] is True
+
+        monkeypatch.setattr(updater, "check", lambda: {
+            "current": "2.9.1", "latest": "3.0.0", "tag": "v3.0.0",
+            "notes_url": "https://example.invalid/v3", "available": True,
+            "self_update_supported": False,
+        })
+        status, data = await _request(port, "/api/update", auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and data["self_update_supported"] is False
 
         def boom():
             raise updater.UpdateError("github is unreachable")
@@ -1233,9 +1242,10 @@ async def test_the_update_button_asks_github_once(home, tmp_path, relay_cfg, mon
 
 async def test_the_panel_can_install_an_update_then_schedules_restart(
         home, tmp_path, relay_cfg, monkeypatch):
-    from simurgh import update as updater
+    from simurgh import systemd, update as updater
 
     calls, restarts = [], []
+    monkeypatch.setattr(systemd, "available", lambda: True)
     panel, port = await _panel(home, tmp_path, node=FakeRelayNode(relay_cfg),
                                on_action=lambda name: restarts.append(name))
     try:
@@ -1268,6 +1278,31 @@ async def test_the_panel_can_install_an_update_then_schedules_restart(
                                       auth=f"{USER}:{PASSWORD}", body={})
         assert status == 502 and data["ok"] is False
         assert "unchanged" in data["error"]
+    finally:
+        await panel.stop()
+
+
+
+async def test_the_panel_does_not_attempt_systemd_restart_on_a_foreground_node(
+        home, tmp_path, relay_cfg, monkeypatch):
+    from simurgh import systemd, update as updater
+
+    actions = []
+    panel, port = await _panel(home, tmp_path, node=FakeRelayNode(relay_cfg),
+                               on_action=lambda name: actions.append(name))
+    try:
+        monkeypatch.setattr(systemd, "available", lambda: False)
+        monkeypatch.setattr(updater, "update", lambda *a, **k: {
+            "current": "2.9.1", "latest": "3.0.0", "tag": "v3.0.0",
+            "available": True, "restart_required": True,
+        })
+        status, data = await _request(port, "/api/update", method="POST",
+                                      auth=f"{USER}:{PASSWORD}", body={})
+        assert status == 200 and data["ok"] is True
+        assert data["restart_required"] is True
+        assert data["restarting"] is False
+        assert data["foreground_restart"] is True
+        assert panel._restart_timer is None and actions == []
     finally:
         await panel.stop()
 

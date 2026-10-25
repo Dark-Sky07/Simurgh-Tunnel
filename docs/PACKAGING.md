@@ -10,9 +10,9 @@ answer — and for the people who cannot run a script from the internet at all.
 | | Command | Covers |
 |---|---|---|
 | **one command** | `curl … \| sudo bash` | everything, builds the Go engine |
-| **`.deb`** | `sudo dpkg -i simurgh_3.2.13_amd64.deb` | Debian, Ubuntu, Proxmox |
-| **`.rpm`** | `sudo dnf install ./simurgh-3.2.13-1.x86_64.rpm` | RHEL, Fedora, Alma, Rocky, openSUSE |
-| **tarball** | `tar -xzf simurgh-3.2.13-noarch.tar.gz -C /` | anything with Python 3.9+ |
+| **`.deb`** | `sudo dpkg -i simurgh_3.2.14_amd64.deb` | Debian, Ubuntu, Proxmox |
+| **`.rpm`** | `sudo dnf install ./simurgh-3.2.14-1.x86_64.rpm` | RHEL, Fedora, Alma, Rocky, openSUSE |
+| **tarball** | `tar -xzf simurgh-3.2.14-noarch.tar.gz -C /` | anything with Python 3.9+ |
 | **container** | `docker compose up -d` | both roles, one machine, or one role per host |
 
 ## What is inside
@@ -29,9 +29,9 @@ leave behind:
 | `/usr/lib/systemd/system/simurgh-{relay,exit}.service` | one unit per role; the package enables a role only if **its** config already exists |
 | `/usr/share/doc/simurgh/` | this file, the README (both languages) and the configuration reference |
 
-The two variants are deliberate: `simurgh_3.2.13_all.deb` /
-`simurgh-3.2.13-1.noarch.rpm` are pure Python and run anywhere, while
-`simurgh_3.2.13_amd64.deb` / `…-1.x86_64.rpm` also carry the compiled engine —
+The two variants are deliberate: `simurgh_3.2.14_all.deb` /
+`simurgh-3.2.14-1.noarch.rpm` are pure Python and run anywhere, while
+`simurgh_3.2.14_amd64.deb` / `…-1.x86_64.rpm` also carry the compiled engine —
 which the CLI picks up from `/usr/bin/simurgh-go` by itself, so
 `engine = "go"` works with no path to configure.
 
@@ -67,7 +67,7 @@ values, pass `--role exit` or `--role relay` explicitly.
 ### Debian, Ubuntu, Proxmox
 
 ```bash
-sudo dpkg -i simurgh_3.2.13_amd64.deb      # apt -f install, if you skipped the deps
+sudo dpkg -i simurgh_3.2.14_amd64.deb      # apt -f install, if you skipped the deps
 sudo simurgh install                         # same command on every server; choose the role in the setup panel
 # a fresh install starts the setup panel; the selected role service takes over after the choice
 ```
@@ -79,7 +79,7 @@ sudo simurgh install                         # same command on every server; cho
 ### RHEL, Fedora, Alma, Rocky, openSUSE
 
 ```bash
-sudo dnf install ./simurgh-3.2.13-1.x86_64.rpm
+sudo dnf install ./simurgh-3.2.14-1.x86_64.rpm
 sudo simurgh install                         # identical on both; choose the role in the setup panel
 # a fresh install starts the setup panel; the selected role service takes over after the choice
 ```
@@ -89,7 +89,7 @@ sudo simurgh install                         # identical on both; choose the rol
 It is rooted at `/`, so it unpacks over a system that has Python 3.9+:
 
 ```bash
-sudo tar -xzf simurgh-3.2.13-noarch.tar.gz -C /
+sudo tar -xzf simurgh-3.2.14-noarch.tar.gz -C /
 sudo simurgh install                         # the same command; choose the role in the setup panel
 # without systemd, run simurgh menu to choose the role
 ```
@@ -156,10 +156,15 @@ simurgh menu` or `… simurgh web` work as usual.
 * **Updating.** `simurgh update` understands all of these: a git checkout moves
   to the newest tag and is reinstalled into the active venv, the installed Go
   engine is replaced with the matching SHA-256-verified release asset, and a
-  pip install upgrades through pip. Use `simurgh update --restart` for a
+  pip installs upgrade through pip. Use `simurgh update --restart` for a
   health-checked restart, **Tools → Install update** in the panel, or option
-  **17** in the text menu. Configuration is preserved. `apt upgrade` and
-  `dnf upgrade` work for the packages too.
+  **17** in the text menu. Native `.deb`/`.rpm` and extracted tarball installs
+  are not rewritten with pip: panel and menu point to the OS package manager or
+  the matching release package instead, avoiding a misleading half-update.
+  Configuration is preserved. On a host without systemd, the panel and menu
+  explain how to restart the foreground node instead of attempting a broken
+  service restart. `apt upgrade` and `dnf upgrade` work for packages installed
+  from a configured repository.
 * **`simurgh doctor`** checks the same things after any install method, and
   `simurgh status` is a fine container health check (`simurgh status --json`
   exits 0 when the config is readable and non-zero when it is not).

@@ -503,6 +503,12 @@ def software_update(home: Home, role: str) -> None:
         print(c(f"  already up to date ({info.get('latest') or __version__}).", "green"))
         pause()
         return
+    if info.get("self_update_supported") is False:
+        print(c("  this system-library install cannot self-update safely.", "yellow"))
+        print("  Upgrade with apt/dnf or install the matching release package/tarball:")
+        print(f"  {info.get('notes_url') or 'https://github.com/Dark-Sky07/Simurgh-Tunnel/releases/latest'}")
+        pause()
+        return
     print(f"  new version: {info.get('latest')} ({info.get('tag')})")
     if info.get("notes_url"):
         print(f"  release notes: {info['notes_url']}")
@@ -519,12 +525,18 @@ def software_update(home: Home, role: str) -> None:
     print(c(f"  {result.get('action', 'update installed')}", "green"))
     for step in result.get("steps", []) or []:
         print(f"    - {step}")
-    if result.get("restart_required") and ask_yes("restart the service now?", True):
-        from .cli import _restart_updated_service
+    if result.get("restart_required"):
+        from . import systemd
 
-        _restart_updated_service(home, result.get("latest"))
-    elif result.get("restart_required"):
-        print(c("  Restart later with option 5 to run the new version.", "yellow"))
+        if not systemd.available():
+            print(c("  systemd is unavailable; stop the foreground node and run "
+                    f"`simurgh {role}` again to load the update.", "yellow"))
+        elif ask_yes("restart the service now?", True):
+            from .cli import _restart_updated_service
+
+            _restart_updated_service(home, result.get("latest"))
+        else:
+            print(c("  Restart later with option 5 to run the new version.", "yellow"))
     pause()
 
 

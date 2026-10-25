@@ -144,6 +144,18 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 pairing، مپینگ‌ها، رمزها و سایر تنظیمات را حفظ می‌کند. از v3.2.4 به بعد، پنل، منو
 و `simurgh update --restart` همگی مسیر API همراه با fallback ریدایرکت را دارند.
 
+## پنل یا منو می‌گوید با apt/dnf به‌روزرسانی کنید
+
+نصب‌های package system (`.deb`/`.rpm`) و tarball، کد Python را مستقیم از پوشهٔ
+نصب‌شده بارگذاری می‌کنند. updater عمداً روی این فایل‌ها pip اجرا نمی‌کند؛ چون
+ممکن است نسخهٔ Python و موتور Go ناهماهنگ شوند یا PEP 668 جلوی نصب را بگیرد.
+بستهٔ همان ریلیز را از مخزن package manager تنظیم‌شده نصب کنید، یا فایل `.deb`،
+`.rpm` یا `.tar.gz` متناسب را از [آخرین ریلیز](https://github.com/Dark-Sky07/Simurgh-Tunnel/releases/latest)
+بگیرید. این خطا پیش از تغییر هر فایل نصب یا کانفیگ گزارش می‌شود.
+
+نصب‌های pip/venv و checkout گیتِ نصاب واحد همچنان از پنل، منوی ترمینال یا
+`simurgh update` خودکار به‌روزرسانی می‌شوند.
+
 ## Pair با خطای `Connection refused` متوقف می‌شود
 
 درخواست `/api/join` را **سرور گیرنده** می‌زند، نه مرورگر شما. بازبودن پورت تونل
