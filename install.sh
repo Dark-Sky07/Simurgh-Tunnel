@@ -96,9 +96,8 @@ ${BOLD}Simurgh Tunnel installer${RESET}
   bash install.sh [options]
 
 main options:
-  --role exit|relay|both     role of this server (foreign / Iranian / both)
-                             without --role a fresh interactive install asks;
-                             unattended installs must specify --role
+  --role exit|relay|both     advanced override (foreign / Iranian / both)
+                             by default, choose the role in the setup panel or menu
   --both                     run both services on one server (same as --role both)
   --name NAME                a name for this server
   --token TOKEN              shared secret token (generated/asked if missing)
@@ -234,39 +233,28 @@ die "this script must run as root (sudo)."
 fi
 
 # ------------------------------------------------------- select the server role
-# Geo-IP is not reliable enough to decide a server's job: proxies, cloud
-# addresses and databases can disagree. Resolve the role before downloading,
-# installing packages, tuning the kernel, or writing configuration.
-if [ "$UNINSTALL" != "1" ]; then
-  if [ "$BOTH" = "1" ] && { [ -z "$ROLE" ] || [ "$ROLE" = "auto" ]; }; then
+# Never infer the role from Geo-IP or ask during installation. Existing configs
+# remain authoritative on reruns; a fresh host gets a neutral setup panel and
+# the operator chooses the role there or in `simurgh menu`.
+if [ "$UNINSTALL" != "1" ] && { [ -z "$ROLE" ] || [ "$ROLE" = "auto" ]; }; then
+  if [ -f "$CONF_HOME/exit.toml" ] && [ -f "$CONF_HOME/relay.toml" ]; then
     ROLE="auto"
-  elif [ -z "$ROLE" ] || [ "$ROLE" = "auto" ]; then
-    if [ -f "$CONF_HOME/exit.toml" ] && [ -f "$CONF_HOME/relay.toml" ]; then
-      # A one-box install already has an explicit, durable two-role choice.
-      ROLE="auto"
-      BOTH=1
-    elif [ -f "$CONF_HOME/exit.toml" ]; then
-      ROLE="exit"
-    elif [ -f "$CONF_HOME/relay.toml" ]; then
-      ROLE="relay"
-    elif [ "$HAS_TTY" = "1" ]; then
-      printf '%s\n' "  Choose the role this server will run:"
-      printf '%s\n' "    1) Exit — foreign/upstream server; your destination services live here"
-      printf '%s\n' "    2) Relay — user-facing server; your users connect here"
-      read -r -p "  Select 1 or 2: " _role_choice </dev/tty || _role_choice=""
-      case "$_role_choice" in
-        1|exit|Exit) ROLE="exit" ;;
-        2|relay|Relay) ROLE="relay" ;;
-        *) die "choose 1 (exit) or 2 (relay); no configuration was changed." ;;
-      esac
-    else
-      die "choose a role for this new server: rerun with --role exit or --role relay (or use an interactive terminal). No configuration was changed."
-    fi
+    BOTH=1
+  elif [ -f "$CONF_HOME/exit.toml" ]; then
+    ROLE="exit"
+  elif [ -f "$CONF_HOME/relay.toml" ]; then
+    ROLE="relay"
   fi
+fi
+if [ "$UNINSTALL" != "1" ]; then
   if [ "$BOTH" = "1" ]; then
-    ok "selected roles: exit and relay"
+    ok "existing or explicitly selected roles: exit and relay"
+  elif [ -n "$ROLE" ] && [ "$ROLE" != "auto" ]; then
+    ok "using explicit server role: $ROLE"
+  elif [ "$ROLE" = "auto" ]; then
+    say "using the existing installation; its role will be preserved."
   else
-    ok "selected server role: $ROLE"
+    say "no role selected yet; choose it in the setup panel or run simurgh menu."
   fi
 fi
 
@@ -565,7 +553,7 @@ fi
 
 ARGS=()
 [ "$FORCE" = "1" ]     && ARGS+=(--force)
-ARGS+=(--role "$ROLE")
+[ -n "$ROLE" ] && ARGS+=(--role "$ROLE")
 [ "$BOTH" = "1" ]      && ARGS+=(--both)
 [ -n "$NAME" ]         && ARGS+=(--name "$NAME")
 [ -n "$EXIT_HOST" ]    && ARGS+=(--exit-host "$EXIT_HOST")
@@ -658,6 +646,15 @@ except Exception:
     pass
 PY
 )"
+if [ ! -f "$SIMHOME/exit.toml" ] && [ ! -f "$SIMHOME/relay.toml" ]; then
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet simurgh-setup 2>/dev/null; then
+    printf '%s\n' "  ${DIM}next: choose Exit or Relay in the first-run panel, or use simurgh menu over SSH${RESET}"
+  else
+    printf '%s\n' "  ${DIM}next: run simurgh menu in an interactive terminal to choose Exit or Relay${RESET}"
+  fi
+  echo
+  exit 0
+fi
 printf '%s\n' "  ${BOLD}web panel:${RESET} ${CYAN}http://<SERVER-IP>:$PANEL/login${RESET}"
 [ -n "$CREDS" ] && printf '%s\n' "  ${BOLD}login:${RESET} $CREDS"
 printf '%s\n' "  ${DIM}next: open Pair to create/import a setup link; use Ports and Settings for configuration${RESET}"

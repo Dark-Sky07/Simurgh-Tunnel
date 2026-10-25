@@ -87,6 +87,26 @@ async def _raw(port, path, *, method="GET", body=None, auth=None, cookie=None) -
     return _Raw(status, headers, raw.partition(b"\r\n\r\n")[2])
 
 
+async def _form_request(port, path, fields, *, auth=None):
+    from urllib.parse import urlencode
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    payload = urlencode(fields).encode()
+    head = [f"POST {path} HTTP/1.1", "Host: localhost", "Connection: close",
+            "Content-Type: application/x-www-form-urlencoded",
+            f"Content-Length: {len(payload)}"]
+    if auth:
+        token = base64.b64encode(auth.encode()).decode()
+        head.append(f"Authorization: Basic {token}")
+    writer.write(("\r\n".join(head) + "\r\n\r\n").encode() + payload)
+    await writer.drain()
+    raw = await asyncio.wait_for(reader.read(-1), 10)
+    writer.close()
+    lines = raw.split(b"\r\n")
+    status = int(lines[0].split(b" ", 2)[1])
+    return status, raw.partition(b"\r\n\r\n")[2]
+
+
 async def _request(port, path, *, method="GET", body=None, auth=None, host_header=None):
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     head = [f"{method} {path} HTTP/1.1", f"Host: {host_header or 'localhost'}",
@@ -137,6 +157,85 @@ async def test_healthz_needs_no_credentials(home, tmp_path, relay_cfg):
         assert status == 200 and data["ok"] is True
         version = data["version"]
         assert version.count(".") == 2 and all(part.isdigit() for part in version.split("."))
+    finally:
+        await panel.stop()
+
+
+async def test_first_run_panel_role_choice_is_authenticated_and_one_time(tmp_path, monkeypatch):
+    from subprocess import CompletedProcess
+    from simurgh import panel as panel_module, systemd
+    from simurgh.util import Home
+
+    home = Home(tmp_path).ensure()
+    port = free_port()
+    panel = Panel(home, "setup", host="127.0.0.1", port=port,
+                  user=USER, password=PASSWORD)
+    monkeypatch.setattr(systemd, "available", lambda: True)
+    service_calls = []
+
+    def install_role_service(*args, **kwargs):
+        service_calls.append((args, kwargs))
+        return {
+            "systemd": True, "write": True, "units": [],
+            "actions": {"simurgh-relay": "ok"},
+        }
+
+    monkeypatch.setattr(systemd, "install_services", install_role_service)
+    monkeypatch.setattr(panel_module.shutil, "which", lambda name: "/usr/bin/systemd-run")
+    monkeypatch.setattr(panel_module.subprocess, "run", lambda *a, **k:
+                        CompletedProcess(a[0], 0, "", ""))
+    await panel.start()
+    try:
+        assert (await _raw(port, "/api/setup-role", method="POST",
+                           body=b"role=relay")).status == 401
+        page = await _raw(port, "/", auth=f"{USER}:{PASSWORD}")
+        assert page.status == 200
+        assert b"Foreign server" in page.body and b"Iranian server" in page.body
+        nonce = panel.setup_nonce
+        status, _ = await _form_request(
+            port, "/api/setup-role", {"role": "relay", "nonce": "bad"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 403
+        assert not home.relay_cfg.exists()
+        status, body = await _form_request(
+            port, "/api/setup-role",
+            {"role": "relay", "nonce": nonce, "lang": "en"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 200 and b"Role saved" in body
+        assert load_relay(home.relay_cfg).unpaired is True
+        assert service_calls == [((home,), {
+            "roles": ("relay",), "enable": True, "start": False, "write": True,
+        })]
+        assert panel.setup_nonce == ""
+    finally:
+        await panel.stop()
+
+
+async def test_setup_panel_preserves_role_config_and_explains_recovery_on_handoff_failure(
+        tmp_path, monkeypatch):
+    from simurgh import systemd
+    from simurgh.util import Home
+
+    home = Home(tmp_path).ensure()
+    port = free_port()
+    panel = Panel(home, "setup", host="127.0.0.1", port=port,
+                  user=USER, password=PASSWORD)
+    monkeypatch.setattr(systemd, "available", lambda: True)
+    monkeypatch.setattr(systemd, "install_services", lambda *a, **k: {
+        "systemd": False, "write": False, "units": [], "actions": {},
+    })
+    await panel.start()
+    try:
+        await _raw(port, "/", auth=f"{USER}:{PASSWORD}")
+        status, body = await _form_request(
+            port, "/api/setup-role",
+            {"role": "exit", "nonce": panel.setup_nonce, "lang": "en"},
+            auth=f"{USER}:{PASSWORD}")
+        assert status == 500
+        assert b"configuration was saved" in body
+        assert b"simurgh menu" in body
+        assert home.exit_cfg.exists()
+        assert panel.setup_nonce == ""
     finally:
         await panel.stop()
 

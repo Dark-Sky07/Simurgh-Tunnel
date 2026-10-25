@@ -71,7 +71,7 @@ Iran relay :8443 ──user traffic──► exit target 127.0.0.1:8443
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
-نصاب هرگز نقش سرور را از روی IP یا کشور حدس نمی‌زند و در اجرای دوباره، تنظیمات موجود را معتبر می‌داند. برای نصب تازه و بدون ترمینال، `--role exit` یا `--role relay` را صریحاً بدهید (در اجرای pipe، آن را پس از `bash -s --` بنویسید)؛ در غیر این صورت نصاب پیش از تغییرات سیستمی متوقف می‌شود. رلهٔ مستقیم عمداً در وضعیت **جفت‌نشده** نصب می‌شود تا پنل آن حتی پیش از داشتن آدرس اگزیت یا توکن بالا بیاید. اجرای دوبارهٔ نصاب، سورس کش‌شده را تازه می‌کند و نصاب جدید با CLI قدیمی مخلوط نمی‌شود.
+نصاب هرگز نقش سرور را از روی IP یا کشور حدس نمی‌زند. در نصب تازه روی سیستم دارای systemd، پنل راه‌اندازیِ امن و بدون نقش بالا می‌آید؛ همان‌جا **Exit** یا **Relay** را انتخاب کنید. اگر systemd ندارید، با `simurgh menu` در ترمینال نقش را انتخاب کنید. تنظیمات موجود در اجرای دوباره معتبر می‌ماند. برای نصب خودکار با گزینه‌های سفارشی، `--role exit` یا `--role relay` را صریحاً بدهید. Relay تازه عمداً **جفت‌نشده** می‌ماند تا بعداً از پنل جفت شود. اجرای دوبارهٔ نصاب، سورس کش‌شده را تازه می‌کند و نصاب جدید با CLI قدیمی مخلوط نمی‌شود.
 
 ### ۲ — پنل هر دو سرور را باز کنید
 
@@ -104,9 +104,9 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 فایل‌های هر ریلیز شامل `.deb`، `.rpm`، `.tar.gz` قابل‌حمل و موتورهای کامپایل‌شده است. `Dockerfile` و `docker-compose.yml` هم در مخزن هستند.
 
 ```bash
-sudo dpkg -i simurgh_3.2.12_amd64.deb
-sudo dnf install ./simurgh-3.2.12-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.12-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.13_amd64.deb
+sudo dnf install ./simurgh-3.2.13-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.13-noarch.tar.gz -C /
 docker compose up -d                   # آزمایشگاه توسعهٔ دونودی اختیاری، نه نصب سرور
 ```
 

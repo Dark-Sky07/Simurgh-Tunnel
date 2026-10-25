@@ -3,10 +3,10 @@
 The installer is the first thing people run, and it runs in two very different
 ways:
 
-* ``sudo bash install.sh --role exit …`` — a file, so ``BASH_SOURCE`` exists;
+* ``sudo bash install.sh …`` — a file, so ``BASH_SOURCE`` exists;
 * ``curl -fsSL …/install.sh | sudo bash …`` — stdin is the script, so
-  ``BASH_SOURCE`` is empty; the installer may still read a controlling terminal
-  through ``/dev/tty`` for the explicit role choice.
+  ``BASH_SOURCE`` is empty. Fresh role selection belongs to the setup panel or
+  terminal menu, never to an installer prompt.
 
 Both used to abort with ``…: unbound variable`` (a variable that was read but
 never set, under ``set -u``), and ``--listen`` was silently dropped. These
@@ -390,7 +390,7 @@ def test_explicit_relay_role_is_used_even_if_geo_environment_says_elsewhere(tmp_
     proc = _install_as(tmp_path, "relay", "DE")
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
-    assert "selected server role: relay" in output, output
+    assert "using explicit server role: relay" in output, output
     assert (tmp_path / "etc" / "relay.toml").exists()
     assert not (tmp_path / "etc" / "exit.toml").exists()
     assert "unpaired = true" in _config(tmp_path, "relay.toml")
@@ -400,40 +400,51 @@ def test_explicit_exit_role_is_used_even_if_geo_environment_says_iran(tmp_path):
     proc = _install_as(tmp_path, "exit", "IR")
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
-    assert "selected server role: exit" in output, output
+    assert "using explicit server role: exit" in output, output
     assert (tmp_path / "etc" / "exit.toml").exists()
     assert not (tmp_path / "etc" / "relay.toml").exists()
 
 
-@pytest.mark.parametrize("extra", [[], ["--exit", "203.0.113.9:443"]])
-def test_fresh_noninteractive_install_requires_role_before_changes(tmp_path, extra):
+def test_fresh_noninteractive_install_defers_role_to_menu_or_panel(tmp_path):
     env = _env(tmp_path)
     env["SIMURGH_COUNTRY"] = "IR"  # must not silently decide relay
     proc = subprocess.run(
-        ["bash", str(INSTALL), "--yes", "--no-go", *extra],
+        ["bash", str(INSTALL), "--yes", "--no-go"],
+        env=env, capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "no role has been selected yet" in output
+    assert "simurgh menu" in output
+    assert not (tmp_path / "etc" / "relay.toml").exists()
+    assert not (tmp_path / "etc" / "exit.toml").exists()
+
+
+def test_custom_install_options_without_role_are_rejected(tmp_path):
+    env = _env(tmp_path)
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", "--exit", "203.0.113.9:443"],
         env=env, capture_output=True, text=True, timeout=TIMEOUT,
     )
     output = proc.stdout + proc.stderr
     assert proc.returncode != 0, output
-    assert "--role exit" in output and "--role relay" in output, output
-    assert not (tmp_path / "etc").exists()
-    assert not (tmp_path / "venv").exists()
+    assert "choose a role" in output
+    assert not (tmp_path / "etc" / "relay.toml").exists()
+    assert not (tmp_path / "etc" / "exit.toml").exists()
 
 
 @pytest.mark.skipif(not hasattr(pty, "fork"), reason="requires a POSIX pseudo-terminal")
-def test_interactive_installer_accepts_the_manual_role_choice(tmp_path):
+def test_interactive_installer_does_not_prompt_for_a_role(tmp_path):
     env = _env(tmp_path)
     env.pop("SIMURGH_NO_TTY", None)
-    env["SIMURGH_COUNTRY"] = "DE"  # deliberately conflicts with the chosen relay
     command = ["bash", str(INSTALL), "--yes", "--no-go"]
     pid, fd = pty.fork()
-    if pid == 0:  # child owns the controlling terminal used by /dev/tty
+    if pid == 0:
         os.execvpe(command[0], command, env)
 
     output = bytearray()
-    sent_choice = False
     status = None
-    deadline = time.monotonic() + 180
+    deadline = time.monotonic() + TIMEOUT
     try:
         while time.monotonic() < deadline:
             readable, _, _ = select.select([fd], [], [], 0.5)
@@ -444,9 +455,6 @@ def test_interactive_installer_accepts_the_manual_role_choice(tmp_path):
                     chunk = b""
                 if chunk:
                     output.extend(chunk)
-            if not sent_choice and b"Select 1 or 2:" in output:
-                os.write(fd, b"2\n")
-                sent_choice = True
             waited, child_status = os.waitpid(pid, os.WNOHANG)
             if waited == pid:
                 status = child_status
@@ -458,10 +466,10 @@ def test_interactive_installer_accepts_the_manual_role_choice(tmp_path):
         os.close(fd)
 
     text = output.decode("utf-8", errors="replace")
-    assert sent_choice, text
     assert status is not None and os.waitstatus_to_exitcode(status) == 0, text
-    assert "selected server role: relay" in text, text
-    assert (tmp_path / "etc" / "relay.toml").exists()
+    assert "Select 1 or 2" not in text
+    assert "choose Exit or Relay" in text
+    assert not (tmp_path / "etc" / "relay.toml").exists()
     assert not (tmp_path / "etc" / "exit.toml").exists()
 
 
@@ -474,7 +482,7 @@ def test_a_rerun_keeps_the_role_that_is_already_installed(tmp_path):
                           env=env, capture_output=True, text=True, timeout=TIMEOUT)
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
-    assert "selected server role: exit" in output, output
+    assert "keeping the existing exit config" in output, output
     assert not (tmp_path / "etc" / "relay.toml").exists()
 
 
@@ -526,7 +534,7 @@ def test_quick_start_has_one_universal_install_command(filename, start, end):
     assert commands == [
         "curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash\n"
     ]
-    assert "--role exit" in quick and "--role relay" in quick  # only for noninteractive installs
+    assert "--role exit" in quick and "--role relay" in quick  # advanced automation only
     assert "simurgh join" not in quick and "simurgh link" not in quick
     assert "Pair" in quick and "Settings" in quick
 

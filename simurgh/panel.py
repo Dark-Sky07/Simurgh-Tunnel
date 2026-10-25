@@ -30,6 +30,8 @@ import ipaddress
 import json
 import os
 import secrets
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -41,7 +43,8 @@ from .layout import History, RateTracker, build as build_layout
 from .panel_i18n import EN as I18N_EN, FA as I18N_FA
 from .panel_ui import (CSP, LOGIN_TOKEN_TTL, LoginTokens, apply_plan, backup,
                        dashboard_html, login_error, login_page, plan_changes,
-                       read_asset, rollback)
+                       read_asset, rollback, setup_complete_html,
+                       setup_dashboard_html, setup_recovery_html)
 from .stats import Stats
 from .util import Home, clamp, get_logger, parse_size, split_host_port
 
@@ -189,6 +192,8 @@ class Panel:
         self.rates = RateTracker()
         #: single-use login links (simurgh web --link, Security page)
         self.login_tokens = LoginTokens()
+        #: one-time first-run role form token, bound to this setup-panel process
+        self.setup_nonce = secrets.token_urlsafe(24) if role == "setup" else ""
         #: Opaque browser sessions live only in this process.  Logout removes
         #: the presented token, so clearing the cookie is not the only barrier
         #: against replaying it.  Basic auth remains available for scripts.
@@ -335,7 +340,12 @@ class Panel:
                 return http_response(b"", 303, extra={
                     "Location": "/", "Set-Cookie": self._session_cookie(),
                 })
-            return http_response(self.dashboard().encode("utf-8"))
+            lang = "fa" if (req.query.get("lang") or "").lower().startswith("fa") else "en"
+            return http_response(self.dashboard(lang).encode("utf-8"))
+        if self.role == "setup":
+            if req.method == "POST" and path == "/api/setup-role":
+                return await self.select_setup_role(req)
+            return json_response({"ok": False, "error": "not found"}, 404)
         if req.method == "GET" and path == "/api/status":
             return json_response(self.status())
         if req.method == "GET" and path == "/metrics":
@@ -1598,9 +1608,81 @@ class Panel:
         payload["version"] = __version__
         return json_response(payload)
 
+    async def select_setup_role(self, req: Request) -> bytes:
+        """Create the first role config and hand the panel port to its service."""
+        form = req.form()
+        language = "fa" if str(form.get("lang") or "").lower().startswith("fa") else "en"
+        nonce = str(form.get("nonce") or "")
+        if not nonce or not self.setup_nonce or not hmac.compare_digest(
+                nonce, self.setup_nonce):
+            return http_response(b"Invalid or expired setup form. Reload the page.", 403,
+                                 ctype="text/plain; charset=utf-8")
+        role = str(form.get("role") or "").strip().lower()
+        if role not in ("exit", "relay"):
+            return http_response(b"Choose exit or relay.", 400,
+                                 ctype="text/plain; charset=utf-8")
+        if self.home.exit_cfg.exists() or self.home.relay_cfg.exists():
+            return http_response(
+                b"A role config already exists. Use the menu to manage this installation.",
+                409, ctype="text/plain; charset=utf-8")
+
+        from . import systemd
+
+        if not systemd.available():
+            return http_response(
+                b"Systemd is unavailable. Choose the role with simurgh menu instead.",
+                503, ctype="text/plain; charset=utf-8")
+        from .cli import build_parser, cmd_init
+
+        argv = ["--home", str(self.home.path), "init", "--role", role]
+        if role == "relay":
+            argv.append("--pair-later")
+        args = build_parser().parse_args(argv)
+        code = await asyncio.to_thread(cmd_init, args)
+        if code != 0:
+            return json_response({"ok": False,
+                                  "error": f"could not create the {role} configuration"}, 500)
+
+        # From here the role config is authoritative. Do not offer the setup
+        # form again even if systemd handoff fails; preserve it and show the
+        # operator the safe recovery command instead.
+        self.setup_nonce = ""
+        report = await asyncio.to_thread(
+            systemd.install_services, self.home, roles=(role,), enable=True,
+            start=False, write=True)
+        if not report.get("systemd") or not report.get("write", True):
+            return http_response(setup_recovery_html(
+                role, language, "Could not prepare the systemd service.").encode("utf-8"), 500)
+        errors = report.get("errors") or {}
+        actions = report.get("actions") or {}
+        if errors or any(result != "ok" for result in actions.values()):
+            return http_response(setup_recovery_html(
+                role, language, "Could not enable the selected role service.").encode("utf-8"), 500)
+
+        runner = shutil.which("systemd-run")
+        if not runner:
+            return http_response(setup_recovery_html(
+                role, language, "systemd-run is unavailable.").encode("utf-8"), 500)
+        unit = f"simurgh-role-switch-{secrets.token_hex(5)}"
+        switch = ("sleep 1; systemctl disable --now simurgh-setup; "
+                  f"systemctl start simurgh-{role}")
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                [runner, "--quiet", f"--unit={unit}", "--collect", "/bin/sh", "-c", switch],
+                capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return http_response(setup_recovery_html(role, language, str(exc)).encode("utf-8"), 500)
+        if proc.returncode != 0:
+            detail = proc.stderr.strip() or "Could not schedule the role switch."
+            return http_response(setup_recovery_html(role, language, detail).encode("utf-8"), 500)
+        return http_response(setup_complete_html(role, language).encode("utf-8"))
+
     # ------------------------------------------------------------ dashboard
-    def dashboard(self) -> str:
-        """Serve the shell; the UI language is chosen in the browser."""
+    def dashboard(self, language: str = "en") -> str:
+        """Serve the dashboard shell, or the role chooser during first-run setup."""
+        if self.role == "setup":
+            return setup_dashboard_html(__version__, __product__, self.setup_nonce, language)
         return dashboard_html(self.role, __version__, __product__)
 
 

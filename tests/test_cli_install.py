@@ -29,44 +29,43 @@ def _install_args(tmp_path, *extra):
     return args
 
 
-def test_interactive_universal_install_asks_for_the_role(tmp_path, monkeypatch):
-    """Package installs use the same command on either server, with one prompt."""
-    args = _install_args(tmp_path)
-    args.token = ""  # the ordinary universal install has no pre-shared token
-    called = []
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(cli, "_ask", lambda *a, **k: "2")
-    monkeypatch.setattr(cli, "_init_relay",
-                        lambda home, given: called.append((given.role, given.pair_later)) or 0)
-    monkeypatch.setattr(cli, "_init_exit",
-                        lambda home, given: called.append(("exit", False)) or 0)
+def _fresh_install_args(tmp_path, *extra):
+    args = cli.build_parser().parse_args(["install", *extra])
+    args.home = str(tmp_path)
+    return args
+
+
+def test_fresh_install_starts_neutral_setup_panel_without_selecting_a_role(
+        tmp_path, monkeypatch, capsys):
+    from simurgh import systemd
+
+    args = _fresh_install_args(tmp_path)
+    calls = []
+    monkeypatch.setattr(systemd, "available", lambda: True)
+    monkeypatch.setattr(systemd, "install_setup_service",
+                        lambda home, **kwargs: calls.append(kwargs) or {
+                            "systemd": True, "actions": {"simurgh-setup": "ok"},
+                            "errors": {},
+                        })
+    monkeypatch.setattr(cli, "_panel_credentials", lambda home: ("setup", "secret"))
+    monkeypatch.setattr(cli, "_public_ip", lambda: "203.0.113.5")
+
     assert cli.cmd_install(args) == 0
-    assert called == [("relay", True)]
+    assert calls == [{"enable": True, "start": True, "write": True}]
+    assert not (tmp_path / "exit.toml").exists()
+    assert not (tmp_path / "relay.toml").exists()
+    output = capsys.readouterr().out
+    assert "first-run setup panel is running" in output
+    assert "choose this server's role in the panel" in output
 
 
-def test_interactive_universal_install_can_choose_exit(tmp_path, monkeypatch):
-    args = _install_args(tmp_path)
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(cli, "_ask", lambda *a, **k: "1")
-    monkeypatch.setattr(cli, "_init_exit", lambda home, given: 0)
-    assert cli.cmd_install(args) == 0
-
-
-def test_noninteractive_fresh_install_fails_before_creating_home(tmp_path, monkeypatch, capsys):
-    args = _install_args(tmp_path)
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+def test_custom_options_without_role_are_rejected_without_config_changes(
+        tmp_path, monkeypatch, capsys):
+    args = _fresh_install_args(tmp_path, "--exit", "203.0.113.9:443")
     assert cli.cmd_install(args) == 2
-    output = capsys.readouterr().err
-    assert "--role exit" in output and "--role relay" in output
+    assert "choose a role in the setup panel or `simurgh menu`" in capsys.readouterr().err
     assert not (tmp_path / "relay.toml").exists()
     assert not (tmp_path / "exit.toml").exists()
-
-    # Even a supplied endpoint does not silently choose a role on a fresh,
-    # unattended install; the role itself must be explicit.
-    with_endpoint = _install_args(tmp_path, "--exit", "203.0.113.9:443")
-    assert cli.cmd_install(with_endpoint) == 2
-    assert "--role exit" in capsys.readouterr().err
-    assert not (tmp_path / "relay.toml").exists()
 
 
 def test_explicit_noninteractive_relay_role_starts_unpaired(tmp_path, monkeypatch):
@@ -204,6 +203,20 @@ def test_join_keeps_refusing_a_paired_config_without_force(tmp_path, monkeypatch
                                 "--no-restart", "--force"])
     forced.home = str(tmp_path)
     assert cli.cmd_join(forced) == 0
+
+
+def test_automatic_install_role_comes_from_existing_config(tmp_path, capsys):
+    home = cli.Home(tmp_path).ensure()
+    original = RelayConfig(token="existing-secret", name="already-paired")
+    original.exit.address = "198.51.100.4"
+    save_relay(original, home.relay_cfg)
+    before = home.relay_cfg.read_bytes()
+
+    assert cli.cmd_install(_install_args(tmp_path)) == 0
+
+    assert home.relay_cfg.read_bytes() == before
+    assert not home.exit_cfg.exists()
+    assert "keeping the existing relay config" in capsys.readouterr().out
 
 
 def test_install_rerun_preserves_an_existing_config(tmp_path):
