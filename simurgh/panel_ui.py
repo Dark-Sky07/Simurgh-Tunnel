@@ -58,6 +58,102 @@ def read_asset(name: str) -> tuple[bytes, str] | None:
     return path.read_bytes(), ASSET_TYPES.get(path.suffix, "application/octet-stream")
 
 
+def setup_dashboard_html(version: str, product: str, nonce: str,
+                         language: str = "en") -> str:
+    """First-run role chooser; it has no role-specific config yet."""
+    import html
+
+    fa = language == "fa"
+    title = "انتخاب نقش این سرور" if fa else "Choose this server's role"
+    subtitle = ("این سرور چه کاری در تونل سیمرغ انجام می‌دهد؟"
+                if fa else "What should this server do in your Simurgh tunnel?")
+    exit_title = "سرور خارج — Exit" if fa else "Foreign server — Exit"
+    relay_title = "سرور ایران — Relay" if fa else "Iranian server — Relay"
+    exit_copy = ("اینجا مقصدهای نهایی سرویس‌ها قرار دارند؛ سرور ایران به این سرور وصل می‌شود."
+                 if fa else "Your destination services live here; the Iranian relay connects to this server.")
+    relay_copy = ("کاربران به این سرور وصل می‌شوند؛ سپس ترافیک از تونل به سرور خارج می‌رود."
+                  if fa else "Your users connect here; traffic is forwarded through the tunnel to the exit.")
+    choose_exit = "انتخاب سرور خارج" if fa else "Choose Exit"
+    choose_relay = "انتخاب سرور ایران" if fa else "Choose Relay"
+    note = ("این انتخاب فقط نقش همین سرور را تعیین می‌کند؛ جفت‌سازی و تنظیمات بعداً در پنل انجام می‌شود."
+            if fa else "This selects only this server's role. Pairing and settings can be completed in the panel afterward.")
+    switch = '<a href="/?lang=en">English</a>' if fa else '<a href="/?lang=fa" lang="fa">فارسی</a>'
+    direction = "rtl" if fa else "ltr"
+    html_doc = '''<!doctype html>
+<html lang="__LANG__" dir="__DIR__"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light"><title>__TITLE__ · __PRODUCT__</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--card:#111d30;--line:#243650;--ink:#eef5ff;--muted:#a8bad0;--teal:#61e3ce;--blue:#8bb8ff}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 50% -15%,#1b3656 0,transparent 55%),var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;padding:28px 18px}
+main{max-width:980px;margin:0 auto}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:48px}.brand{display:flex;align-items:center;gap:12px;font-weight:750}.brand img{width:38px;height:38px}.brand span{letter-spacing:.02em}.lang{color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:99px;padding:7px 13px;white-space:nowrap}
+.kicker{color:var(--teal);font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.15;letter-spacing:-.035em;margin:10px 0 12px}.sub{max-width:680px;color:var(--muted);font-size:1.1rem;margin:0 0 32px}.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.card{min-width:0;padding:26px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(145deg,rgba(23,39,61,.96),rgba(15,26,43,.96));box-shadow:0 18px 55px #02071155;display:flex;flex-direction:column}.mark{font-size:.78rem;color:var(--blue);font-weight:750;letter-spacing:.1em;text-transform:uppercase}.card h2{font-size:1.45rem;margin:14px 0 10px;overflow-wrap:anywhere}.card p{color:var(--muted);margin:0 0 24px;flex:1}.card button{width:100%;min-height:48px;border:0;border-radius:12px;background:linear-gradient(100deg,#62e4ce,#8bb8ff);color:#07111e;font:inherit;font-weight:700;cursor:pointer;padding:12px 16px;overflow-wrap:anywhere}.card button:hover{filter:brightness(1.08)}.note{border-inline-start:3px solid var(--teal);padding:12px 16px;margin:26px 0 0;background:#132238;border-radius:0 12px 12px 0;color:var(--muted)}footer{margin-top:38px;color:#8398b2;font-size:.85rem;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+@media(max-width:680px){body{padding:18px 14px}.top{margin-bottom:34px}.cards{grid-template-columns:1fr}.card{padding:22px}}
+</style></head><body><main><header class="top"><div class="brand"><img src="/assets/simurgh.png" alt=""><span>__PRODUCT__</span></div>__SWITCH__</header>
+<div class="kicker">__KICKER__</div><h1>__TITLE__</h1><p class="sub">__SUBTITLE__</p>
+<section class="cards" aria-label="__TITLE__">
+<article class="card"><div class="mark">01 · EXIT</div><h2>__EXIT_TITLE__</h2><p>__EXIT_COPY__</p>
+<form method="post" action="/api/setup-role"><input type="hidden" name="role" value="exit"><input type="hidden" name="nonce" value="__NONCE__"><input type="hidden" name="lang" value="__LANG__"><button type="submit">__CHOOSE_EXIT__</button></form></article>
+<article class="card"><div class="mark">02 · RELAY</div><h2>__RELAY_TITLE__</h2><p>__RELAY_COPY__</p>
+<form method="post" action="/api/setup-role"><input type="hidden" name="role" value="relay"><input type="hidden" name="nonce" value="__NONCE__"><input type="hidden" name="lang" value="__LANG__"><button type="submit">__CHOOSE_RELAY__</button></form></article>
+</section><p class="note">__NOTE__</p><footer><span>Simurgh Tunnel v__VERSION__</span><span>Local-first · No external assets</span></footer></main></body></html>'''
+    values = {
+        "LANG": "fa" if fa else "en", "DIR": direction, "TITLE": title,
+        "PRODUCT": product, "SWITCH": switch,
+        "KICKER": "راه‌اندازی اولیه" if fa else "FIRST-RUN SETUP",
+        "SUBTITLE": subtitle, "EXIT_TITLE": exit_title,
+        "EXIT_COPY": exit_copy, "RELAY_TITLE": relay_title,
+        "RELAY_COPY": relay_copy, "CHOOSE_EXIT": choose_exit,
+        "CHOOSE_RELAY": choose_relay, "NOTE": note,
+        "VERSION": version, "NONCE": nonce,
+    }
+    for key, value in values.items():
+        html_doc = html_doc.replace(f"__{key}__", html.escape(str(value), quote=True))
+    return html_doc
+
+
+def setup_recovery_html(role: str, language: str = "en", detail: str = "") -> str:
+    """Explain that the role config was saved but service handoff needs attention."""
+    import html
+
+    fa = language == "fa"
+    role_name = "سرور خارج (Exit)" if role == "exit" else "سرور ایران (Relay)"
+    title = "تنظیم نقش ذخیره شد" if fa else "Role configuration saved"
+    message = (f"تنظیمات {role_name} ذخیره شده است، اما راه‌اندازی سرویس کامل نشد. "
+               "برای ادامه، در ترمینال `simurgh menu` را اجرا کنید." if fa else
+               f"The {role_name} configuration was saved, but the service handoff did not finish. "
+               "Run `simurgh menu` in a terminal to continue.")
+    direction = "rtl" if fa else "ltr"
+    extra = f"<p class=detail>{html.escape(detail)}</p>" if detail else ""
+    return (f"<!doctype html><html lang={'fa' if fa else 'en'} dir={direction}><head>"
+            "<meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>{html.escape(title)} · Simurgh Tunnel</title><style>body{{margin:0;min-height:100vh;"
+            "display:grid;place-items:center;background:#0b1220;color:#eef5ff;font:16px/1.7 system-ui,sans-serif;"
+            "padding:24px}}main{max-width:640px;overflow-wrap:anywhere;border:1px solid #243650;"
+            "border-radius:20px;background:#111d30;padding:28px}p{color:#a8bad0}</style></head>"
+            f"<body><main><h1>{html.escape(title)}</h1><p>{html.escape(message)}</p>{extra}</main></body></html>")
+
+
+def setup_complete_html(role: str, language: str = "en") -> str:
+    """Confirmation shown while the setup service switches to the chosen role."""
+    import html
+
+    fa = language == "fa"
+    role_name = (("سرور خارج (Exit)" if role == "exit" else "سرور ایران (Relay)"))
+    title = "انتخاب ذخیره شد" if fa else "Role saved"
+    detail = (f"نقش {role_name} تنظیم شد. سرویس در حال راه‌اندازی است؛ چند لحظهٔ دیگر همین آدرس را دوباره باز کنید."
+              if fa else f"{role_name} is configured. The service is switching now; reopen this address in a few seconds.")
+    direction = "rtl" if fa else "ltr"
+    return ("<!doctype html><html lang=\"" + ("fa" if fa else "en") + "\" dir=\"" + direction + "\"><head>"
+            "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<meta http-equiv=\"refresh\" content=\"8;url=/\"><title>" + html.escape(title)
+            + " · Simurgh Tunnel</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;"
+            "background:#0b1220;color:#eef5ff;font:16px/1.7 system-ui,sans-serif;padding:24px}.box{max-width:620px;"
+            "border:1px solid #243650;border-radius:20px;background:#111d30;padding:28px}p{color:#a8bad0}</style></head>"
+            "<body><main class=\"box\"><h1>" + html.escape(title) + "</h1><p>" + html.escape(detail)
+            + "</p></main></body></html>")
+
+
 def dashboard_html(role: str, version: str, product: str = "Simurgh Tunnel") -> str:
     """The dashboard shell, with the meta block the UI reads at boot.
 

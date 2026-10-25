@@ -6,6 +6,23 @@ from simurgh import menu
 from simurgh.util import Home
 
 
+def test_fresh_install_role_can_be_chosen_from_the_menu(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from simurgh import cli, systemd
+
+    monkeypatch.setattr(menu, "clear", lambda: None)
+    monkeypatch.setattr(menu, "ask", lambda *a, **k: "2")
+    monkeypatch.setattr(systemd, "available", lambda: False)
+    calls = []
+    monkeypatch.setattr(cli, "cmd_init", lambda args:
+                        calls.append(("init", args.role, args.pair_later)) or 0)
+    monkeypatch.setattr(cli, "cmd_install", lambda args:
+                        calls.append(("install", args.role, args.pair_later)) or 0)
+
+    assert menu.main(SimpleNamespace(home=str(tmp_path))) == 0
+    assert calls == [("init", "relay", True), ("install", "relay", True)]
+
+
 def test_log_view_is_bounded_pauseable_and_never_uses_a_shell(
         tmp_path, monkeypatch, capsys):
     home = Home(tmp_path).ensure()

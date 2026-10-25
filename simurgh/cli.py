@@ -89,21 +89,6 @@ def _ask_yes(prompt: str, default: bool = True) -> bool:
     return answer in ("y", "yes", "1", "true")
 
 
-def _choose_server_role() -> str | None:
-    """Ask which role to configure; never infer it from IP geolocation."""
-    if not sys.stdin.isatty():
-        return None
-    print("Choose the role this server will run:")
-    print("  1) Exit — foreign/upstream server; destination services live here")
-    print("  2) Relay — user-facing server; users connect here")
-    choice = _ask("choice (1 or 2)", "").strip().lower()
-    if choice in ("1", "exit"):
-        return "exit"
-    if choice in ("2", "relay"):
-        return "relay"
-    return None
-
-
 def _fail(text: str) -> int:
     _err(text)
     return 2
@@ -234,10 +219,8 @@ def cmd_init(args) -> int:
         elif home.relay_cfg.exists() and not home.exit_cfg.exists():
             role = "relay"
         else:
-            role = _choose_server_role()
-            if role is None:
-                _err("choose a server role with --role exit or --role relay, or run interactively. No configuration was changed.")
-                return 2
+            _err("choose the server role in the first-run panel or `simurgh menu`, or pass --role exit/relay. No configuration was changed.")
+            return 2
     home.ensure()
     if role == "exit":
         return _init_exit(home, args)
@@ -469,6 +452,52 @@ def _finalize_single_box(home: Home) -> None:
             "(add user ports with: simurgh mapping add 443 2087)")
 
 
+def _start_first_run_setup(home: Home, args) -> int:
+    """Install a neutral setup panel; the operator selects the role afterward."""
+    custom = any((
+        getattr(args, "exit_address", ""), getattr(args, "exit_host", ""),
+        getattr(args, "token", ""), getattr(args, "listen", None),
+        getattr(args, "mapping", None), getattr(args, "name", ""),
+        getattr(args, "domain", ""), getattr(args, "carrier", ""),
+        getattr(args, "path", ""), getattr(args, "fingerprint", None),
+        getattr(args, "insecure", False), getattr(args, "tunnel_host", ""),
+        getattr(args, "connections", 0), getattr(args, "panel_port", 0),
+        getattr(args, "pair_later", False), getattr(args, "config_only", False),
+        getattr(args, "dial", "relay") == "exit",
+        getattr(args, "split", 3) != 3,
+    ))
+    if custom:
+        _err("choose a role in the setup panel or `simurgh menu` first; for custom install options, pass --role exit or --role relay. No config was changed.")
+        return 2
+    home.ensure()
+    from . import systemd
+
+    if getattr(args, "no_units", False) or not systemd.available():
+        _info("no role has been selected yet. Run `simurgh menu` in an interactive terminal to choose Exit or Relay.")
+        return 0
+    user, password = _panel_credentials(home)
+    report = systemd.install_setup_service(
+        home, enable=not getattr(args, "no_enable", False),
+        start=not getattr(args, "no_start", False), write=True)
+    for path, why in (report.get("errors") or {}).items():
+        _err(f"the first-run setup service could not be written to {path}: {why}")
+        return 1
+    if not report.get("systemd"):
+        _info("no role has been selected yet. Run `simurgh menu` in an interactive terminal to choose Exit or Relay.")
+        return 0
+    if any(result != "ok" for result in (report.get("actions") or {}).values()):
+        _err("the first-run setup panel could not be started; choose a role with `simurgh menu`.")
+        return 1
+    if report.get("actions"):
+        _ok("first-run setup panel is running")
+    else:
+        _ok("first-run setup service is installed")
+    _info(f"panel: http://{_public_ip()}:{RELAY_DEFAULT_PANEL}/login")
+    _info(f"login: {user}:{password}")
+    _info("choose this server's role in the panel, or run `simurgh menu` over SSH")
+    return 0
+
+
 def cmd_install(args) -> int:
     """Create the config, install systemd units, start everything."""
     from . import systemd
@@ -487,10 +516,7 @@ def cmd_install(args) -> int:
             args.both = True
             role = "exit"
         else:
-            role = _choose_server_role()
-            if role is None:
-                _err("choose a server role with --role exit or --role relay, or run interactively. No configuration was changed.")
-                return 2
+            return _start_first_run_setup(home, args)
     home.ensure()
     if (role == "relay" and args.dial != "exit"
             and not args.token and not args.exit_host):
@@ -2005,6 +2031,37 @@ def cmd_version(args) -> int:
     return 0
 
 
+# ----------------------------------------------------------- first-run panel
+def cmd_setup(args) -> int:
+    """Serve the authenticated first-run role chooser."""
+    from .panel import Panel
+
+    home = Home(args.home).ensure()
+    user, password = _panel_credentials(home)
+
+    async def go() -> int:
+        panel = Panel(home, "setup", node=None,
+                      host=getattr(args, "panel_host", "0.0.0.0"),
+                      port=getattr(args, "panel_port", RELAY_DEFAULT_PANEL),
+                      user=user, password=password)
+        try:
+            await panel.start()
+        except OSError as exc:
+            _err(f"the setup panel could not start: {exc}")
+            return 1
+        stop = asyncio.Event()
+        _install_signal_handlers(stop)
+        _ok(f"first-run setup panel is listening on {panel.host}:{panel.port}")
+        await stop.wait()
+        await panel.stop()
+        return 0
+
+    try:
+        return asyncio.run(go())
+    except KeyboardInterrupt:
+        return 0
+
+
 # ---------------------------------------------------------------------- menu
 def cmd_menu(args) -> int:
     from .menu import main as menu_main
@@ -2033,7 +2090,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("install", help="full install: config + systemd service")
     p.add_argument("--role", choices=("exit", "relay", "auto"), default="auto",
-                   help="exit or relay; fresh interactive installs ask; unattended installs require it")
+                   help="advanced override; fresh hosts choose in the setup panel or menu")
     p.add_argument("--both", action="store_true", help="both services on this server")
     p.add_argument("--name")
     p.add_argument("--token")
@@ -2076,7 +2133,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("init", help="write the config files only")
     p.add_argument("--role", choices=("exit", "relay", "auto"), default="auto",
-                   help="exit or relay; fresh interactive installs ask; unattended installs require it")
+                   help="advanced override; fresh hosts choose in the setup panel or menu")
     p.add_argument("--name")
     p.add_argument("--token")
     p.add_argument("--listen")
@@ -2277,6 +2334,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--purge", action="store_true", help="also delete the config folder")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_uninstall)
+
+    p = sub.add_parser("setup", help=argparse.SUPPRESS)
+    p.add_argument("--panel-host", default="0.0.0.0")
+    p.add_argument("--panel-port", type=int, default=RELAY_DEFAULT_PANEL)
+    p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("menu", help="interactive text menu")
     p.set_defaults(func=cmd_menu)

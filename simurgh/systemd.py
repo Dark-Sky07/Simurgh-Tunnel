@@ -86,7 +86,8 @@ def exec_start_for(home: Home, role: str) -> str:
 
 def render_unit(home: Home, role: str, name: str = "", user: str | None = None) -> str:
     user_line = f"User={user}\n" if user else ""
-    log = home.logs / ("exit.log" if role == "exit" else "relay.log")
+    log = home.logs / ("exit.log" if role == "exit" else
+                       "relay.log" if role == "relay" else "panel.log")
     title = f" - {name}" if name else ""
     return _UNIT_TEMPLATE.format(
         role=role, name=title, home=home.path,
@@ -175,7 +176,31 @@ def install_services(home: Home, roles: tuple[str, ...] = ("exit", "relay"),
     return report
 
 
-def uninstall_services(roles: tuple[str, ...] = ("exit", "relay")) -> dict:
+def install_setup_service(home: Home, user: str | None = None,
+                         enable: bool = True, start: bool = True,
+                         write: bool = True) -> dict:
+    """Run the authenticated first-run panel until an operator chooses a role."""
+    report: dict = {"systemd": available(), "units": [], "actions": {}, "write": write}
+    if not report["systemd"] or not write:
+        return report
+    path = unit_path("simurgh-setup")
+    try:
+        path.write_text(render_unit(home, "setup", name=home.path.name, user=user))
+        os.chmod(path, 0o644)
+        report["units"].append(str(path))
+    except OSError as exc:
+        report["errors"] = {str(path): str(exc)}
+        report["write"] = False
+        return report
+    daemon_reload()
+    if enable:
+        report["actions"].update(control("enable", ("simurgh-setup",)))
+    if start:
+        report["actions"].update(control("restart", ("simurgh-setup",)))
+    return report
+
+
+def uninstall_services(roles: tuple[str, ...] = ("exit", "relay", "setup")) -> dict:
     services = tuple(f"simurgh-{r}" for r in roles)
     report: dict = {"actions": {}}
     report["actions"].update(control("stop", services))

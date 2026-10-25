@@ -691,15 +691,45 @@ def show_tuning(home: Home, role: str) -> None:
     pause()
 
 
+def choose_initial_role(home: Home) -> int:
+    """Choose a role from the terminal menu on a fresh, unconfigured host."""
+    clear()
+    print(c("  First-run setup · choose this server's role", "bold"))
+    print("    1) Exit — foreign/upstream server (سرور خارج)")
+    print("    2) Relay — user-facing server (سرور ایران)")
+    choice = ask("select 1 or 2").strip().lower()
+    if choice in ("1", "exit", "خارج"):
+        role = "exit"
+    elif choice in ("2", "relay", "ایران"):
+        role = "relay"
+    else:
+        print(c("  Choose 1 (Exit) or 2 (Relay); nothing was changed.", "red"))
+        return 2
+
+    from . import systemd
+    from .cli import build_parser, cmd_init, cmd_install
+
+    parser = build_parser()
+    init_argv = ["--home", str(home.path), "init", "--role", role]
+    if role == "relay":
+        init_argv.append("--pair-later")
+    code = cmd_init(parser.parse_args(init_argv))
+    if code != 0:
+        return code
+    if systemd.available():
+        systemd.control("disable", ("simurgh-setup",))
+        systemd.control("stop", ("simurgh-setup",))
+    install_argv = ["--home", str(home.path), "install", "--role", role]
+    if role == "relay":
+        install_argv.append("--pair-later")
+    return cmd_install(parser.parse_args(install_argv))
+
+
 def main(args=None) -> int:
     home = Home(getattr(args, "home", None))
     setup_logging(False)
     if not home.path.exists() or not (home.exit_cfg.exists() or home.relay_cfg.exists()):
-        clear()
-        print(c("  Nothing is installed yet.", "red"))
-        print("  Run the same universal installation command on either server:")
-        print(c("    sudo simurgh install", "cyan"))
-        return 2
+        return choose_initial_role(home)
     role = detect_role(home)
     try:
         return menu_loop(home, role)
