@@ -89,6 +89,21 @@ def _ask_yes(prompt: str, default: bool = True) -> bool:
     return answer in ("y", "yes", "1", "true")
 
 
+def _choose_server_role() -> str | None:
+    """Ask which role to configure; never infer it from IP geolocation."""
+    if not sys.stdin.isatty():
+        return None
+    print("Choose the role this server will run:")
+    print("  1) Exit — foreign/upstream server; destination services live here")
+    print("  2) Relay — user-facing server; users connect here")
+    choice = _ask("choice (1 or 2)", "").strip().lower()
+    if choice in ("1", "exit"):
+        return "exit"
+    if choice in ("2", "relay"):
+        return "relay"
+    return None
+
+
 def _fail(text: str) -> int:
     _err(text)
     return 2
@@ -211,17 +226,19 @@ def _apply_exit_shortcut(args) -> None:
 
 def cmd_init(args) -> int:
     _apply_exit_shortcut(args)
-    home = Home(args.home).ensure()
+    home = Home(args.home)
     role = args.role
     if role == "auto":
-        if not sys.stdin.isatty():
-            role = "exit" if args.exit_host == "" else "relay"
+        if home.exit_cfg.exists() and not home.relay_cfg.exists():
+            role = "exit"
+        elif home.relay_cfg.exists() and not home.exit_cfg.exists():
+            role = "relay"
         else:
-            print("What is the role of this server?")
-            print("  1) Foreign server (exit)  — your panel/service lives here")
-            print("  2) Iranian server (relay) — your users connect here")
-            choice = _ask("choice", "1")
-            role = "exit" if choice.strip() in ("1", "exit") else "relay"
+            role = _choose_server_role()
+            if role is None:
+                _err("choose a server role with --role exit or --role relay, or run interactively. No configuration was changed.")
+                return 2
+    home.ensure()
     if role == "exit":
         return _init_exit(home, args)
     return _init_relay(home, args)
@@ -457,27 +474,28 @@ def cmd_install(args) -> int:
     from . import systemd
 
     _apply_exit_shortcut(args)
-    home = Home(args.home).ensure()
+    home = Home(args.home)
     role = args.role
     if role == "auto":
-        # Explicit endpoint options imply the relay. Otherwise an interactive
-        # package install asks once, just like `simurgh init`; an unattended
-        # install keeps the historical exit default. install.sh normally does
-        # its geo-detection first and passes an explicit role here.
-        if args.exit_host or args.dial == "exit":
-            role = "relay"
-        elif sys.stdin.isatty():
-            print("What is the role of this server?")
-            print("  1) Foreign server (exit)  — your panel/service lives here")
-            print("  2) Iranian server (relay) — your users connect here")
-            choice = _ask("choice", "1")
-            role = "exit" if choice.strip() in ("1", "exit") else "relay"
-        else:
+        if args.both:
+            role = "exit"  # the roles tuple below will include both services
+        elif home.exit_cfg.exists() and not home.relay_cfg.exists():
             role = "exit"
-    if (args.role == "auto" and role == "relay" and args.dial != "exit"
+        elif home.relay_cfg.exists() and not home.exit_cfg.exists():
+            role = "relay"
+        elif home.exit_cfg.exists() and home.relay_cfg.exists():
+            args.both = True
+            role = "exit"
+        else:
+            role = _choose_server_role()
+            if role is None:
+                _err("choose a server role with --role exit or --role relay, or run interactively. No configuration was changed.")
+                return 2
+    home.ensure()
+    if (role == "relay" and args.dial != "exit"
             and not args.token and not args.exit_host):
-        # The universal package flow is panel-first too: do not ask for the
-        # token/address immediately after asking which role this server is.
+        # A direct relay with no supplied endpoint is panel-first: create its
+        # unpaired config now and complete pairing later from the Pair page.
         args.pair_later = True
     roles = ("exit", "relay") if args.both else (role,)
     if not args.config_only:
@@ -2014,7 +2032,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("install", help="full install: config + systemd service")
-    p.add_argument("--role", choices=("exit", "relay", "auto"), default="auto")
+    p.add_argument("--role", choices=("exit", "relay", "auto"), default="auto",
+                   help="exit or relay; fresh interactive installs ask; unattended installs require it")
     p.add_argument("--both", action="store_true", help="both services on this server")
     p.add_argument("--name")
     p.add_argument("--token")
@@ -2056,7 +2075,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_install)
 
     p = sub.add_parser("init", help="write the config files only")
-    p.add_argument("--role", choices=("exit", "relay", "auto"), default="auto")
+    p.add_argument("--role", choices=("exit", "relay", "auto"), default="auto",
+                   help="exit or relay; fresh interactive installs ask; unattended installs require it")
     p.add_argument("--name")
     p.add_argument("--token")
     p.add_argument("--listen")

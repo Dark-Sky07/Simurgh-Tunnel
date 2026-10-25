@@ -4,10 +4,11 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 #
-# The same command is used on the foreign server and on the Iranian server. The
-# script works out which one it is (see "which role is this server?"). Pairing,
-# ports and settings are then completed in the web panel; flags are optional
-# overrides for advanced/automated installs.
+# The same command is used on the foreign server and on the Iranian server.
+# On a fresh interactive install, the operator explicitly selects the role;
+# existing configs are preserved. Never infer the role from IP geolocation.
+# Pairing, ports and settings are then completed in the web panel; --role is
+# available for advanced/automated installs.
 set -euo pipefail
 
 BOLD=$'\033[1m'; GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'
@@ -97,8 +98,8 @@ ${BOLD}Simurgh Tunnel installer${RESET}
 
 main options:
   --role exit|relay|both     role of this server (foreign / Iranian / both)
-                             without --role the installer asks (or picks the
-                             foreign/exit role when there is no terminal)
+                             without --role a fresh interactive install asks;
+                             unattended installs must specify --role
   --both                     run both services on one server (same as --role both)
   --name NAME                a name for this server
   --token TOKEN              shared secret token (generated/asked if missing)
@@ -129,7 +130,7 @@ main options:
                              much less cpu per gigabyte), "python" the portable
                              one. auto = go when it can be built (default)
   --no-go                    shortcut for --engine python
-  --yes                      accept everything without asking
+  --yes                      accept non-role questions (fresh unattended installs still need --role)
   --no-systemd               do not create a systemd service (run manually)
   --ref REF                  git ref to download when the source is missing
                              (branch or tag, default: main)
@@ -230,6 +231,43 @@ warn "running without root — no systemd service is created and the install goe
     NO_SYSTEMD=1
   else
 die "this script must run as root (sudo)."
+  fi
+fi
+
+# ------------------------------------------------------- select the server role
+# Geo-IP is not reliable enough to decide a server's job: proxies, cloud
+# addresses and databases can disagree. Resolve the role before downloading,
+# installing packages, tuning the kernel, or writing configuration.
+if [ "$UNINSTALL" != "1" ]; then
+  if [ "$BOTH" = "1" ] && { [ -z "$ROLE" ] || [ "$ROLE" = "auto" ]; }; then
+    ROLE="auto"
+  elif [ -z "$ROLE" ] || [ "$ROLE" = "auto" ]; then
+    if [ -f "$CONF_HOME/exit.toml" ] && [ -f "$CONF_HOME/relay.toml" ]; then
+      # A one-box install already has an explicit, durable two-role choice.
+      ROLE="auto"
+      BOTH=1
+    elif [ -f "$CONF_HOME/exit.toml" ]; then
+      ROLE="exit"
+    elif [ -f "$CONF_HOME/relay.toml" ]; then
+      ROLE="relay"
+    elif [ "$HAS_TTY" = "1" ]; then
+      printf '%s\n' "  Choose the role this server will run:"
+      printf '%s\n' "    1) Exit — foreign/upstream server; your destination services live here"
+      printf '%s\n' "    2) Relay — user-facing server; your users connect here"
+      read -r -p "  Select 1 or 2: " _role_choice </dev/tty || _role_choice=""
+      case "$_role_choice" in
+        1|exit|Exit) ROLE="exit" ;;
+        2|relay|Relay) ROLE="relay" ;;
+        *) die "choose 1 (exit) or 2 (relay); no configuration was changed." ;;
+      esac
+    else
+      die "choose a role for this new server: rerun with --role exit or --role relay (or use an interactive terminal). No configuration was changed."
+    fi
+  fi
+  if [ "$BOTH" = "1" ]; then
+    ok "selected roles: exit and relay"
+  else
+    ok "selected server role: $ROLE"
   fi
 fi
 
@@ -482,54 +520,7 @@ if [ "$(id -u)" = "0" ] && [ -d /etc/sysctl.d ] && command -v sysctl >/dev/null 
     || warn "some kernel values could not be applied"
 fi
 
-# --------------------------------------------------- which role is this server?
-# Nothing has to be typed for this. The role comes from, in order: --role; an
-# exit/relay address given on the command line; the config already on this
-# machine (a re-run keeps its role); the country of the public IP address
-# (Iran -> relay, anywhere else -> exit). Only if all of that fails is there a
-# question, and without a terminal the foreign (exit) role is used.
-detect_country() {
-  local url c
-  command -v curl >/dev/null 2>&1 || return 1
-  for url in https://ipapi.co/country/ https://ifconfig.co/country-iso https://ipinfo.io/country; do
-    c="$(curl -fsS --max-time 6 "$url" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' || true)"
-    case "$c" in
-      [A-Z][A-Z]) printf '%s' "$c"; return 0 ;;
-    esac
-  done
-  return 1
-}
-
-if [ -z "$ROLE" ]; then
-  if [ -n "$EXIT_ADDR" ] || [ "$DIAL" = "exit" ]; then
-    ROLE="relay"
-  elif [ -f "$CONF_HOME/exit.toml" ] && [ ! -f "$CONF_HOME/relay.toml" ]; then
-    ROLE="exit"
-  elif [ -f "$CONF_HOME/relay.toml" ] && [ ! -f "$CONF_HOME/exit.toml" ]; then
-    ROLE="relay"
-  fi
-fi
-if [ -z "$ROLE" ]; then
-  COUNTRY="${SIMURGH_COUNTRY:-}"
-  [ -n "$COUNTRY" ] || COUNTRY="$(detect_country || true)"
-  case "$COUNTRY" in
-    IR) ROLE="relay"; say "public address is in Iran: this is the Iranian server (relay)." ;;
-    "") ;;
-    *)  ROLE="exit";  say "public address country: $COUNTRY: this is the foreign server (exit)." ;;
-  esac
-fi
-if [ -z "$ROLE" ]; then
-  if [ "$HAS_TTY" = "1" ] && [ "$ASSUME_YES" != "1" ]; then
-    read -r -p "  Is this server located in Iran? [y/N]: " _iran </dev/tty || _iran=""
-    case "$_iran" in y|Y|yes|YES|1) ROLE="relay" ;; *) ROLE="exit" ;; esac
-  else
-    warn "could not tell where this server is; installing the foreign (exit) role."
-    warn "for an unattended install, --role is the advanced override; otherwise run in a terminal."
-    ROLE="exit"
-  fi
-fi
-ok "role of this server: $ROLE"
-
+# The server role was selected above, before any system changes.
 # ------------------------------------------------- where is the exit server?
 # first listen port (``443,2053`` / ``443-445`` / ``443 2053`` all work)
 first_listen_port() {

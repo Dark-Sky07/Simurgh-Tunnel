@@ -16,6 +16,7 @@
 <div align="center">
   <a href="https://drive.google.com/file/d/1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5/view?usp=drivesdk"><img src="assets/tutorial-cover-v3.2.10.jpg" width="720" alt="تماشای آموزش ویدیویی فارسی سیمرغ تانل (۱۷ دقیقه)"></a>
   <p><strong>آموزش ویدیویی فارسی · ۱۷:۳۴</strong> · <a href="https://drive.google.com/file/d/1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5/view?usp=drivesdk">تماشا در گوگل‌درایو</a> · <a href="https://drive.google.com/uc?id=1XVmNJ8UCMNA1qO_-9gw-7iZpEIxtfCD5&export=download">دانلود فایل MP4</a></p>
+  <p><em>این ویدیو برای نسخهٔ ۳٫۲٫۱۰ ضبط شده؛ در نسخهٔ فعلی هنگام نصب تازه نقش سرور را خودتان انتخاب می‌کنید و نقش از روی موقعیت جغرافیایی حدس زده نمی‌شود.</em></p>
 </div>
 
 ---
@@ -64,13 +65,13 @@ Iran relay :8443 ──user traffic──► exit target 127.0.0.1:8443
 
 ### ۱ — نصب همهٔ سرورها با یک فرمان واحد
 
-**همین فرمان را عیناً روی سرور خارج و سرور ایران اجرا کنید.** گزینهٔ جداگانه برای نقش لازم نیست:
+**همین فرمان را عیناً روی سرور خارج و سرور ایران اجرا کنید.** فرمان برای هر دو نقش یکی است؛ در نصب تازهٔ تعاملی، نقش همان سرور را در پاسخ به سؤال نصاب انتخاب کنید:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash
 ```
 
-نصاب ابتدا نصب موجود را تشخیص می‌دهد و در غیر این صورت از کشور IP عمومی برای انتخاب نقش استفاده می‌کند؛ اگر تشخیص ممکن نباشد، در ترمینال سؤال می‌کند. رلهٔ مستقیم عمداً در وضعیت **جفت‌نشده** نصب می‌شود تا پنل آن حتی پیش از داشتن آدرس اگزیت یا توکن بالا بیاید. اجرای دوبارهٔ نصاب، سورس کش‌شده را تازه می‌کند و نصاب جدید با CLI قدیمی مخلوط نمی‌شود.
+نصاب هرگز نقش سرور را از روی IP یا کشور حدس نمی‌زند و در اجرای دوباره، تنظیمات موجود را معتبر می‌داند. برای نصب تازه و بدون ترمینال، `--role exit` یا `--role relay` را صریحاً بدهید (در اجرای pipe، آن را پس از `bash -s --` بنویسید)؛ در غیر این صورت نصاب پیش از تغییرات سیستمی متوقف می‌شود. رلهٔ مستقیم عمداً در وضعیت **جفت‌نشده** نصب می‌شود تا پنل آن حتی پیش از داشتن آدرس اگزیت یا توکن بالا بیاید. اجرای دوبارهٔ نصاب، سورس کش‌شده را تازه می‌کند و نصاب جدید با CLI قدیمی مخلوط نمی‌شود.
 
 ### ۲ — پنل هر دو سرور را باز کنید
 
@@ -103,9 +104,9 @@ curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/inst
 فایل‌های هر ریلیز شامل `.deb`، `.rpm`، `.tar.gz` قابل‌حمل و موتورهای کامپایل‌شده است. `Dockerfile` و `docker-compose.yml` هم در مخزن هستند.
 
 ```bash
-sudo dpkg -i simurgh_3.2.11_amd64.deb
-sudo dnf install ./simurgh-3.2.11-1.x86_64.rpm
-sudo tar -xzf simurgh-3.2.11-noarch.tar.gz -C /
+sudo dpkg -i simurgh_3.2.12_amd64.deb
+sudo dnf install ./simurgh-3.2.12-1.x86_64.rpm
+sudo tar -xzf simurgh-3.2.12-noarch.tar.gz -C /
 docker compose up -d                   # آزمایشگاه توسعهٔ دونودی اختیاری، نه نصب سرور
 ```
 

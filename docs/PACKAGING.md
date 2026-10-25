@@ -10,9 +10,9 @@ answer — and for the people who cannot run a script from the internet at all.
 | | Command | Covers |
 |---|---|---|
 | **one command** | `curl … \| sudo bash` | everything, builds the Go engine |
-| **`.deb`** | `sudo dpkg -i simurgh_3.2.11_amd64.deb` | Debian, Ubuntu, Proxmox |
-| **`.rpm`** | `sudo dnf install ./simurgh-3.2.11-1.x86_64.rpm` | RHEL, Fedora, Alma, Rocky, openSUSE |
-| **tarball** | `tar -xzf simurgh-3.2.11-noarch.tar.gz -C /` | anything with Python 3.9+ |
+| **`.deb`** | `sudo dpkg -i simurgh_3.2.12_amd64.deb` | Debian, Ubuntu, Proxmox |
+| **`.rpm`** | `sudo dnf install ./simurgh-3.2.12-1.x86_64.rpm` | RHEL, Fedora, Alma, Rocky, openSUSE |
+| **tarball** | `tar -xzf simurgh-3.2.12-noarch.tar.gz -C /` | anything with Python 3.9+ |
 | **container** | `docker compose up -d` | both roles, one machine, or one role per host |
 
 ## What is inside
@@ -29,9 +29,9 @@ leave behind:
 | `/usr/lib/systemd/system/simurgh-{relay,exit}.service` | one unit per role; the package enables a role only if **its** config already exists |
 | `/usr/share/doc/simurgh/` | this file, the README (both languages) and the configuration reference |
 
-The two variants are deliberate: `simurgh_3.2.11_all.deb` /
-`simurgh-3.2.11-1.noarch.rpm` are pure Python and run anywhere, while
-`simurgh_3.2.11_amd64.deb` / `…-1.x86_64.rpm` also carry the compiled engine —
+The two variants are deliberate: `simurgh_3.2.12_all.deb` /
+`simurgh-3.2.12-1.noarch.rpm` are pure Python and run anywhere, while
+`simurgh_3.2.12_amd64.deb` / `…-1.x86_64.rpm` also carry the compiled engine —
 which the CLI picks up from `/usr/bin/simurgh-go` by itself, so
 `engine = "go"` works with no path to configure.
 
@@ -57,10 +57,18 @@ the six engine binaries.
 
 ## Install
 
+The same `simurgh install` command is used for either server role. On a fresh
+interactive install, choose **exit** or **relay** when prompted; no role is
+inferred from the server's IP address or country. Existing role configuration
+is preserved on reruns. For a fresh noninteractive/scripted install, pass
+`--role exit` or `--role relay` explicitly; with neither a terminal nor an
+explicit role, installation stops before writing configuration or installing
+system services.
+
 ### Debian, Ubuntu, Proxmox
 
 ```bash
-sudo dpkg -i simurgh_3.2.11_amd64.deb      # apt -f install, if you skipped the deps
+sudo dpkg -i simurgh_3.2.12_amd64.deb      # apt -f install, if you skipped the deps
 sudo simurgh install                         # same command on every server; choose the role if asked
 # the installer enables and starts the selected role's systemd unit
 ```
@@ -72,7 +80,7 @@ sudo simurgh install                         # same command on every server; cho
 ### RHEL, Fedora, Alma, Rocky, openSUSE
 
 ```bash
-sudo dnf install ./simurgh-3.2.11-1.x86_64.rpm
+sudo dnf install ./simurgh-3.2.12-1.x86_64.rpm
 sudo simurgh install                         # identical on foreign and Iranian servers; choose the role if asked
 # the installer enables and starts the selected role's systemd unit
 ```
@@ -82,7 +90,7 @@ sudo simurgh install                         # identical on foreign and Iranian 
 It is rooted at `/`, so it unpacks over a system that has Python 3.9+:
 
 ```bash
-sudo tar -xzf simurgh-3.2.11-noarch.tar.gz -C /
+sudo tar -xzf simurgh-3.2.12-noarch.tar.gz -C /
 sudo simurgh install                         # the same command; choose the role if asked
 # without systemd, run the exit or relay role named by the installer
 ```
@@ -97,7 +105,7 @@ runnable).
 ```bash
 docker build -t simurgh .
 docker run --rm simurgh --version
-docker run --rm -v simurgh-node:/etc/simurgh simurgh install  # exit example; unattended default
+docker run --rm -v simurgh-node:/etc/simurgh simurgh install --role exit  # explicit role for an unattended container
 docker run -d --name simurgh-exit -v simurgh-node:/etc/simurgh \
        -p 443:443 -p 19443:19443 simurgh exit
 ```

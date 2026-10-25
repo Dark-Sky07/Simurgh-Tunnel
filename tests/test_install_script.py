@@ -5,7 +5,8 @@ ways:
 
 * ``sudo bash install.sh --role exit …`` — a file, so ``BASH_SOURCE`` exists;
 * ``curl -fsSL …/install.sh | sudo bash …`` — stdin is the script, so
-  ``BASH_SOURCE`` is empty and there is no terminal to ask questions on.
+  ``BASH_SOURCE`` is empty; the installer may still read a controlling terminal
+  through ``/dev/tty`` for the explicit role choice.
 
 Both used to abort with ``…: unbound variable`` (a variable that was read but
 never set, under ``set -u``), and ``--listen`` was silently dropped. These
@@ -18,9 +19,13 @@ They never touch the network: ``SIMURGH_SRC`` points at this checkout, and
 from __future__ import annotations
 
 import os
+import pty
 import re
+import select
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -368,44 +373,108 @@ def test_both_mode_in_reverse_finishes_or_points_to_the_panel(tmp_path):
             or "in their panels" in output), output
 
 
-def _auto(tmp_path, country):
-    """The one command, with no role flag: only the country decides."""
+def _install_as(tmp_path, role, country=None):
+    """Run the universal installer with an explicit operator-selected role."""
     env = _env(tmp_path)
-    env["SIMURGH_COUNTRY"] = country
+    if country is not None:
+        # Retained solely as a regression trap: role must not depend on this.
+        env["SIMURGH_COUNTRY"] = country
     return subprocess.run(
-        ["bash", str(INSTALL), "--yes", "--no-go", "--name", "auto-box", "--token", "auto-token"],
+        ["bash", str(INSTALL), "--yes", "--no-go", "--role", role,
+         "--name", "selected-box"],
         env=env, capture_output=True, text=True, timeout=TIMEOUT,
     )
 
 
-def test_iranian_address_gets_the_relay_without_any_role_flag(tmp_path):
-    proc = _auto(tmp_path, "IR")
+def test_explicit_relay_role_is_used_even_if_geo_environment_says_elsewhere(tmp_path):
+    proc = _install_as(tmp_path, "relay", "DE")
     output = proc.stdout + proc.stderr
-    assert "role of this server: relay" in output, output
     assert proc.returncode == 0, output
-    # the country alone decides the role, and the token question is gone: a
-    # relay with no exit yet is installed as `unpaired` and paired afterwards
+    assert "selected server role: relay" in output, output
+    assert (tmp_path / "etc" / "relay.toml").exists()
     assert not (tmp_path / "etc" / "exit.toml").exists()
     assert "unpaired = true" in _config(tmp_path, "relay.toml")
 
 
-def test_other_country_gets_the_exit_without_any_role_flag(tmp_path):
-    proc = _auto(tmp_path, "DE")
+def test_explicit_exit_role_is_used_even_if_geo_environment_says_iran(tmp_path):
+    proc = _install_as(tmp_path, "exit", "IR")
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
-    assert "role of this server: exit" in output, output
+    assert "selected server role: exit" in output, output
     assert (tmp_path / "etc" / "exit.toml").exists()
     assert not (tmp_path / "etc" / "relay.toml").exists()
 
 
+@pytest.mark.parametrize("extra", [[], ["--exit", "203.0.113.9:443"]])
+def test_fresh_noninteractive_install_requires_role_before_changes(tmp_path, extra):
+    env = _env(tmp_path)
+    env["SIMURGH_COUNTRY"] = "IR"  # must not silently decide relay
+    proc = subprocess.run(
+        ["bash", str(INSTALL), "--yes", "--no-go", *extra],
+        env=env, capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode != 0, output
+    assert "--role exit" in output and "--role relay" in output, output
+    assert not (tmp_path / "etc").exists()
+    assert not (tmp_path / "venv").exists()
+
+
+@pytest.mark.skipif(not hasattr(pty, "fork"), reason="requires a POSIX pseudo-terminal")
+def test_interactive_installer_accepts_the_manual_role_choice(tmp_path):
+    env = _env(tmp_path)
+    env.pop("SIMURGH_NO_TTY", None)
+    env["SIMURGH_COUNTRY"] = "DE"  # deliberately conflicts with the chosen relay
+    command = ["bash", str(INSTALL), "--yes", "--no-go"]
+    pid, fd = pty.fork()
+    if pid == 0:  # child owns the controlling terminal used by /dev/tty
+        os.execvpe(command[0], command, env)
+
+    output = bytearray()
+    sent_choice = False
+    status = None
+    deadline = time.monotonic() + 180
+    try:
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([fd], [], [], 0.5)
+            if readable:
+                try:
+                    chunk = os.read(fd, 8192)
+                except OSError:  # Linux ptys report EIO after the child exits
+                    chunk = b""
+                if chunk:
+                    output.extend(chunk)
+            if not sent_choice and b"Select 1 or 2:" in output:
+                os.write(fd, b"2\n")
+                sent_choice = True
+            waited, child_status = os.waitpid(pid, os.WNOHANG)
+            if waited == pid:
+                status = child_status
+                break
+        if status is None:
+            os.kill(pid, signal.SIGTERM)
+            _, status = os.waitpid(pid, 0)
+    finally:
+        os.close(fd)
+
+    text = output.decode("utf-8", errors="replace")
+    assert sent_choice, text
+    assert status is not None and os.waitstatus_to_exitcode(status) == 0, text
+    assert "selected server role: relay" in text, text
+    assert (tmp_path / "etc" / "relay.toml").exists()
+    assert not (tmp_path / "etc" / "exit.toml").exists()
+
+
 def test_a_rerun_keeps_the_role_that_is_already_installed(tmp_path):
-    """Re-running the same command must not flip a server to the other role,
-    even when the location lookup would say otherwise."""
-    assert _auto(tmp_path, "DE").returncode == 0
-    proc = _auto(tmp_path, "IR")
+    """Existing configuration remains authoritative on noninteractive reruns."""
+    assert _install_as(tmp_path, "exit", "DE").returncode == 0
+    env = _env(tmp_path)
+    env["SIMURGH_COUNTRY"] = "IR"
+    proc = subprocess.run(["bash", str(INSTALL), "--yes", "--no-go"],
+                          env=env, capture_output=True, text=True, timeout=TIMEOUT)
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
-    assert "role of this server: exit" in output, output
+    assert "selected server role: exit" in output, output
     assert not (tmp_path / "etc" / "relay.toml").exists()
 
 
@@ -435,7 +504,7 @@ def test_rerun_is_an_upgrade_and_preserves_pairing_ports_and_token(tmp_path):
 
 
 def test_exit_summary_points_to_the_panel_not_a_token_workflow(tmp_path):
-    proc = _auto(tmp_path, "DE")
+    proc = _install_as(tmp_path, "exit")
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
     assert "web panel:" in output and "Pair" in output, output
@@ -457,7 +526,7 @@ def test_quick_start_has_one_universal_install_command(filename, start, end):
     assert commands == [
         "curl -fsSL https://raw.githubusercontent.com/Dark-Sky07/Simurgh-Tunnel/main/install.sh | sudo bash\n"
     ]
-    assert "--role" not in quick
+    assert "--role exit" in quick and "--role relay" in quick  # only for noninteractive installs
     assert "simurgh join" not in quick and "simurgh link" not in quick
     assert "Pair" in quick and "Settings" in quick
 
