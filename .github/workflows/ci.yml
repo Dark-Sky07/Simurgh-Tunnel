@@ -10,7 +10,7 @@ permissions:
 jobs:
   tests:
     name: tests on python ${{ matrix.python }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -19,10 +19,10 @@ jobs:
         python: ["3.9", "3.12"]
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
 
@@ -30,7 +30,7 @@ jobs:
       # runs its Go <-> Python interoperability cases instead of skipping them.
       - name: Set up Go for cross-engine tests
         if: matrix.python == '3.12'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go/go.mod
           cache: false
@@ -90,10 +90,10 @@ jobs:
 
   shell:
     name: installer and shell scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Syntax check
         run: |
@@ -110,7 +110,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Reproduce a stock Iranian relay: Ubuntu 22.04 supplies Python 3.10,
       # setuptools 59.6 and wheel 0.37.  Python and its venv/build packages are
@@ -149,15 +149,15 @@ jobs:
 
   packages:
     name: packages (.deb, .rpm, tarball, image)
-    # ubuntu-latest moved during the 2026 runner migration and stalled in apt;
-    # keep release package builds on a stable, known toolchain.
+    # Pin the package build to Ubuntu 24.04 so the toolchain does not drift
+    # when GitHub moves the ubuntu-latest alias.
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go/go.mod
           cache: false
@@ -230,14 +230,14 @@ jobs:
           fi
 
       - name: Keep the packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: packages
           path: dist/*.deb
           retention-days: 7
 
       - name: Keep the tarballs and rpms too
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: packages-extra
           path: |

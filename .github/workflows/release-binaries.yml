@@ -16,13 +16,13 @@ permissions:
 jobs:
   build:
     name: Build and attach release binaries
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go/go.mod
           cache: false
@@ -46,14 +46,14 @@ jobs:
 
   packages:
     name: Build and attach packages
-    # Match CI and avoid apt stalls on the moving ubuntu-latest image.
+    # Match CI and keep package builds on the pinned Ubuntu 24.04 image.
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go/go.mod
           cache: false
