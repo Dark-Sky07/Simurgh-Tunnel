@@ -12,9 +12,9 @@ package manager یا ایمیج یا «باز کن و اجرا کن» جواب �
 | | فرمان | پوشش |
 |---|---|---|
 | **یک فرمان** | `curl … \| sudo bash` | همه‌چیز، همراه ساخت موتور Go |
-| **`.deb`** | `sudo dpkg -i simurgh_3.2.14_amd64.deb` | دبیان، اوبونتو، proxmox |
-| **`.rpm`** | `sudo dnf install ./simurgh-3.2.14-1.x86_64.rpm` | ردهت، فدورا، آلما، راکی، openSUSE |
-| **tarball** | `tar -xzf simurgh-3.2.14-noarch.tar.gz -C /` | هر جایی که پایتون ۳٫۹+ دارد |
+| **`.deb`** | `sudo dpkg -i simurgh_3.2.15_amd64.deb` | دبیان، اوبونتو، proxmox |
+| **`.rpm`** | `sudo dnf install ./simurgh-3.2.15-1.x86_64.rpm` | ردهت، فدورا، آلما، راکی، openSUSE |
+| **tarball** | `tar -xzf simurgh-3.2.15-noarch.tar.gz -C /` | هر جایی که پایتون ۳٫۹+ دارد |
 | **کانتینر** | `docker compose up -d` | هر دو نقش روی یک ماشین، یا یک نقش روی هر سرور |
 
 ## داخل بسته چه چیزی است
@@ -30,8 +30,8 @@ package manager یا ایمیج یا «باز کن و اجرا کن» جواب �
 | `/usr/lib/systemd/system/simurgh-{relay,exit}.service` | یک unit برای هر نقش؛ بسته فقط نقشی را فعال می‌کند که **کانفیگش** از قبل موجود باشد |
 | `/usr/share/doc/simurgh/` | همین فایل، README هر دو زبان و مرجع تنظیمات |
 
-دو حالت بسته عمدی است: `simurgh_3.2.14_all.deb` / `simurgh-3.2.14-1.noarch.rpm`
-خالص پایتون‌اند و همه‌جا اجرا می‌شوند، ولی `simurgh_3.2.14_amd64.deb` و
+دو حالت بسته عمدی است: `simurgh_3.2.15_all.deb` / `simurgh-3.2.15-1.noarch.rpm`
+خالص پایتون‌اند و همه‌جا اجرا می‌شوند، ولی `simurgh_3.2.15_amd64.deb` و
 `…-1.x86_64.rpm` موتور کامپایل‌شده را هم دارند — که CLI خودش از
 `/usr/bin/simurgh-go` برمی‌دارد، پس `engine = "go"` بدون تنظیم هیچ مسیری کار
 می‌کند.
@@ -67,7 +67,7 @@ CI روی هر push هر چهار فایل را می‌سازد (کار `package
 ### دبیان، اوبونتو، proxmox
 
 ```bash
-sudo dpkg -i simurgh_3.2.14_amd64.deb      # اگر وابستگی کم بود: apt -f install
+sudo dpkg -i simurgh_3.2.15_amd64.deb      # اگر وابستگی کم بود: apt -f install
 sudo simurgh install                         # همان فرمان روی هر سرور؛ نقش را در پنل انتخاب کنید
 # در نصب تازه، پنل راه‌اندازی اجرا می‌شود و پس از انتخاب، سرویس نقش جای آن را می‌گیرد
 ```
@@ -79,7 +79,7 @@ sudo simurgh install                         # همان فرمان روی هر �
 ### ردهت، فدورا، آلما، راکی، openSUSE
 
 ```bash
-sudo dnf install ./simurgh-3.2.14-1.x86_64.rpm
+sudo dnf install ./simurgh-3.2.15-1.x86_64.rpm
 sudo simurgh install                         # یکسان روی هر دو؛ نقش را در پنل انتخاب کنید
 # در نصب تازه، پنل راه‌اندازی اجرا می‌شود و پس از انتخاب، سرویس نقش جای آن را می‌گیرد
 ```
@@ -89,7 +89,7 @@ sudo simurgh install                         # یکسان روی هر دو؛ ن�
 ریشه‌اش `/` است، پس روی هر سیستمی که پایتون ۳٫۹+ دارد باز می‌شود:
 
 ```bash
-sudo tar -xzf simurgh-3.2.14-noarch.tar.gz -C /
+sudo tar -xzf simurgh-3.2.15-noarch.tar.gz -C /
 sudo simurgh install                         # همان فرمان؛ نقش را در پنل انتخاب کنید
 # بدون systemd، با simurgh menu نقش را انتخاب کنید
 ```
