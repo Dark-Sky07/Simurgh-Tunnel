@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import html
 import ipaddress
 import logging
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .paths import default_config_dir
 from .supervisor import NodeSupervisor
+from .tunnel import EntryConfig, check_entry_path, load_config
 from .updates import UpdateError, latest_update
 from .wizard import list_config_backups, restore_config, save_config
 
@@ -144,7 +146,9 @@ def _dashboard(panel) -> str:
                 "Disable auto-start" if auto else "Enable auto-start",
                 enabled="no" if auto else "yes",
             )
-            actions = f'<div class="node-actions">{action}{toggle}</div>'
+            check_action = (_node_form(panel, "/node/check", role, "Check route")
+                            if role == "entry" else "")
+            actions = f'<div class="node-actions">{action}{toggle}{check_action}</div>'
         log_link = (f'<p class="hint">Log: <code>{html.escape(state["log"])}</code></p>'
                     if state.get("log") else "")
         rows.append(f'<article class="node"><div><h3>{role.title()}</h3>'
@@ -235,7 +239,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.2"
+            server_version = "SimurghSetup/0.2.3"
             sys_version = ""
 
             def setup(self):
@@ -297,8 +301,8 @@ class SetupPanel:
                 if not self._host_is_local():
                     self._send(421, _page("", status="Use the loopback address or an SSH tunnel."))
                     return
-                if self.path not in ("/setup", "/node/start", "/node/stop", "/node/autostart",
-                                      "/update/check", "/config/restore"):
+                if self.path not in ("/setup", "/node/start", "/node/stop", "/node/check",
+                                      "/node/autostart", "/update/check", "/config/restore"):
                     self._send(404, _page("", status="Not found."))
                     return
                 origin = self.headers.get("Origin")
@@ -316,6 +320,22 @@ class SetupPanel:
                                 keep_blank_values=True)
                 if not secrets.compare_digest(_one(form, "csrf"), panel.csrf):
                     self._send(403, _page("", status="Form token expired; reload the page."))
+                    return
+                if self.path == "/node/check":
+                    try:
+                        if _one(form, "role") != "entry":
+                            raise ValueError("path checks are available only for the entry role")
+                        config = load_config(panel.config_dir / "entry.json")
+                        if not isinstance(config, EntryConfig):
+                            raise TypeError("entry.json does not contain an entry config")
+                        result = asyncio.run(check_entry_path(config))
+                        self._send(200, _page(
+                            _dashboard(panel) + _form(panel.csrf, panel.config_dir),
+                            status=f"Route check: {result}"))
+                    except (TypeError, ValueError, OSError, TimeoutError) as exc:
+                        self._send(503, _page(
+                            _dashboard(panel) + _form(panel.csrf, panel.config_dir),
+                            status=f"Route check failed: {exc}"))
                     return
                 if self.path == "/config/restore":
                     try:

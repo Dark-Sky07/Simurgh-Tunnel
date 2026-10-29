@@ -37,6 +37,48 @@ def run(coro):
 
 
 @pytest.mark.parametrize("carrier", ["tls", "wss"])
+def test_entry_path_check_validates_tls_and_destination(server_certificate, carrier):
+    cert, key = server_certificate
+    secret = "health-check-secret-" + "x" * 32
+
+    async def scenario():
+        target_connections = []
+
+        async def target(reader, writer):
+            target_connections.append(True)
+            await reader.read()
+            writer.close()
+            await writer.wait_closed()
+
+        target_server = await asyncio.start_server(target, "127.0.0.1", 0)
+        target_port = target_server.sockets[0].getsockname()[1]
+        exit_config = tunnel.ExitConfig(
+            "127.0.0.1", 0, cert, key, secret,
+            {"health": ("127.0.0.1", target_port)}, carrier,
+        )
+        exit_server = await asyncio.start_server(
+            tunnel._exit_connection_handler(exit_config), "127.0.0.1", 0,
+            ssl=tunnel._server_ssl(exit_config), limit=tunnel.MAX_HANDSHAKE,
+        )
+        entry_config = tunnel.EntryConfig(
+            "127.0.0.1", 0, "localhost", exit_server.sockets[0].getsockname()[1],
+            "localhost", cert, secret, "health", "tcp", carrier,
+        )
+        try:
+            result = await asyncio.wait_for(
+                tunnel.check_entry_path(entry_config), timeout=4)
+            assert "destination accepted" in result
+            await asyncio.sleep(0)
+            assert target_connections == [True]
+        finally:
+            exit_server.close()
+            target_server.close()
+            await asyncio.gather(exit_server.wait_closed(), target_server.wait_closed())
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("carrier", ["tls", "wss"])
 def test_entry_tunnel_forwards_data_and_propagates_half_close(
         server_certificate, carrier):
     cert, key = server_certificate
