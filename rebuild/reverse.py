@@ -21,6 +21,7 @@ from .tunnel import (
     _client_ssl,
     _copy_from_tunnel,
     _copy_to_tunnel,
+    _enable_tcp_keepalive,
     _join_directions,
     _limited_handler,
     _read_json,
@@ -144,6 +145,8 @@ async def _hub_data(state: _HubState, reader: asyncio.StreamReader,
         if pending is None or pending.completed.is_set():
             await _send_json(writer, {"ok": False, "error": "expired"})
             return
+        _enable_tcp_keepalive(writer)
+        _enable_tcp_keepalive(pending.writer)
         await _send_json(writer, {"ok": True})
         activity = asyncio.Event()
         try:
@@ -258,6 +261,8 @@ async def _agent_channel(config: ReverseAgentConfig, channel: str,
         response = await asyncio.wait_for(_read_json(data_reader), timeout=HANDSHAKE_TIMEOUT)
         if response.get("ok") is not True:
             raise ConnectionError("reverse hub rejected the data channel")
+        _enable_tcp_keepalive(target_writer)
+        _enable_tcp_keepalive(data_writer)
         activity = asyncio.Event()
         await _join_directions(
             _copy_from_tunnel(data_reader, target_writer, activity=activity),

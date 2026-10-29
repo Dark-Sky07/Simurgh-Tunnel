@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -121,6 +122,38 @@ def test_speed_test_rejects_udp_and_out_of_range_sizes():
     )
     with pytest.raises(ValueError, match="1 to 16 MiB"):
         run(tunnel.speed_test_entry(config, 17))
+
+
+def test_forwarded_tcp_streams_enable_socket_keepalive():
+    async def scenario():
+        accepted = asyncio.get_running_loop().create_future()
+
+        async def hold(reader, writer):
+            accepted.set_result(writer)
+            await reader.read()
+
+        server = await asyncio.start_server(hold, "127.0.0.1", 0)
+        client_writer = None
+        server_writer = None
+        try:
+            _, client_writer = await asyncio.open_connection(
+                "127.0.0.1", server.sockets[0].getsockname()[1])
+            server_writer = await asyncio.wait_for(accepted, timeout=1)
+            for writer in (client_writer, server_writer):
+                tunnel._enable_tcp_keepalive(writer)
+                sock = writer.get_extra_info("socket")
+                assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+        finally:
+            if client_writer is not None:
+                client_writer.close()
+                await client_writer.wait_closed()
+            if server_writer is not None:
+                server_writer.close()
+                await server_writer.wait_closed()
+            server.close()
+            await server.wait_closed()
+
+    run(scenario())
 
 
 def test_join_directions_waits_for_peer_to_finish_within_half_close_grace(monkeypatch):

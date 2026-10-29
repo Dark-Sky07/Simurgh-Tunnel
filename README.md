@@ -10,13 +10,13 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.13. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.14. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
 Forward mode connects an **entry** node to an **exit** node. Reverse mode instead has a private-side agent initiate an outbound TLS session to a public hub, which exposes a separate TCP listener and forwards only to that agent's fixed local target. Both are independent, non-interoperable tunnel modes.
 
-- TCP forwarding with bidirectional flow and half-close handling; a half-closed flow with no further data progress is closed after two minutes.
+- TCP forwarding with bidirectional flow and half-close handling; a half-closed flow with no further data progress is closed after two minutes. Forwarded TCP sockets also use best-effort OS keepalive probes to help clean up unreachable peers.
 - UDP forwarding with datagram boundaries, bounded sessions and idle expiry.
 - Reverse TCP forwarding: a private-side agent dials a verified TLS hub and forwards public hub connections only to its configured fixed local target. Direct TLS only; one route/agent per hub; sessions are bounded.
 - Optional client-session cap per source IP on TCP/UDP entry listeners and the reverse hub's public listener (1–512, default 128), in addition to global session bounds.

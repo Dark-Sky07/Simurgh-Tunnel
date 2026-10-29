@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import ssl
 import stat
 import struct
@@ -24,13 +25,16 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.13"
+VERSION = "0.2.14"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
 TLS_HANDSHAKE_TIMEOUT = 10.0
 CONNECT_TIMEOUT = 10.0
 TCP_HALF_CLOSE_TIMEOUT = 120.0
+TCP_KEEPALIVE_IDLE = 60
+TCP_KEEPALIVE_INTERVAL = 15
+TCP_KEEPALIVE_COUNT = 4
 MAX_TCP_SESSIONS = 1024
 MAX_TCP_SESSIONS_PER_PEER = 128
 MAX_UDP_ASSOCIATIONS = 1024
@@ -538,6 +542,9 @@ class _WebSocketStream:
     def can_write_eof(self) -> bool:
         return False
 
+    def get_extra_info(self, name: str, default=None):
+        return self._base_writer.get_extra_info(name, default)
+
     def close(self) -> None:
         if self._closed:
             return
@@ -613,6 +620,26 @@ async def _read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
     if kind == _FIN and size == 0:
         return kind, b""
     raise ProtocolError("unknown frame type or invalid frame length")
+
+
+def _enable_tcp_keepalive(writer: asyncio.StreamWriter) -> None:
+    """Best-effort keepalive probes for a forwarded TCP stream's underlying socket."""
+    try:
+        sock = writer.get_extra_info("socket")
+        if sock is None:
+            return
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        idle_option = getattr(socket, "TCP_KEEPIDLE", getattr(socket, "TCP_KEEPALIVE", None))
+        if idle_option is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, idle_option, TCP_KEEPALIVE_IDLE)
+        interval_option = getattr(socket, "TCP_KEEPINTVL", None)
+        if interval_option is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, interval_option, TCP_KEEPALIVE_INTERVAL)
+        count_option = getattr(socket, "TCP_KEEPCNT", None)
+        if count_option is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, count_option, TCP_KEEPALIVE_COUNT)
+    except (AttributeError, OSError) as exc:
+        LOG.debug("could not configure TCP keepalive on a forwarded stream: %s", exc)
 
 
 async def _copy_to_tunnel(reader: asyncio.StreamReader,
@@ -832,6 +859,8 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
         except (TimeoutError, OSError):
             await _send_json(writer, {"ok": False, "error": "target_unavailable"})
             return
+        _enable_tcp_keepalive(writer)
+        _enable_tcp_keepalive(remote_writer)
         await _send_json(writer, {"ok": True})
         activity = asyncio.Event()
         await _join_directions(
@@ -995,6 +1024,8 @@ async def _forward_entry(config: EntryConfig, local_reader: asyncio.StreamReader
             LOG.warning("exit declined route %r (%s)", config.route,
                         response.get("error", "unknown error"))
             return
+        _enable_tcp_keepalive(local_writer)
+        _enable_tcp_keepalive(remote_writer)
         activity = asyncio.Event()
         await _join_directions(
             _copy_to_tunnel(local_reader, remote_writer, meter, activity),
