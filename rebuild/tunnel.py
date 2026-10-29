@@ -24,12 +24,13 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.12"
+VERSION = "0.2.13"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
 TLS_HANDSHAKE_TIMEOUT = 10.0
 CONNECT_TIMEOUT = 10.0
+TCP_HALF_CLOSE_TIMEOUT = 120.0
 MAX_TCP_SESSIONS = 1024
 MAX_TCP_SESSIONS_PER_PEER = 128
 MAX_UDP_ASSOCIATIONS = 1024
@@ -616,7 +617,8 @@ async def _read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
 
 async def _copy_to_tunnel(reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter,
-                          meter: UsageMeter | None = None) -> None:
+                          meter: UsageMeter | None = None,
+                          activity: asyncio.Event | None = None) -> None:
     while True:
         chunk = await reader.read(MAX_FRAME)
         if not chunk:
@@ -625,13 +627,16 @@ async def _copy_to_tunnel(reader: asyncio.StreamReader,
         allowed = meter.consume("upload", len(chunk)) if meter else len(chunk)
         if allowed:
             await _write_frame(writer, _DATA, chunk[:allowed])
+            if activity is not None:
+                activity.set()
         if allowed < len(chunk) or (meter and meter.exhausted):
             raise QuotaReached("monthly transfer quota reached")
 
 
 async def _copy_from_tunnel(reader: asyncio.StreamReader,
                             writer: asyncio.StreamWriter,
-                            meter: UsageMeter | None = None) -> None:
+                            meter: UsageMeter | None = None,
+                            activity: asyncio.Event | None = None) -> None:
     while True:
         kind, payload = await _read_frame(reader)
         if kind == _FIN:
@@ -647,26 +652,72 @@ async def _copy_from_tunnel(reader: asyncio.StreamReader,
         if allowed:
             writer.write(payload[:allowed])
             await writer.drain()
+            if activity is not None:
+                activity.set()
         if allowed < len(payload) or (meter and meter.exhausted):
             raise QuotaReached("monthly transfer quota reached")
 
 
-async def _wait_for_tasks(coroutines, *, first_completed: bool) -> None:
+async def _wait_for_tasks(coroutines, *, first_completed: bool,
+                          completion_timeout: float | None = None,
+                          activity: asyncio.Event | None = None) -> None:
     tasks = [asyncio.create_task(coro) for coro in coroutines]
+    pending = set(tasks)
+    deadline = None
+    activity_waiter = None
+    loop = asyncio.get_running_loop()
     try:
-        mode = asyncio.FIRST_COMPLETED if first_completed else asyncio.FIRST_EXCEPTION
-        done, pending = await asyncio.wait(tasks, return_when=mode)
-        failed = any(task.exception() is not None for task in done if not task.cancelled())
-        if first_completed or failed:
-            for task in pending:
-                task.cancel()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        failure = next((result for result in results
-                        if isinstance(result, BaseException)
-                        and not isinstance(result, asyncio.CancelledError)), None)
-        if failure is not None:
-            raise failure
+        while pending:
+            timeout = None if deadline is None else max(0.0, deadline - loop.time())
+            waiters = set(pending)
+            if deadline is not None and activity is not None:
+                activity_waiter = asyncio.create_task(activity.wait())
+                waiters.add(activity_waiter)
+            done, _ = await asyncio.wait(
+                waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            activity_woken = False
+            if activity_waiter is not None:
+                if activity_waiter in done:
+                    activity.clear()
+                    deadline = loop.time() + completion_timeout
+                    activity_woken = True
+                    done.discard(activity_waiter)
+                else:
+                    activity_waiter.cancel()
+                    await asyncio.gather(activity_waiter, return_exceptions=True)
+                activity_waiter = None
+
+            flow_done = done.intersection(pending)
+            if not flow_done and activity_woken:
+                continue
+            if not flow_done:
+                LOG.debug("closing half-closed TCP flow after its idle grace period")
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                return
+            pending.difference_update(flow_done)
+
+            failure = next((task.exception() for task in flow_done
+                            if not task.cancelled() and task.exception() is not None), None)
+            if failure is not None:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                raise failure
+
+            if first_completed:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                return
+
+            if pending and deadline is None and completion_timeout is not None:
+                deadline = loop.time() + completion_timeout
     except BaseException:
+        if activity_waiter is not None and not activity_waiter.done():
+            activity_waiter.cancel()
+            await asyncio.gather(activity_waiter, return_exceptions=True)
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -674,8 +725,10 @@ async def _wait_for_tasks(coroutines, *, first_completed: bool) -> None:
         raise
 
 
-async def _join_directions(*coroutines) -> None:
-    await _wait_for_tasks(coroutines, first_completed=False)
+async def _join_directions(*coroutines, activity: asyncio.Event | None = None) -> None:
+    await _wait_for_tasks(coroutines, first_completed=False,
+                          completion_timeout=TCP_HALF_CLOSE_TIMEOUT,
+                          activity=activity)
 
 
 async def _stop_when_either_finishes(*coroutines) -> None:
@@ -780,9 +833,11 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
             await _send_json(writer, {"ok": False, "error": "target_unavailable"})
             return
         await _send_json(writer, {"ok": True})
+        activity = asyncio.Event()
         await _join_directions(
-            _copy_from_tunnel(reader, remote_writer),
-            _copy_to_tunnel(remote_reader, writer),
+            _copy_from_tunnel(reader, remote_writer, activity=activity),
+            _copy_to_tunnel(remote_reader, writer, activity=activity),
+            activity=activity,
         )
     except (TimeoutError, ProtocolError, EOFError, OSError, ssl.SSLError) as exc:
         LOG.debug("closing invalid or interrupted tunnel session: %s", exc)
@@ -940,9 +995,11 @@ async def _forward_entry(config: EntryConfig, local_reader: asyncio.StreamReader
             LOG.warning("exit declined route %r (%s)", config.route,
                         response.get("error", "unknown error"))
             return
+        activity = asyncio.Event()
         await _join_directions(
-            _copy_to_tunnel(local_reader, remote_writer, meter),
-            _copy_from_tunnel(remote_reader, local_writer, meter),
+            _copy_to_tunnel(local_reader, remote_writer, meter, activity),
+            _copy_from_tunnel(remote_reader, local_writer, meter, activity),
+            activity=activity,
         )
     except QuotaReached as exc:
         LOG.info("closing entry flow: %s", exc)

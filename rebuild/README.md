@@ -8,7 +8,7 @@ The current core provides authenticated direct-TLS, WSS, and HTTP/2 forwarding f
 
 - **entry** binds a local TCP or UDP listener and reaches the configured exit through TLS;
 - **exit** validates the shared secret and maps a configured route name to a fixed destination; peers cannot choose arbitrary hosts or ports;
-- TCP flows use a framed bidirectional stream and preserve half-close behavior;
+- TCP flows use a framed bidirectional stream and preserve half-close behavior; a half-closed flow with no further data progress is closed after two minutes;
 - UDP datagrams retain message boundaries and use bounded per-client sessions with an idle timeout;
 - entry payload bytes are counted by direction, with an optional UTC-month MiB quota enforced for TCP/UDP and visible in the local panel/menu;
 - carriers are direct TLS, WebSocket binary streams over verified TLS, or one HTTP/2 request stream per TLS connection; the entry verifies the exit certificate and DNS name for every carrier;

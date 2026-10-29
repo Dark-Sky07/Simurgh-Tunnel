@@ -123,6 +123,57 @@ def test_speed_test_rejects_udp_and_out_of_range_sizes():
         run(tunnel.speed_test_entry(config, 17))
 
 
+def test_join_directions_waits_for_peer_to_finish_within_half_close_grace(monkeypatch):
+    monkeypatch.setattr(tunnel, "TCP_HALF_CLOSE_TIMEOUT", 0.2)
+    completed = asyncio.Event()
+
+    async def first_direction():
+        return
+
+    async def second_direction():
+        await asyncio.sleep(0.01)
+        completed.set()
+
+    run(tunnel._join_directions(first_direction(), second_direction()))
+    assert completed.is_set()
+
+
+def test_join_directions_resets_grace_when_half_closed_flow_still_moves(monkeypatch):
+    monkeypatch.setattr(tunnel, "TCP_HALF_CLOSE_TIMEOUT", 0.03)
+    activity = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def first_direction():
+        return
+
+    async def active_peer():
+        for _ in range(3):
+            await asyncio.sleep(0.02)
+            activity.set()
+            await asyncio.sleep(0.002)
+        completed.set()
+
+    run(tunnel._join_directions(first_direction(), active_peer(), activity=activity))
+    assert completed.is_set()
+
+
+def test_join_directions_cancels_peer_after_half_close_grace(monkeypatch):
+    monkeypatch.setattr(tunnel, "TCP_HALF_CLOSE_TIMEOUT", 0.02)
+    cancelled = asyncio.Event()
+
+    async def first_direction():
+        return
+
+    async def half_closed_peer():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    run(tunnel._join_directions(first_direction(), half_closed_peer()))
+    assert cancelled.is_set()
+
+
 @pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_entry_tunnel_forwards_data_and_propagates_half_close(
         server_certificate, carrier):
