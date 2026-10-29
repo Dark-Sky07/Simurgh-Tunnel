@@ -10,21 +10,24 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.1.0. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.0. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
-Simurgh Tunnel connects an **entry** node to an **exit** node. The entry accepts local TCP or UDP traffic and forwards it over an authenticated TLS connection. The exit maps a named route to a fixed destination; the entry cannot ask the exit to connect to arbitrary hosts or ports.
+Simurgh Tunnel connects an **entry** node to an **exit** node. The entry accepts local TCP or UDP traffic and forwards it through either a verified TLS stream or a WebSocket-over-TLS (WSS) carrier. The exit maps a named route to a fixed destination; the entry cannot ask the exit to connect to arbitrary hosts or ports.
 
 - TCP forwarding with bidirectional flow and half-close handling.
 - UDP forwarding with datagram boundaries, bounded sessions and idle expiry.
-- TLS certificate and server-name verification at the entry.
+- TLS certificate and server-name verification at the entry for both carriers.
+- Per-role carrier selection: direct TLS stream or WSS with strict HTTP upgrade and bounded WebSocket frames.
 - Shared-secret authentication and fixed named routes.
 - Role setup in the panel or terminal menu—never during installation.
 - Loopback-only web panel; panel-started nodes are supervised and can opt into auto-start.
+- Config backups can be reviewed and restored through the panel; restoration validates the role and backs up the current file first.
 - One installer entry point for both per-user and systemd-managed installation.
+- Namespaced release checks in the panel, plus terminal update installation with SHA-256 asset verification.
 
-This is a deliberately small first release. Additional carriers, an authenticated release-update flow, real-host deployment testing and further production hardening remain on the roadmap. Do not deploy it as a replacement for a production tunnel yet.
+This is a deliberately small development release. Detached signatures or build attestations for updates, real-host deployment testing and further production hardening remain. WSS is an interoperability option, not a promise of concealment or availability. Do not deploy this as a production replacement yet.
 
 ## Install
 
@@ -58,6 +61,10 @@ ssh -L 8780:127.0.0.1:8780 user@server
 ```
 
 Then open `http://127.0.0.1:8780/` on your workstation. For the system service, the panel uses `/etc/simurgh-next`; use `sudo systemctl status simurgh-next-panel.service` to inspect it. The panel is intentionally not exposed on a public interface.
+
+## Updates and trust limits
+
+The panel can check for releases tagged `simurgh-next-vX.Y.Z`; the terminal menu can download, verify and install one. The standalone command is `simurgh-next-update --apply`; for a system install, run `sudo simurgh-next-update --apply --mode system` from an administrator terminal. Updates keep previous code releases and use the same config-preserving installer. The updater validates the namespaced release, restricts downloads to GitHub HTTPS hosts, verifies the source archive against the published SHA-256 manifest, and rejects unsafe archive paths. The checksum is published alongside the archive, not signed by a separate key; it protects against corruption and mismatched assets, but does not protect against a compromised release publisher. Review releases and keep backups.
 
 ## Development and tests
 

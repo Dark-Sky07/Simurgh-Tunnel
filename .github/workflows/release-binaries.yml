@@ -27,7 +27,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION=$(python -c 'from rebuild.tunnel import VERSION; print(VERSION)')
-          case "$RELEASE_TAG" in "v$VERSION"|"$VERSION") ;; *)
+          case "$RELEASE_TAG" in "simurgh-next-v$VERSION") ;; *)
             echo "Release tag $RELEASE_TAG does not match source version $VERSION" >&2
             exit 1
             ;;

@@ -22,20 +22,29 @@ def scripted(values):
 
 def test_entry_wizard_supports_udp_and_requires_the_shared_route():
     config = setup.build_config("entry", scripted([
-        "2", "", "", "dns", "s" * 40, "203.0.113.8", "", "", "",
+        "2", "1", "", "", "dns", "s" * 40, "203.0.113.8", "", "", "",
     ]), lambda _message: None)
 
     assert config["role"] == "entry"
     assert config["transport"] == "udp"
+    assert config["carrier"] == "tls"
     assert config["listen_port"] == 15353
     assert config["route"] == "dns"
     assert config["exit_host"] == "203.0.113.8"
     assert config["secret"] == "s" * 40
 
 
+def test_entry_wizard_can_select_wss_carrier():
+    config = setup.build_config("entry", scripted([
+        "1", "2", "", "", "web", "s" * 40, "exit.example.net", "", "", "",
+    ]), lambda _message: None)
+    assert config["transport"] == "tcp"
+    assert config["carrier"] == "wss"
+
+
 def test_exit_wizard_creates_fixed_destination_route(tmp_path):
     config = setup.build_config("exit", scripted([
-        "", "", "web", "x" * 40, "", "", "127.0.0.1", "8080",
+        "1", "", "", "web", "x" * 40, "", "", "127.0.0.1", "8080",
     ]), lambda _message: None, config_dir=tmp_path)
 
     assert config["role"] == "exit"
@@ -50,7 +59,7 @@ def test_setup_menu_preserves_previous_config_with_private_backup(tmp_path):
     path.write_text('{"role":"old"}\n')
     os.chmod(path, 0o644)
     inputs = scripted([
-        "2", "", "", "web", "x" * 40, "", "", "127.0.0.1", "8080", "yes",
+        "2", "1", "", "", "web", "x" * 40, "", "", "127.0.0.1", "8080", "yes",
     ])
     messages = []
 
@@ -65,11 +74,44 @@ def test_setup_menu_preserves_previous_config_with_private_backup(tmp_path):
     assert any("/etc/simurgh" in message for message in messages)
 
 
+def test_restore_config_validates_backup_and_preserves_replaced_file(tmp_path):
+    original = {
+        "role": "entry", "transport": "tcp", "carrier": "tls",
+        "listen_host": "127.0.0.1", "listen_port": 18080,
+        "exit_host": "exit.example.net", "exit_port": 8443,
+        "server_name": "exit.example.net", "ca_file": "/tmp/ca.crt",
+        "secret": "s" * 40, "route": "web",
+    }
+    current = dict(original, route="new-route")
+    path = tmp_path / "entry.json"
+    setup.save_config(path, original)
+    backup = path.with_name("entry.json.bak")
+    setup.save_config(path, current)
+    assert backup in setup.list_config_backups(tmp_path, "entry")
+
+    replaced_backup = setup.restore_config(tmp_path, "entry", backup.name)
+    assert json.loads(path.read_text())["route"] == "web"
+    assert replaced_backup is not None
+    assert json.loads(replaced_backup.read_text())["route"] == "new-route"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_save_config_refuses_to_follow_a_symlink(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"secret":"external"}\n')
+    target = tmp_path / "entry.json"
+    target.symlink_to(outside)
+    with pytest.raises(ValueError, match="symlinked"):
+        setup.save_config(target, {"role": "entry"})
+    assert outside.read_text() == '{"secret":"external"}\n'
+    assert target.is_symlink()
+
+
 def test_setup_menu_cancel_keeps_existing_bytes(tmp_path):
     path = tmp_path / "entry.json"
     original = b'{"role":"entry","secret":"old"}\n'
     path.write_bytes(original)
-    answers = scripted(["1", "1", "", "", "web", "x" * 40,
+    answers = scripted(["1", "1", "1", "", "", "web", "x" * 40,
                         "exit.example.net", "", "", "", "n"])
     assert setup.setup_menu(tmp_path, answers, lambda _message: None) == 1
     assert path.read_bytes() == original
@@ -78,5 +120,5 @@ def test_setup_menu_cancel_keeps_existing_bytes(tmp_path):
 
 def test_setup_rejects_a_short_secret():
     with pytest.raises(ValueError, match="at least 32"):
-        setup.build_config("exit", scripted(["", "", "web", "short"]),
+        setup.build_config("exit", scripted(["1", "", "", "web", "short"]),
                            lambda _message: None)

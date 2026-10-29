@@ -13,7 +13,7 @@ from rebuild import menu
 
 def test_status_reports_entry_and_exit_routes(tmp_path):
     (tmp_path / "entry.json").write_text(json.dumps({
-        "role": "entry", "transport": "udp", "listen_host": "127.0.0.1",
+        "role": "entry", "transport": "udp", "carrier": "wss", "listen_host": "127.0.0.1",
         "listen_port": 5353, "exit_host": "exit.example.net", "exit_port": 8443,
         "server_name": "exit.example.net", "ca_file": "/tmp/ca.crt",
         "secret": "s" * 40, "route": "dns",
@@ -27,15 +27,24 @@ def test_status_reports_entry_and_exit_routes(tmp_path):
     roles = menu.show_status(tmp_path, lines.append)
 
     assert roles == ("entry", "exit")
-    assert any("UDP listener" in line and "route=dns" in line for line in lines)
+    assert any("UDP listener" in line and "carrier=WSS" in line and "route=dns" in line
+               for line in lines)
     assert any("1 fixed route" in line for line in lines)
 
 
 def test_menu_requires_config_before_running_and_can_exit(tmp_path):
-    answers = iter(["2", "5"])
+    answers = iter(["2", "6"])
     lines = []
     assert menu.menu(tmp_path, lambda _prompt: next(answers), lines.append) == 0
     assert any("Entry is not configured" in line for line in lines)
+
+
+def test_menu_exposes_release_update_action(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(menu, "interactive_update", lambda config_dir: called.append(config_dir) or 0)
+    answers = iter(["5", "6"])
+    assert menu.menu(tmp_path, lambda _prompt: next(answers), lambda _message: None) == 0
+    assert called == [tmp_path]
 
 
 def test_run_role_refuses_config_for_the_other_role(tmp_path):

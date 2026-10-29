@@ -1,5 +1,6 @@
 {
   "role": "exit",
+  "carrier": "tls",
   "listen_host": "0.0.0.0",
   "listen_port": 8443,
   "cert_file": "/etc/simurgh-next/tls/server.crt",

@@ -19,7 +19,9 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from rebuild import panel as panel_module
 from rebuild.panel import SetupPanel
+from rebuild.wizard import list_config_backups, save_config
 
 
 def started_panel(config_dir):
@@ -99,7 +101,72 @@ def test_setup_panel_requires_form_token_and_keeps_secret_out_of_response(tmp_pa
         assert "s" * 40 not in body
         config = json.loads((tmp_path / "entry.json").read_text())
         assert config["role"] == "entry" and config["transport"] == "tcp"
+        assert config["carrier"] == "tls"
         assert config["route"] == "web"
+    finally:
+        panel.close()
+
+
+def test_setup_panel_can_save_wss_entry_configuration(tmp_path):
+    panel, url = started_panel(tmp_path)
+    try:
+        fields = entry_fields()
+        fields.update({"carrier": "wss", "csrf": _csrf(url)})
+        with _post(url, "/setup", fields) as response:
+            assert response.status == 201
+        config = json.loads((tmp_path / "entry.json").read_text())
+        assert config["carrier"] == "wss"
+    finally:
+        panel.close()
+
+
+def test_panel_update_check_is_csrf_protected_and_returns_install_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "latest_update", lambda: {"_simurgh_version": "0.3.0"})
+    panel, url = started_panel(tmp_path)
+    try:
+        csrf = _csrf(url)
+        with _post(url, "/update/check", {"csrf": csrf}) as response:
+            body = response.read().decode()
+            assert response.status == 200
+        assert "Simurgh Next 0.3.0 is available" in body
+        assert "simurgh-next-update --apply" in body
+        with pytest.raises(urllib.error.HTTPError) as error:
+            _post(url, "/update/check", {"csrf": "invalid"})
+        assert error.value.code == 403
+    finally:
+        panel.close()
+
+
+def test_panel_restores_only_a_validated_backup_after_confirmation(tmp_path):
+    old = {
+        "role": "entry", "transport": "tcp", "carrier": "tls",
+        "listen_host": "127.0.0.1", "listen_port": 18080,
+        "exit_host": "exit.example.net", "exit_port": 8443,
+        "server_name": "exit.example.net", "ca_file": "/tmp/ca.crt",
+        "secret": "s" * 40, "route": "old-route",
+    }
+    current = dict(old, route="current-route")
+    path = tmp_path / "entry.json"
+    save_config(path, old)
+    save_config(path, current)
+    panel, url = started_panel(tmp_path)
+    try:
+        csrf = _csrf(url)
+        with urllib.request.urlopen(url + "/") as response:
+            assert "entry.json.bak" in response.read().decode()
+        fields = {"csrf": csrf, "role": "entry", "backup": "entry.json.bak"}
+        with pytest.raises(urllib.error.HTTPError) as error:
+            _post(url, "/config/restore", fields)
+        assert error.value.code == 400
+        fields["confirm"] = "yes"
+        with _post(url, "/config/restore", fields) as response:
+            body = response.read().decode()
+            assert response.status == 200
+        assert "Restored entry configuration" in body
+        assert json.loads(path.read_text())["route"] == "old-route"
+        preserved = list_config_backups(tmp_path, "entry")
+        assert any(json.loads(backup.read_text())["route"] == "current-route"
+                   for backup in preserved)
     finally:
         panel.close()
 

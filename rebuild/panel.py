@@ -6,6 +6,7 @@ import argparse
 import html
 import ipaddress
 import logging
+import os
 import secrets
 import signal
 import socket
@@ -16,7 +17,8 @@ from urllib.parse import parse_qs, urlparse
 
 from .paths import default_config_dir
 from .supervisor import NodeSupervisor
-from .wizard import save_config
+from .updates import UpdateError, latest_update
+from .wizard import list_config_backups, restore_config, save_config
 
 LOG = logging.getLogger("simurgh.rebuild.panel")
 MAX_BODY = 16 * 1024
@@ -51,7 +53,8 @@ def _form(csrf: str, config_dir: Path) -> str:
 <input type="hidden" name="csrf" value="{token}">
 <section class="card"><h2>Role and local listener</h2><div class="grid">
 <div class="field"><label for="role">This server is</label><select id="role" name="role"><option value="entry">Entry · accepts user traffic</option><option value="exit">Exit · connects to a fixed destination</option></select></div>
-<div class="field"><label for="transport">Entry transport</label><select id="transport" name="transport"><option value="tcp">TCP stream</option><option value="udp">UDP datagrams</option></select></div>
+<div class="field"><label for="transport">Local entry transport</label><select id="transport" name="transport"><option value="tcp">TCP stream</option><option value="udp">UDP datagrams</option></select></div>
+<div class="field"><label for="carrier">Tunnel carrier · must match both nodes</label><select id="carrier" name="carrier"><option value="tls">TLS stream</option><option value="wss">WebSocket over TLS (WSS)</option></select></div>
 <div class="field"><label for="listen_host">Listen address</label><input id="listen_host" name="listen_host" value="127.0.0.1" required></div>
 <div class="field"><label for="listen_port">Listen port</label><input id="listen_port" name="listen_port" type="number" min="1" max="65535" value="18080" required></div>
 <div class="field wide"><label for="route">Route name (must match at both ends)</label><input id="route" name="route" value="web" maxlength="64" required></div>
@@ -83,6 +86,36 @@ def _node_form(panel, endpoint: str, role: str, label: str, *, enabled: str | No
     class_attr = f' class="button {css_class}"' if css_class else ' class="button"'
     return (f'<form method="post" action="{endpoint}">{fields}'
             f'<button{class_attr} type="submit">{label}</button></form>')
+
+
+def _update_form(panel) -> str:
+    token = html.escape(panel.csrf, quote=True)
+    return ("<section class=\"card\"><h2>Software updates</h2>"
+            "<p class=\"hint\">Check the official Simurgh Next release feed. The panel only checks; "
+            "install updates from the terminal menu or update command.</p>"
+            f'<form method="post" action="/update/check"><input type="hidden" name="csrf" value="{token}">'
+            '<button class="button" type="submit">Check for updates</button></form></section>')
+
+
+def _backup_section(panel) -> str:
+    rows = []
+    for role in ("entry", "exit"):
+        for backup in list_config_backups(panel.config_dir, role)[:10]:
+            name = html.escape(backup.name, quote=True)
+            token = html.escape(panel.csrf, quote=True)
+            rows.append(
+                f'<article class="node"><div><h3>{role.title()} backup</h3>'
+                f'<p><code>{name}</code></p></div><div class="node-actions">'
+                f'<form method="post" action="/config/restore">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<input type="hidden" name="role" value="{role}">'
+                f'<input type="hidden" name="backup" value="{name}">'
+                '<label class="replace"><input type="checkbox" name="confirm" value="yes" required>'
+                'Back up the current config before restore</label>'
+                '<button class="button stop" type="submit">Restore</button></form></div></article>')
+    content = ("".join(rows) if rows else
+               '<p class="hint">No saved config backups were found.</p>')
+    return '<section class="card"><h2>Configuration backups</h2>' + content + '</section>'
 
 
 def _dashboard(panel) -> str:
@@ -121,7 +154,8 @@ def _dashboard(panel) -> str:
     if state_error:
         warning = (f'<div class="notice" role="alert">Auto-start state error: '
                    f'{html.escape(state_error["message"])}</div>')
-    return (warning + '<section class="card"><h2>Node control</h2>'
+    return (warning + _update_form(panel) + _backup_section(panel)
+            + '<section class="card"><h2>Node control</h2>'
             '<p class="hint">Processes are started only by this local panel and run as its user. '
             'Closing the panel stops nodes it launched. “Panel start” starts a configured node '
             'whenever this panel launches.</p>' + "".join(rows) + "</section>")
@@ -149,6 +183,9 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
     transport = _one(form, "transport", "tcp")
     if transport not in ("tcp", "udp"):
         raise ValueError("transport must be TCP or UDP")
+    carrier = _one(form, "carrier", "tls")
+    if carrier not in ("tls", "wss"):
+        raise ValueError("carrier must be TLS or WSS")
     secret = _one(form, "secret")
     if len(secret.encode("utf-8")) < 32:
         raise ValueError("shared secret must contain at least 32 UTF-8 bytes")
@@ -159,7 +196,7 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
 
     if role == "exit":
         config = {
-            "role": "exit", "listen_host": listen_host,
+            "role": "exit", "carrier": carrier, "listen_host": listen_host,
             "listen_port": _number(form, "listen_port"),
             "cert_file": _one(form, "cert_file"), "key_file": _one(form, "key_file"),
             "secret": secret,
@@ -171,7 +208,7 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
         return role, config
 
     config = {
-        "role": "entry", "transport": transport,
+        "role": "entry", "transport": transport, "carrier": carrier,
         "listen_host": listen_host, "listen_port": _number(form, "listen_port"),
         "exit_host": _one(form, "exit_host"), "exit_port": _number(form, "exit_port"),
         "server_name": _one(form, "server_name"), "ca_file": _one(form, "ca_file"),
@@ -198,7 +235,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.1"
+            server_version = "SimurghSetup/0.2"
             sys_version = ""
 
             def setup(self):
@@ -244,7 +281,8 @@ class SetupPanel:
                 if not self._host_is_local():
                     self._send(421, _page("", status="Use the loopback address or an SSH tunnel."))
                     return
-                if self.path not in ("/setup", "/node/start", "/node/stop", "/node/autostart"):
+                if self.path not in ("/setup", "/node/start", "/node/stop", "/node/autostart",
+                                      "/update/check", "/config/restore"):
                     self._send(404, _page("", status="Not found."))
                     return
                 origin = self.headers.get("Origin")
@@ -264,6 +302,41 @@ class SetupPanel:
                                 keep_blank_values=True)
                 if not secrets.compare_digest(_one(form, "csrf"), panel.csrf):
                     self._send(403, _page("", status="Form token expired; reload the page."))
+                    return
+                if self.path == "/config/restore":
+                    try:
+                        if _one(form, "confirm") != "yes":
+                            raise ValueError("confirm that the current config should be backed up before restore")
+                        role = _one(form, "role")
+                        backup = _one(form, "backup")
+                        preserved = restore_config(panel.config_dir, role, backup)
+                        message = f"Restored {role} configuration from {backup}."
+                        if preserved:
+                            message += f" The replaced config was saved to {preserved.name}."
+                        self._send(200, _page(_dashboard(panel) + _form(panel.csrf, panel.config_dir),
+                                              status=message))
+                    except (ValueError, OSError) as exc:
+                        self._send(400, _page(_dashboard(panel) + _form(panel.csrf, panel.config_dir),
+                                              status=f"Restore failed: {exc}"))
+                    return
+                if self.path == "/update/check":
+                    try:
+                        release = latest_update()
+                        if release is None:
+                            update_message = "No newer stable Simurgh Next release is available."
+                        else:
+                            version = html.escape(release["_simurgh_version"])
+                            mode = os.environ.get("SIMURGH_NEXT_INSTALL_MODE", "user")
+                            command = ("sudo simurgh-next-update --apply --mode system"
+                                       if mode == "system" else "simurgh-next-update --apply")
+                            update_message = (f"Simurgh Next {version} is available. "
+                                              f"From a terminal, run: {command} — "
+                                              "the installer verifies the published SHA-256 before applying it.")
+                        self._send(200, _page(_dashboard(panel) + _form(panel.csrf, panel.config_dir),
+                                              status=update_message))
+                    except UpdateError as exc:
+                        self._send(503, _page(_dashboard(panel) + _form(panel.csrf, panel.config_dir),
+                                              status=f"Update check failed: {exc}"))
                     return
                 if self.path == "/node/autostart":
                     role = _one(form, "role")

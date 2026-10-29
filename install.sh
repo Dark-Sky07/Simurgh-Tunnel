@@ -37,6 +37,10 @@ CONFIG_DIR=${SIMURGH_NEXT_CONFIG_DIR:-"$HOME/.config/simurgh-next"}
 case "$CONFIG_DIR" in /*) ;; *) echo "Config directory must be an absolute path: $CONFIG_DIR" >&2; exit 2 ;; esac
 PREFIX=${SIMURGH_NEXT_PREFIX:-"$HOME/.local/share/simurgh-next"}
 BIN_DIR=${SIMURGH_NEXT_BIN_DIR:-"$HOME/.local/bin"}
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-"$HOME/.config"}
+SERVICE_DIR=${SIMURGH_NEXT_SERVICE_DIR:-"$XDG_CONFIG_HOME/systemd/user"}
+case "$SERVICE_DIR" in /*) ;; *) echo "Service directory must be an absolute path: $SERVICE_DIR" >&2; exit 2 ;; esac
+SERVICE_FILE="$SERVICE_DIR/simurgh-next-panel.service"
 
 if [ "$(id -u)" -eq 0 ]; then
     echo "Run this development installer as the account that will operate the panel; do not use sudo." >&2
@@ -76,7 +80,7 @@ if [ -z "$VERSION" ]; then
     echo "Could not determine the rebuild version." >&2
     exit 2
 fi
-COMMANDS="simurgh-next simurgh-next-panel simurgh-next-setup simurgh-next-node"
+COMMANDS="simurgh-next simurgh-next-panel simurgh-next-setup simurgh-next-node simurgh-next-update"
 if [ "$ENABLE_SERVICE" -eq 1 ]; then
     SYSTEMCTL=$(command -v systemctl || true)
     if [ -z "$SYSTEMCTL" ]; then
@@ -87,13 +91,10 @@ if [ "$ENABLE_SERVICE" -eq 1 ]; then
         echo "No usable systemd user manager. Install without --enable-service or start your user manager first." >&2
         exit 2
     fi
-    XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-"$HOME/.config"}
     case "$XDG_CONFIG_HOME" in /*) ;; *)
         echo "XDG_CONFIG_HOME must be an absolute path." >&2
         exit 2
     esac
-    SERVICE_DIR="$XDG_CONFIG_HOME/systemd/user"
-    SERVICE_FILE="$SERVICE_DIR/simurgh-next-panel.service"
     if [ -L "$SERVICE_DIR" ] || [ -L "$SERVICE_FILE" ]; then
         echo "Refusing to install through a symlinked user service path." >&2
         exit 2
@@ -120,7 +121,7 @@ done
 mkdir -p "$PREFIX/releases" "$PREFIX/bin"
 RELEASE=$(mktemp -d "$PREFIX/releases/$VERSION-XXXXXXXX")
 mkdir -p "$RELEASE/rebuild" "$RELEASE/bin"
-for module in __init__.py menu.py panel.py paths.py supervisor.py tunnel.py wizard.py; do
+for module in __init__.py menu.py panel.py paths.py supervisor.py tunnel.py updates.py wizard.py; do
     cp "$SOURCE_DIR/$module" "$RELEASE/rebuild/$module"
 done
 cp -R "$SOURCE_DIR/examples" "$RELEASE/rebuild/examples"
@@ -129,14 +130,33 @@ cp "$SOURCE_DIR/README.md" "$SOURCE_DIR/SETUP.md" "$SOURCE_DIR/PROTOCOL.md" "$RE
 make_launcher() {
     name=$1
     module=$2
-    printf '#!/bin/sh\nexport PYTHONPATH="%s/current${PYTHONPATH:+:$PYTHONPATH}"\nexec "%s" -m %s "$@"\n' \
-        "$PREFIX" "$PYTHON" "$module" > "$RELEASE/bin/$name"
+    "$PYTHON" - "$RELEASE/bin/$name" "$PREFIX" "$BIN_DIR" "$CONFIG_DIR" \
+        "$SERVICE_DIR" "$PYTHON" "$module" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+path, prefix, bin_dir, config_dir, service_dir, python, module = sys.argv[1:]
+lines = [
+    "#!/bin/sh",
+    "export PYTHONPATH=" + shlex.quote(f"{prefix}/current") + '"${PYTHONPATH:+:$PYTHONPATH}"',
+    "export SIMURGH_NEXT_INSTALL_MODE=user",
+    "export SIMURGH_NEXT_PREFIX=" + shlex.quote(prefix),
+    "export SIMURGH_NEXT_BIN_DIR=" + shlex.quote(bin_dir),
+    "export SIMURGH_NEXT_CONFIG_DIR=" + shlex.quote(config_dir),
+    "export SIMURGH_NEXT_SERVICE_DIR=" + shlex.quote(service_dir),
+    "exec " + shlex.quote(python) + " -m " + shlex.quote(module) + ' "$@"',
+    "",
+]
+Path(path).write_text(chr(10).join(lines), encoding="utf-8")
+PY
     chmod 755 "$RELEASE/bin/$name"
 }
 make_launcher simurgh-next rebuild.menu
 make_launcher simurgh-next-panel rebuild.panel
 make_launcher simurgh-next-setup rebuild.wizard
 make_launcher simurgh-next-node rebuild.tunnel
+make_launcher simurgh-next-update rebuild.updates
 
 current_tmp="$PREFIX/current.new.$$"
 ln -s "$RELEASE" "$current_tmp"

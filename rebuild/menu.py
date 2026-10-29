@@ -17,6 +17,7 @@ from .tunnel import (
     serve_entry,
     serve_exit,
 )
+from .updates import interactive_update
 from .wizard import setup_menu
 
 LOG = logging.getLogger("simurgh.rebuild.menu")
@@ -43,10 +44,10 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
         if role == "entry" and isinstance(config, EntryConfig):
             output(f"entry: configured, {config.transport.upper()} listener "
                    f"{config.host}:{config.port} -> {config.exit_host}:{config.exit_port} "
-                   f"route={config.route}")
+                   f"carrier={config.carrier.upper()} route={config.route}")
         elif role == "exit" and isinstance(config, ExitConfig):
-            output(f"exit: configured, TLS listener {config.host}:{config.port}; "
-                   f"{len(config.routes)} fixed route(s)")
+            output(f"exit: configured, {config.carrier.upper()} listener "
+                   f"{config.host}:{config.port}; {len(config.routes)} fixed route(s)")
         else:
             output(f"{role}: config role does not match its filename")
     return roles
@@ -88,7 +89,8 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
         output("2) Run entry in foreground")
         output("3) Run exit in foreground")
         output("4) Show configured roles")
-        output("5) Quit")
+        output("5) Check/apply release update")
+        output("6) Quit")
         choice = input_fn("Choose: ").strip()
         if choice == "1":
             setup_menu(config_dir, input_fn, output)
@@ -105,9 +107,11 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
         elif choice == "4":
             show_status(config_dir, output)
         elif choice == "5":
+            interactive_update(config_dir)
+        elif choice == "6":
             return 0
         else:
-            output("Choose 1, 2, 3, 4 or 5.")
+            output("Choose 1, 2, 3, 4, 5 or 6.")
 
 
 def main(argv: list[str] | None = None) -> int:

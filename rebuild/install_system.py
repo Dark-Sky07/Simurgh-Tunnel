@@ -15,8 +15,8 @@ from pathlib import Path
 ACCOUNT = "simurgh-next"
 SERVICE = "simurgh-next-panel.service"
 MANAGED = "Managed by Simurgh Tunnel independent rebuild"
-MODULES = ("__init__.py", "menu.py", "panel.py", "paths.py", "supervisor.py", "tunnel.py", "wizard.py")
-COMMANDS = ("simurgh-next", "simurgh-next-panel", "simurgh-next-setup", "simurgh-next-node")
+MODULES = ("__init__.py", "menu.py", "panel.py", "paths.py", "supervisor.py", "tunnel.py", "updates.py", "wizard.py")
+COMMANDS = ("simurgh-next", "simurgh-next-panel", "simurgh-next-setup", "simurgh-next-node", "simurgh-next-update")
 
 
 class InstallError(RuntimeError):
@@ -61,10 +61,12 @@ def _copy_release(source: Path, release: Path, python: str, app_root: Path,
         "simurgh-next-panel": "rebuild.panel",
         "simurgh-next-setup": "rebuild.wizard",
         "simurgh-next-node": "rebuild.tunnel",
+        "simurgh-next-update": "rebuild.updates",
     }
     for name, module in modules.items():
         script = ("#!/bin/sh\n"
                   f"export PYTHONPATH=\"{app_root}/current${{PYTHONPATH:+:$PYTHONPATH}}\"\n"
+                  "export SIMURGH_NEXT_INSTALL_MODE=system\n"
                   f"export SIMURGH_NEXT_CONFIG_DIR=\"{config_dir}\"\n"
                   f"exec \"{python}\" -m {module} \"$@\"\n")
         path = bin_dir / name

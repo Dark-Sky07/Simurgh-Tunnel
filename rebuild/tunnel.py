@@ -1,13 +1,16 @@
-"""Independent Simurgh Tunnel rebuild, milestone 1: authenticated TLS TCP forwarding."""
+"""Independent Simurgh Tunnel protocol with TLS/WSS carriers and TCP/UDP forwarding."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import hashlib
 import hmac
 import json
 import logging
 import os
+import secrets
 import ssl
 import stat
 import struct
@@ -16,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -46,6 +49,7 @@ class ExitConfig:
     key_file: Path
     secret: str
     routes: dict[str, tuple[str, int]]
+    carrier: str = "tls"
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,7 @@ class EntryConfig:
     secret: str
     route: str
     transport: str = "tcp"
+    carrier: str = "tls"
 
 
 def _text(obj: dict[str, Any], key: str) -> str:
@@ -102,6 +107,9 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
                     or not isinstance(target, dict)):
                 raise ConfigError("each exit route needs a short name and host/port object")
             routes[name] = (_text(target, "host"), _port(target, "port"))
+        carrier = raw.get("carrier", "tls")
+        if carrier not in ("tls", "wss"):
+            raise ConfigError("carrier must be 'tls' or 'wss'")
         return ExitConfig(
             host=host,
             port=port,
@@ -109,11 +117,15 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
             key_file=Path(_text(raw, "key_file")),
             secret=secret,
             routes=routes,
+            carrier=carrier,
         )
 
     transport = raw.get("transport", "tcp")
     if transport not in ("tcp", "udp"):
         raise ConfigError("entry transport must be 'tcp' or 'udp'")
+    carrier = raw.get("carrier", "tls")
+    if carrier not in ("tls", "wss"):
+        raise ConfigError("carrier must be 'tls' or 'wss'")
     return EntryConfig(
         host=host,
         port=port,
@@ -124,6 +136,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
         secret=secret,
         route=_text(raw, "route"),
         transport=transport,
+        carrier=carrier,
     )
 
 
@@ -140,6 +153,282 @@ def _client_ssl(config: EntryConfig) -> ssl.SSLContext:
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
     return context
+
+
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_WS_PATH = "/simurgh-tunnel"
+_WS_MAX_FRAME = MAX_FRAME + _FRAME_HEADER.size
+MAX_WS_BUFFER = 256 * 1024
+_WS_HEADER_LIMIT = 8192
+
+
+def _ws_accept(key: str) -> str:
+    digest = hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+async def _read_http_headers(reader: asyncio.StreamReader) -> tuple[str, dict[str, str]]:
+    try:
+        raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=HANDSHAKE_TIMEOUT)
+    except (TimeoutError, asyncio.LimitOverrunError, asyncio.IncompleteReadError) as exc:
+        raise ProtocolError("WebSocket HTTP handshake timed out or exceeded its header limit") from exc
+    if len(raw) > _WS_HEADER_LIMIT:
+        raise ProtocolError("WebSocket HTTP headers are oversized")
+    try:
+        lines = raw[:-4].decode("ascii").split("\r\n")
+    except UnicodeDecodeError as exc:
+        raise ProtocolError("WebSocket HTTP headers must be ASCII") from exc
+    start = lines[0] if lines else ""
+    fields: dict[str, str] = {}
+    for line in lines[1:]:
+        if not line or line[0] in " \t" or ":" not in line:
+            raise ProtocolError("malformed WebSocket HTTP header")
+        name, value = line.split(":", 1)
+        key = name.strip().lower()
+        if not key or key in fields:
+            raise ProtocolError("duplicate or empty WebSocket HTTP header")
+        fields[key] = value.strip()
+    return start, fields
+
+
+async def _server_websocket(reader: asyncio.StreamReader,
+                            writer: asyncio.StreamWriter) -> _WebSocketStream:
+    request, fields = await _read_http_headers(reader)
+    LOG.debug("WSS server request: %s", request)
+    if request != f"GET {_WS_PATH} HTTP/1.1":
+        raise ProtocolError("unsupported WebSocket request path")
+    if not fields.get("host"):
+        raise ProtocolError("missing WebSocket Host header")
+    if fields.get("content-length", "0") != "0" or "transfer-encoding" in fields:
+        raise ProtocolError("WebSocket upgrade request must not have a body")
+    if fields.get("upgrade", "").lower() != "websocket":
+        raise ProtocolError("missing WebSocket upgrade")
+    if "upgrade" not in {part.strip().lower() for part in fields.get("connection", "").split(",")}:
+        raise ProtocolError("missing Connection: Upgrade")
+    if fields.get("sec-websocket-version") != "13":
+        raise ProtocolError("unsupported WebSocket version")
+    key = fields.get("sec-websocket-key", "")
+    try:
+        decoded_key = base64.b64decode(key, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ProtocolError("invalid WebSocket key") from exc
+    if len(decoded_key) != 16:
+        raise ProtocolError("invalid WebSocket key length")
+    response = ("HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {_ws_accept(key)}\r\n\r\n")
+    writer.write(response.encode("ascii"))
+    await writer.drain()
+    return _WebSocketStream(reader, writer, client=False)
+
+
+async def _client_websocket(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                            host: str, port: int) -> _WebSocketStream:
+    key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
+    host_header = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    request = (f"GET {_WS_PATH} HTTP/1.1\r\nHost: {host_header}\r\n"
+               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
+    writer.write(request.encode("ascii"))
+    await writer.drain()
+    response, fields = await _read_http_headers(reader)
+    LOG.debug("WSS client response: %s", response)
+    if response != "HTTP/1.1 101 Switching Protocols":
+        raise ProtocolError("exit refused the WebSocket upgrade")
+    if fields.get("upgrade", "").lower() != "websocket":
+        raise ProtocolError("exit returned an invalid WebSocket upgrade")
+    if "upgrade" not in {part.strip().lower() for part in fields.get("connection", "").split(",")}:
+        raise ProtocolError("exit returned an invalid Connection header")
+    if not hmac.compare_digest(fields.get("sec-websocket-accept", ""), _ws_accept(key)):
+        raise ProtocolError("exit returned an invalid WebSocket accept value")
+    return _WebSocketStream(reader, writer, client=True)
+
+
+class _WebSocketStream:
+    """Expose ordered WebSocket binary-message payloads as an async byte stream."""
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                 *, client: bool):
+        self._base_reader = reader
+        self._base_writer = writer
+        self._client = client
+        self._read_buffer = bytearray()
+        self._read_condition = asyncio.Condition()
+        self._read_eof = False
+        self._read_error: BaseException | None = None
+        self._closed = False
+        self._write_lock = asyncio.Lock()
+        self._write_buffer = bytearray()
+        self._receiver = asyncio.create_task(self._receive())
+
+    async def _send(self, opcode: int, payload: bytes) -> None:
+        if len(payload) > _WS_MAX_FRAME:
+            raise ProtocolError("WebSocket output frame exceeds the size limit")
+        mask = self._client
+        first = 0x80 | opcode
+        size = len(payload)
+        if size < 126:
+            header = bytes((first, (0x80 if mask else 0) | size))
+        elif size <= 0xFFFF:
+            header = bytes((first, (0x80 if mask else 0) | 126)) + struct.pack("!H", size)
+        else:
+            header = bytes((first, (0x80 if mask else 0) | 127)) + struct.pack("!Q", size)
+        if mask:
+            mask_key = secrets.token_bytes(4)
+            payload = bytes(byte ^ mask_key[index % 4] for index, byte in enumerate(payload))
+            header += mask_key
+        self._base_writer.write(header + payload)
+        LOG.debug("WSS send frame: %d bytes opcode=%d client=%s", size, opcode, self._client)
+        await self._base_writer.drain()
+
+    async def _receive(self) -> None:
+        try:
+            while True:
+                first, second = await self._base_reader.readexactly(2)
+                fin = bool(first & 0x80)
+                if first & 0x70:
+                    raise ProtocolError("WebSocket extensions are not negotiated")
+                opcode = first & 0x0F
+                masked = bool(second & 0x80)
+                if masked != (not self._client):
+                    raise ProtocolError("invalid WebSocket masking direction")
+                size = second & 0x7F
+                if size == 126:
+                    size = struct.unpack("!H", await self._base_reader.readexactly(2))[0]
+                    if size < 126:
+                        raise ProtocolError("non-canonical WebSocket frame length")
+                elif size == 127:
+                    size = struct.unpack("!Q", await self._base_reader.readexactly(8))[0]
+                    if size < 65536 or size >> 63:
+                        raise ProtocolError("invalid WebSocket frame length")
+                if size > _WS_MAX_FRAME:
+                    raise ProtocolError("WebSocket frame exceeds the size limit")
+                if opcode >= 0x8 and (not fin or size > 125):
+                    raise ProtocolError("invalid WebSocket control frame")
+                mask_key = await self._base_reader.readexactly(4) if masked else b""
+                payload = await self._base_reader.readexactly(size)
+                if masked:
+                    payload = bytes(byte ^ mask_key[index % 4]
+                                    for index, byte in enumerate(payload))
+                if opcode == 0x8:
+                    if not self._closed:
+                        await self._send(0x8, payload[:125])
+                    return
+                if opcode == 0x9:
+                    await self._send(0xA, payload)
+                    continue
+                if opcode == 0xA:
+                    continue
+                if opcode != 0x2 or not fin:
+                    raise ProtocolError("only complete binary WebSocket messages are supported")
+                LOG.debug("WSS received binary message: %d bytes (client=%s)", size, self._client)
+                async with self._read_condition:
+                    payload_size = len(payload)
+                    await self._read_condition.wait_for(
+                        lambda size=payload_size: len(self._read_buffer) + size <= MAX_WS_BUFFER
+                        or self._closed)
+                    if self._closed:
+                        return
+                    self._read_buffer.extend(payload)
+                    self._read_condition.notify_all()
+        except asyncio.IncompleteReadError:
+            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - propagate receiver failures to stream readers
+            LOG.debug("WSS receiver error: %s", exc)
+            self._read_error = exc
+        finally:
+            async with self._read_condition:
+                self._read_eof = True
+                self._read_condition.notify_all()
+
+    async def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        async with self._read_condition:
+            if size < 0:
+                await self._read_condition.wait_for(lambda: self._read_eof)
+                size = len(self._read_buffer)
+            else:
+                await self._read_condition.wait_for(
+                    lambda: bool(self._read_buffer) or self._read_eof)
+            if not self._read_buffer and self._read_error is not None:
+                raise self._read_error
+            count = min(size, len(self._read_buffer))
+            data = bytes(self._read_buffer[:count])
+            del self._read_buffer[:count]
+            self._read_condition.notify_all()
+            return data
+
+    async def readexactly(self, size: int) -> bytes:
+        async with self._read_condition:
+            await self._read_condition.wait_for(
+                lambda: len(self._read_buffer) >= size or self._read_eof)
+            if len(self._read_buffer) < size:
+                partial = bytes(self._read_buffer)
+                self._read_buffer.clear()
+                if self._read_error is not None:
+                    raise self._read_error
+                raise asyncio.IncompleteReadError(partial, size)
+            data = bytes(self._read_buffer[:size])
+            del self._read_buffer[:size]
+            self._read_condition.notify_all()
+            return data
+
+    async def readline(self) -> bytes:
+        async with self._read_condition:
+            await self._read_condition.wait_for(
+                lambda: b"\n" in self._read_buffer or self._read_eof)
+            newline = self._read_buffer.find(b"\n")
+            if newline < 0:
+                if self._read_error is not None:
+                    raise self._read_error
+                data = bytes(self._read_buffer)
+                self._read_buffer.clear()
+            else:
+                data = bytes(self._read_buffer[:newline + 1])
+                del self._read_buffer[:newline + 1]
+            if len(data) > MAX_HANDSHAKE:
+                raise ValueError("WebSocket stream line exceeds limit")
+            self._read_condition.notify_all()
+            return data
+
+    def write(self, data: bytes) -> None:
+        if self._closed:
+            raise ConnectionError("WebSocket stream is closed")
+        if len(self._write_buffer) + len(data) > _WS_MAX_FRAME:
+            raise ProtocolError("WebSocket output buffer exceeds the frame limit")
+        self._write_buffer.extend(data)
+
+    async def drain(self) -> None:
+        if self._write_buffer:
+            data = bytes(self._write_buffer)
+            self._write_buffer.clear()
+            async with self._write_lock:
+                await self._send(0x2, data)
+        await self._base_writer.drain()
+
+    def can_write_eof(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._base_writer.close()
+        if not self._receiver.done():
+            self._receiver.cancel()
+
+    async def wait_closed(self) -> None:
+        try:
+            await self._base_writer.wait_closed()
+        except OSError:
+            pass
+        if not self._receiver.done():
+            self._receiver.cancel()
+        await asyncio.gather(self._receiver, return_exceptions=True)
 
 
 async def _send_json(writer: asyncio.StreamWriter, value: dict[str, Any]) -> None:
@@ -219,6 +508,8 @@ async def _copy_from_tunnel(reader: asyncio.StreamReader,
             if writer.can_write_eof():
                 writer.write_eof()
                 await writer.drain()
+            else:
+                writer.close()
             return
         if kind != _DATA:
             raise ProtocolError("UDP frame received on a TCP flow")
@@ -352,19 +643,36 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
             pass
 
 
+async def _open_entry_connection(config: EntryConfig):
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(
+            config.exit_host,
+            config.exit_port,
+            ssl=_client_ssl(config),
+            server_hostname=config.server_name,
+            limit=MAX_HANDSHAKE,
+        ),
+        timeout=CONNECT_TIMEOUT,
+    )
+    if config.carrier == "tls":
+        return reader, writer
+    try:
+        stream = await _client_websocket(reader, writer, config.server_name, config.exit_port)
+    except BaseException:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+        raise
+    return stream, stream
+
+
 async def _forward_entry(config: EntryConfig, local_reader: asyncio.StreamReader,
                          local_writer: asyncio.StreamWriter) -> None:
-    remote_writer: asyncio.StreamWriter | None = None
+    remote_writer = None
     try:
-        remote_reader, remote_writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                config.exit_host,
-                config.exit_port,
-                ssl=_client_ssl(config),
-                server_hostname=config.server_name,
-            ),
-            timeout=CONNECT_TIMEOUT,
-        )
+        remote_reader, remote_writer = await _open_entry_connection(config)
         await _send_json(remote_writer, {
             "version": 1,
             "op": "open",
@@ -423,18 +731,10 @@ class _EntryUdpSession:
         self.queue.put_nowait(payload)
 
     async def run(self) -> None:
-        remote_writer: asyncio.StreamWriter | None = None
+        remote_writer = None
         try:
             config = self.owner.config
-            remote_reader, remote_writer = await asyncio.wait_for(
-                asyncio.open_connection(
-                    config.exit_host,
-                    config.exit_port,
-                    ssl=_client_ssl(config),
-                    server_hostname=config.server_name,
-                ),
-                timeout=CONNECT_TIMEOUT,
-            )
+            remote_reader, remote_writer = await _open_entry_connection(config)
             await _send_json(remote_writer, {
                 "version": 1, "op": "udp", "route": config.route,
                 "secret": config.secret,
@@ -529,11 +829,30 @@ def _limited_handler(handler, active: list[int], limit: int):
     return serve
 
 
+def _exit_connection_handler(config: ExitConfig):
+    async def handle_connection(reader: asyncio.StreamReader,
+                               writer: asyncio.StreamWriter) -> None:
+        if config.carrier == "tls":
+            await _open_exit_route(config, reader, writer)
+            return
+        try:
+            stream = await _server_websocket(reader, writer)
+        except (TimeoutError, ProtocolError, OSError) as exc:
+            LOG.debug("closing invalid WebSocket upgrade: %s", exc)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            return
+        await _open_exit_route(config, stream, stream)
+    return handle_connection
+
+
 async def serve_exit(config: ExitConfig) -> None:
     active = [0]
     server = await asyncio.start_server(
-        _limited_handler(lambda reader, writer: _open_exit_route(config, reader, writer),
-                         active, MAX_TCP_SESSIONS),
+        _limited_handler(_exit_connection_handler(config), active, MAX_TCP_SESSIONS),
         config.host,
         config.port,
         ssl=_server_ssl(config),
@@ -541,7 +860,8 @@ async def serve_exit(config: ExitConfig) -> None:
         limit=MAX_HANDSHAKE,
     )
     addresses = ", ".join(str(sock.getsockname()) for sock in server.sockets or ())
-    LOG.info("exit listening on %s; %d fixed route(s)", addresses, len(config.routes))
+    LOG.info("exit listening on %s via %s; %d fixed route(s)",
+             addresses, config.carrier.upper(), len(config.routes))
     async with server:
         await server.serve_forever()
 
@@ -552,8 +872,8 @@ async def serve_entry(config: EntryConfig) -> None:
         transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
             lambda: protocol, local_addr=(config.host, config.port))
         addresses = str(transport.get_extra_info("sockname") or (config.host, config.port))
-        LOG.info("UDP entry listening on %s -> %s:%s (%s)", addresses,
-                 config.exit_host, config.exit_port, config.route)
+        LOG.info("UDP entry listening on %s -> %s:%s via %s (%s)", addresses,
+                 config.exit_host, config.exit_port, config.carrier.upper(), config.route)
         try:
             await asyncio.Future()
         finally:
@@ -570,8 +890,8 @@ async def serve_entry(config: EntryConfig) -> None:
         limit=MAX_HANDSHAKE,
     )
     addresses = ", ".join(str(sock.getsockname()) for sock in server.sockets or ())
-    LOG.info("TCP entry listening on %s -> %s:%s (%s)", addresses,
-             config.exit_host, config.exit_port, config.route)
+    LOG.info("TCP entry listening on %s -> %s:%s via %s (%s)", addresses,
+             config.exit_host, config.exit_port, config.carrier.upper(), config.route)
     async with server:
         await server.serve_forever()
 
@@ -587,7 +907,7 @@ def _check_permissions(path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Independent Simurgh TCP tunnel (rebuild milestone 1)")
+    parser = argparse.ArgumentParser(description="Independent Simurgh TCP/UDP tunnel")
     parser.add_argument("--version", action="version", version=f"Simurgh rebuild {VERSION}")
     parser.add_argument("--config", type=Path, required=True, help="path to a JSON node config")
     parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info")

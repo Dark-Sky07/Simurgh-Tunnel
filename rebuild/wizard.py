@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -13,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .paths import default_config_dir
+from .tunnel import EntryConfig, ExitConfig, load_config
 
 Input = Callable[[str], str]
 Output = Callable[[str], None]
@@ -62,8 +64,10 @@ def build_config(
     """Prompt for one node config without reading or altering other files."""
     transport = "tcp"
     if role == "entry":
-        transport = _choice("Entry transport: 1) TCP  2) UDP: ",
+        transport = _choice("Local entry transport: 1) TCP  2) UDP: ",
                             {"1": "tcp", "2": "udp"}, input_fn, output)
+    carrier = _choice("Tunnel carrier: 1) TLS stream  2) WebSocket over TLS (WSS): ",
+                      {"1": "tls", "2": "wss"}, input_fn, output)
     bind_default = "0.0.0.0" if role == "exit" else "127.0.0.1"
     listen_host = _value("Local listen address", bind_default, input_fn)
     listen_port = _port("Local listen port", 8443 if role == "exit" else
@@ -75,6 +79,7 @@ def build_config(
     if role == "exit":
         return {
             "role": "exit",
+            "carrier": carrier,
             "listen_host": listen_host,
             "listen_port": listen_port,
             "cert_file": _value("TLS certificate path", str(tls_dir / "server.crt"), input_fn),
@@ -92,6 +97,7 @@ def build_config(
     return {
         "role": "entry",
         "transport": transport,
+        "carrier": carrier,
         "listen_host": listen_host,
         "listen_port": listen_port,
         "exit_host": _value("Exit server address", "exit.example.net", input_fn),
@@ -107,6 +113,8 @@ def save_config(path: Path, config: dict) -> Path | None:
     """Write mode-0600 JSON atomically, first preserving an existing file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     backup: Path | None = None
+    if path.is_symlink():
+        raise ValueError(f"refusing to replace a symlinked configuration path: {path}")
     if path.exists():
         backup = path.with_suffix(path.suffix + ".bak")
         if backup.exists():
@@ -131,6 +139,32 @@ def save_config(path: Path, config: dict) -> Path | None:
             pass
         raise
     return backup
+
+
+def list_config_backups(config_dir: Path, role: str) -> tuple[Path, ...]:
+    if role not in ("entry", "exit"):
+        raise ValueError("role must be entry or exit")
+    pattern = re.compile(rf"^{re.escape(role)}\.json(?:\.[0-9]+)?\.bak$")
+    directory = Path(config_dir)
+    if not directory.is_dir():
+        return ()
+    files = [path for path in directory.iterdir()
+             if pattern.fullmatch(path.name) and path.is_file() and not path.is_symlink()]
+    return tuple(sorted(files, key=lambda path: path.stat().st_mtime_ns, reverse=True))
+
+
+def restore_config(config_dir: Path, role: str, backup_name: str) -> Path | None:
+    """Restore a validated adjacent backup, first saving the current config again."""
+    backups = list_config_backups(config_dir, role)
+    source = next((path for path in backups if path.name == backup_name), None)
+    if source is None:
+        raise ValueError("selected config backup is missing or not managed by this installer")
+    parsed = load_config(source)
+    expected_type = EntryConfig if role == "entry" else ExitConfig
+    if not isinstance(parsed, expected_type):
+        raise ValueError(f"backup does not contain a valid {role} configuration")  # noqa: TRY004
+    config = json.loads(source.read_text(encoding="utf-8"))
+    return save_config(Path(config_dir) / f"{role}.json", config)
 
 
 def setup_menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> int:

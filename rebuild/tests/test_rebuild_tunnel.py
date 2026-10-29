@@ -36,8 +36,9 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_entry_tls_tunnel_forwards_data_and_propagates_half_close(
-        server_certificate):
+@pytest.mark.parametrize("carrier", ["tls", "wss"])
+def test_entry_tunnel_forwards_data_and_propagates_half_close(
+        server_certificate, carrier):
     cert, key = server_certificate
     secret = "test-secret-" + "x" * 32
 
@@ -53,17 +54,18 @@ def test_entry_tls_tunnel_forwards_data_and_propagates_half_close(
         target_port = target.sockets[0].getsockname()[1]
         exit_config = tunnel.ExitConfig(
             "127.0.0.1", 0, cert, key, secret,
-            {"echo": ("127.0.0.1", target_port)},
+            {"echo": ("127.0.0.1", target_port)}, carrier,
         )
+
         exit_server = await asyncio.start_server(
-            lambda r, w: tunnel._open_exit_route(exit_config, r, w),
-            "127.0.0.1", 0, ssl=tunnel._server_ssl(exit_config),
+            tunnel._exit_connection_handler(exit_config), "127.0.0.1", 0,
+            ssl=tunnel._server_ssl(exit_config),
             limit=tunnel.MAX_HANDSHAKE,
         )
         exit_port = exit_server.sockets[0].getsockname()[1]
         entry_config = tunnel.EntryConfig(
             "127.0.0.1", 0, "localhost", exit_port, "localhost", cert,
-            secret, "echo",
+            secret, "echo", "tcp", carrier,
         )
         entry_server = await asyncio.start_server(
             lambda r, w: tunnel._forward_entry(entry_config, r, w),
@@ -89,7 +91,8 @@ def test_entry_tls_tunnel_forwards_data_and_propagates_half_close(
     run(scenario())
 
 
-def test_udp_entry_keeps_datagram_boundaries_and_returns_responses(server_certificate):
+@pytest.mark.parametrize("carrier", ["tls", "wss"])
+def test_udp_entry_keeps_datagram_boundaries_and_returns_responses(server_certificate, carrier):
     cert, key = server_certificate
     secret = "udp-test-secret-" + "x" * 32
 
@@ -116,17 +119,18 @@ def test_udp_entry_keeps_datagram_boundaries_and_returns_responses(server_certif
         echo_port = echo_transport.get_extra_info("sockname")[1]
         exit_config = tunnel.ExitConfig(
             "127.0.0.1", 0, cert, key, secret,
-            {"echo": ("127.0.0.1", echo_port)},
+            {"echo": ("127.0.0.1", echo_port)}, carrier,
         )
+
         exit_server = await asyncio.start_server(
-            lambda r, w: tunnel._open_exit_route(exit_config, r, w),
-            "127.0.0.1", 0, ssl=tunnel._server_ssl(exit_config),
+            tunnel._exit_connection_handler(exit_config), "127.0.0.1", 0,
+            ssl=tunnel._server_ssl(exit_config),
             limit=tunnel.MAX_HANDSHAKE,
         )
         exit_port = exit_server.sockets[0].getsockname()[1]
         entry_config = tunnel.EntryConfig(
             "127.0.0.1", 0, "localhost", exit_port, "localhost", cert,
-            secret, "echo", "udp",
+            secret, "echo", "udp", carrier,
         )
         entry_protocol = tunnel._EntryUdpProtocol(entry_config)
         entry_transport, _ = await loop.create_datagram_endpoint(
@@ -272,6 +276,21 @@ def test_config_rejects_short_shared_secret(tmp_path):
         tunnel.load_config(path)
 
 
+def test_config_defaults_carrier_and_rejects_unknown_carrier(tmp_path):
+    path = tmp_path / "entry.json"
+    base = {
+        "role": "entry", "listen_host": "127.0.0.1", "listen_port": 1,
+        "exit_host": "localhost", "exit_port": 2, "server_name": "localhost",
+        "ca_file": "/tmp/ca.crt", "secret": "s" * 32, "route": "web",
+    }
+    path.write_text(json.dumps(base))
+    assert tunnel.load_config(path).carrier == "tls"
+    base["carrier"] = "plain"
+    path.write_text(json.dumps(base))
+    with pytest.raises(tunnel.ConfigError, match="carrier must"):
+        tunnel.load_config(path)
+
+
 def test_config_rejects_arbitrary_exit_target_shape(tmp_path):
     path = tmp_path / "exit.json"
     path.write_text(json.dumps({
@@ -281,6 +300,49 @@ def test_config_rejects_arbitrary_exit_target_shape(tmp_path):
     }))
     with pytest.raises(tunnel.ConfigError, match="non-empty object"):
         tunnel.load_config(path)
+
+
+def test_websocket_server_rejects_unmasked_client_frame():
+    async def scenario():
+        rejected = asyncio.Event()
+
+        async def accept(reader, writer):
+            stream = tunnel._WebSocketStream(reader, writer, client=False)
+            try:
+                await stream.readexactly(1)
+            except tunnel.ProtocolError as exc:
+                assert "masking direction" in str(exc)
+                rejected.set()
+            finally:
+                stream.close()
+                await stream.wait_closed()
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"\x82\x01x")
+            await writer.drain()
+            await asyncio.wait_for(rejected.wait(), timeout=2)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    run(scenario())
+
+
+def test_websocket_upgrade_rejects_wrong_path():
+    async def scenario():
+        reader = asyncio.StreamReader()
+        reader.feed_data(
+            b"GET /wrong HTTP/1.1\r\nHost: exit\r\n\r\n")
+        reader.feed_eof()
+        with pytest.raises(tunnel.ProtocolError, match="request path"):
+            await tunnel._server_websocket(reader, None)
+
+    run(scenario())
 
 
 def test_unknown_frames_are_rejected():

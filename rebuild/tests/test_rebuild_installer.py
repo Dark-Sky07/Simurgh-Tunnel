@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -121,8 +122,14 @@ def test_user_installer_is_role_agnostic_repeatable_and_keeps_old_release(tmp_pa
     assert second_release.is_dir()
     assert config.read_text() == original_config
     commands = ("simurgh-next", "simurgh-next-panel", "simurgh-next-setup",
-                "simurgh-next-node")
+                "simurgh-next-node", "simurgh-next-update")
     assert all((bindir / command).is_symlink() for command in commands)
+    update_launcher = (second_release / "bin/simurgh-next-update").read_text()
+    assert f"SIMURGH_NEXT_PREFIX={shlex.quote(str(prefix))}" in update_launcher
+    assert f"SIMURGH_NEXT_BIN_DIR={shlex.quote(str(bindir))}" in update_launcher
+    assert f"SIMURGH_NEXT_CONFIG_DIR={shlex.quote(str(config_dir))}" in update_launcher
+    service_dir = Path(env['HOME']) / '.config/systemd/user'
+    assert f"SIMURGH_NEXT_SERVICE_DIR={shlex.quote(str(service_dir))}" in update_launcher
     for command in commands:
         result = subprocess.run([str(bindir / command), "--help"], env=env,
                                 check=True, capture_output=True, text=True)
