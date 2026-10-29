@@ -54,6 +54,7 @@ def entry_fields(secret="s" * 40):
     return {
         "role": "entry", "transport": "tcp", "listen_host": "127.0.0.1",
         "listen_port": "18080", "route": "web", "secret": secret,
+        "client_session_limit": "128",
         "exit_host": "exit.example.net", "exit_port": "8443",
         "server_name": "exit.example.net", "ca_file": "/etc/simurgh-next/tls/ca.crt",
         "target_host": "127.0.0.1", "target_port": "8080",
@@ -83,6 +84,7 @@ def test_setup_panel_is_loopback_only_and_offers_role_selection(tmp_path):
         assert 'name="role"' in body
         assert 'value="entry"' in body and 'value="exit"' in body
         assert 'value="reverse-hub"' in body and 'value="reverse-agent"' in body
+        assert 'name="client_session_limit"' in body
         assert panel.address[0] == "127.0.0.1"
 
         request = urllib.request.Request(url + "/", headers={"Host": "attacker.invalid"})
@@ -91,6 +93,16 @@ def test_setup_panel_is_loopback_only_and_offers_role_selection(tmp_path):
         assert error.value.code == 421
     finally:
         panel.close()
+
+
+def test_panel_validates_client_session_limit_bounds():
+    fields = {key: [value] for key, value in entry_fields().items()}
+    fields.pop("client_session_limit")
+    assert panel_module._build_form_config(fields)[1]["client_session_limit"] == 128
+    for invalid in ("0", "513", "1.5", "not-a-number"):
+        fields["client_session_limit"] = [invalid]
+        with pytest.raises(ValueError, match="client session limit"):
+            panel_module._build_form_config(fields)
 
 
 def test_panel_rejects_wrong_loopback_port_and_cross_origin_posts(tmp_path):
@@ -125,6 +137,7 @@ def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path):
             "role": "reverse-hub", "route": "web", "secret": "h" * 40,
             "control_host": "0.0.0.0", "control_port": "9443",
             "public_host": "127.0.0.1", "public_port": "18080",
+            "client_session_limit": "24",
             "cert_file": "/etc/simurgh-next/tls/hub.crt",
             "key_file": "/etc/simurgh-next/tls/hub.key", "csrf": csrf,
         }
@@ -133,6 +146,7 @@ def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path):
         saved_hub = json.loads((tmp_path / "reverse-hub.json").read_text())
         assert saved_hub["control_port"] == 9443
         assert saved_hub["public_port"] == 18080
+        assert saved_hub["client_session_limit"] == 24
 
         agent = {
             "role": "reverse-agent", "route": "web", "secret": "a" * 40,

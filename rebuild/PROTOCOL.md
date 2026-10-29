@@ -32,7 +32,7 @@ Reverse mode is a separate direct-TLS TCP service path. A reverse agent behind N
 
 For every incoming raw TCP client on the hub's separate public service listener, the hub creates a random channel token and sends an `open` control message to the agent. The agent connects only to its fixed local target from its own configuration, then opens a second verified TLS connection back to the hub and presents the channel token and shared secret in a `data` JSON line. The hub pairs that callback with the waiting public connection. Both directions then use the bounded DATA/FIN frame format below, preserving TCP half-close behavior. Failed target connections are reported without exposing target details to the public client. The agent sends control pings every 25 seconds; an idle control channel is retired after 75 seconds.
 
-The hub's public service listener is raw TCP and is intentionally separate from the TLS control listener. The tunnel protects only agent-to-hub traffic; client-to-hub traffic must use application-layer TLS when confidentiality is required. Reverse mode currently supports one route and one agent per hub, direct TLS only, and TCP only. It is not a mesh, and it does not implement reverse UDP, WSS/H2, or multi-agent routing. Each public and control listener independently enforces a 1,024-session limit and a 128-session per-peer limit.
+The hub's public service listener is raw TCP and is intentionally separate from the TLS control listener. The tunnel protects only agent-to-hub traffic; client-to-hub traffic must use application-layer TLS when confidentiality is required. Reverse mode currently supports one route and one agent per hub, direct TLS only, and TCP only. It is not a mesh, and it does not implement reverse UDP, WSS/H2, or multi-agent routing. Each listener independently enforces a 1,024-session limit. The public TCP listener applies the hub's configured per-source-IP client session cap (1–512, default 128); the TLS control listener keeps its fixed per-peer limit.
 
 ## Data frames
 
@@ -43,7 +43,7 @@ For TCP, DATA frames carry stream chunks and FIN propagates a half-close to the 
 ## Security and current limits
 
 - TLS handshakes time out after ten seconds; the application handshake is capped at 8 KiB and has a five-second deadline.
-- Established TCP sessions are capped at 1,024 per process and 128 per peer IP; this gate runs after TLS completes and is not a defense against pre-handshake floods. UDP associations are capped at 1,024 per process. Per-association UDP queues hold at most 128 datagrams and expire after 45 idle seconds.
+- Established TCP sessions are capped at 1,024 per listener. TCP entry and reverse public listeners can additionally cap concurrent client sessions per source IP with `client_session_limit` (1–512, default 128); exit and reverse control listeners retain a fixed 128-per-peer cap. The exit and reverse-control gates run after TLS completes and are not defenses against pre-handshake floods. UDP associations are capped at 1,024 per entry process, with the same configurable per-source-IP cap; each association queue holds at most 128 datagrams and expires after 45 idle seconds.
 - Secrets travel only inside the verified TLS channel; configs contain secrets and should be mode 0600.
 - Destinations are configured and allowlisted on the exit, never selected by the connecting peer.
 - There is no unauthenticated fallback, protocol downgrade or arbitrary destination override.

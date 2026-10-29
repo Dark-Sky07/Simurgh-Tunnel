@@ -10,7 +10,7 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.11. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.12. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
@@ -19,6 +19,7 @@ Forward mode connects an **entry** node to an **exit** node. Reverse mode instea
 - TCP forwarding with bidirectional flow and half-close handling.
 - UDP forwarding with datagram boundaries, bounded sessions and idle expiry.
 - Reverse TCP forwarding: a private-side agent dials a verified TLS hub and forwards public hub connections only to its configured fixed local target. Direct TLS only; one route/agent per hub; sessions are bounded.
+- Optional client-session cap per source IP on TCP/UDP entry listeners and the reverse hub's public listener (1–512, default 128), in addition to global session bounds.
 - TLS certificate and server-name verification at the entry for forward carriers and at the reverse agent for hub connections.
 - Per-role carrier selection: direct TLS, WSS with strict HTTP upgrade and bounded WebSocket frames, or HTTP/2 (H2) with one bounded request stream per tunnel connection. The installer privately stages H2 and Sigstore runtime dependencies for each release.
 - Shared-secret authentication and fixed named routes.

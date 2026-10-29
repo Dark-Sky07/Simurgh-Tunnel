@@ -157,6 +157,45 @@ def test_reverse_hub_shutdown_closes_pending_public_connections(tls_identity, mo
     run(scenario())
 
 
+def test_reverse_public_listener_applies_configured_source_ip_cap(tls_identity):
+    cert, key = tls_identity
+    config = tunnel.ReverseHubConfig(
+        "127.0.0.1", 0, "127.0.0.1", 0, cert, key,
+        "reverse-hub-shared-secret-0123456789", "web", client_session_limit=1,
+    )
+
+    async def scenario():
+        control, public, state = await reverse._start_reverse_hub(config)
+        port = public.sockets[0].getsockname()[1]
+        first_reader, first_writer = await asyncio.open_connection("127.0.0.1", port)
+        second_writer = None
+        try:
+            for _ in range(100):
+                if state.pending:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(state.pending) == 1
+            second_reader, second_writer = await asyncio.open_connection("127.0.0.1", port)
+            assert await asyncio.wait_for(second_reader.read(), timeout=1) == b""
+            assert len(state.pending) == 1
+        finally:
+            handlers = tuple(state.handler_tasks)
+            for task in handlers:
+                task.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
+            for writer in (first_writer, second_writer):
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+            control.close()
+            public.close()
+            await asyncio.gather(control.wait_closed(), public.wait_closed())
+        assert await asyncio.wait_for(first_reader.read(), timeout=1) == b""
+        assert not state.pending
+
+    run(scenario())
+
+
 def test_reverse_hub_rejects_an_agent_with_a_wrong_secret(tls_identity):
     cert, key = tls_identity
     config = tunnel.ReverseHubConfig(
@@ -190,12 +229,110 @@ def test_reverse_hub_rejects_an_agent_with_a_wrong_secret(tls_identity):
     run(scenario())
 
 
+def test_entry_tcp_enforces_configured_client_session_limit(monkeypatch):
+    config = tunnel.EntryConfig(
+        "127.0.0.1", 0, "exit.example.net", 8443, "exit.example.net",
+        Path("/tmp/unused-ca.crt"), "entry-session-limit-secret-012345", "web",
+        client_session_limit=1,
+    )
+    original_start_server = asyncio.start_server
+    capture = {}
+
+    async def captured_start_server(handler, *args, **kwargs):
+        server = await original_start_server(handler, *args, **kwargs)
+        capture["server"] = server
+        capture["started"].set()
+        return server
+
+    monkeypatch.setattr(tunnel.asyncio, "start_server", captured_start_server)
+
+    async def scenario():
+        capture["started"] = asyncio.Event()
+        handler_started = asyncio.Event()
+        release_handler = asyncio.Event()
+
+        async def hold_entry(_config, _reader, writer, _meter):
+            handler_started.set()
+            try:
+                await release_handler.wait()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        monkeypatch.setattr(tunnel, "_forward_entry", hold_entry)
+        service = asyncio.create_task(tunnel.serve_entry(config))
+        first_writer = second_writer = None
+        try:
+            await asyncio.wait_for(capture["started"].wait(), timeout=2)
+            port = capture["server"].sockets[0].getsockname()[1]
+            first_reader, first_writer = await asyncio.open_connection("127.0.0.1", port)
+            await asyncio.wait_for(handler_started.wait(), timeout=2)
+            second_reader, second_writer = await asyncio.open_connection("127.0.0.1", port)
+            assert await asyncio.wait_for(second_reader.read(), timeout=1) == b""
+            release_handler.set()
+            assert await asyncio.wait_for(first_reader.read(), timeout=1) == b""
+        finally:
+            release_handler.set()
+            for writer in (first_writer, second_writer):
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+            service.cancel()
+            await asyncio.gather(service, return_exceptions=True)
+
+    run(scenario())
+
+
+def test_udp_entry_counts_sessions_per_source_ip_and_cleans_up():
+    config = tunnel.EntryConfig(
+        "127.0.0.1", 0, "exit.example.net", 8443, "exit.example.net",
+        Path("/tmp/unused-ca.crt"), "entry-session-limit-secret-012345", "web",
+        transport="udp", client_session_limit=1,
+    )
+    protocol = tunnel._EntryUdpProtocol(config)
+    first = ("192.0.2.44", 3000)
+    second = ("192.0.2.44", 3001)
+
+    async def scenario():
+        protocol.datagram_received(b"one", first)
+        protocol.datagram_received(b"two", second)
+        assert set(protocol.sessions) == {first}
+        assert protocol.peer_sessions == {"192.0.2.44": 1}
+        await protocol.close()
+        assert not protocol.sessions
+        assert not protocol.peer_sessions
+
+    run(scenario())
+
+
+def test_entry_client_session_limit_is_bounded_and_backward_compatible(tmp_path):
+    entry = {
+        "role": "entry", "listen_host": "127.0.0.1", "listen_port": 18080,
+        "exit_host": "exit.example.net", "exit_port": 8443,
+        "server_name": "exit.example.net", "ca_file": "/tmp/ca.crt",
+        "secret": "entry-session-limit-secret-012345", "route": "web",
+    }
+    path = tmp_path / "entry.json"
+    path.write_text(json.dumps(entry))
+    assert tunnel.load_config(path).client_session_limit == 128
+    for value in (1, 512):
+        entry["client_session_limit"] = value
+        path.write_text(json.dumps(entry))
+        assert tunnel.load_config(path).client_session_limit == value
+    for value in (0, 513, True, 1.5):
+        entry["client_session_limit"] = value
+        path.write_text(json.dumps(entry))
+        with pytest.raises(tunnel.ConfigError, match="client_session_limit"):
+            tunnel.load_config(path)
+
+
 def test_reverse_configs_load_and_reject_invalid_ports(tmp_path):
     hub = {
         "role": "reverse-hub", "control_host": "0.0.0.0", "control_port": 9443,
         "public_host": "127.0.0.1", "public_port": 8080,
         "cert_file": "/tmp/hub.crt", "key_file": "/tmp/hub.key",
         "secret": "reverse-hub-secret-0123456789012345", "route": "web",
+        "client_session_limit": 73,
     }
     agent = {
         "role": "reverse-agent", "hub_host": "hub.example.net", "hub_port": 9443,
@@ -207,7 +344,9 @@ def test_reverse_configs_load_and_reject_invalid_ports(tmp_path):
     agent_path = tmp_path / "reverse-agent.json"
     hub_path.write_text(json.dumps(hub))
     agent_path.write_text(json.dumps(agent))
-    assert isinstance(tunnel.load_config(hub_path), tunnel.ReverseHubConfig)
+    loaded_hub = tunnel.load_config(hub_path)
+    assert isinstance(loaded_hub, tunnel.ReverseHubConfig)
+    assert loaded_hub.client_session_limit == 73
     assert isinstance(tunnel.load_config(agent_path), tunnel.ReverseAgentConfig)
     hub["control_port"] = 0
     hub_path.write_text(json.dumps(hub))

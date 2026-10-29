@@ -19,7 +19,10 @@ from urllib.parse import parse_qs, urlparse
 from .paths import default_config_dir
 from .supervisor import NodeSupervisor
 from .tunnel import (
+    DEFAULT_CLIENT_SESSION_LIMIT,
+    MAX_CLIENT_SESSION_LIMIT,
     NODE_ROLES,
+    VERSION,
     EntryConfig,
     check_entry_path,
     load_config,
@@ -67,6 +70,7 @@ def _form(csrf: str, config_dir: Path) -> str:
 <div class="field"><label for="listen_host">Listen address</label><input id="listen_host" name="listen_host" value="127.0.0.1" required></div>
 <div class="field"><label for="listen_port">Listen port</label><input id="listen_port" name="listen_port" type="number" min="1" max="65535" value="18080" required></div>
 <div class="field wide"><label for="route">Route name (must match at both ends)</label><input id="route" name="route" value="web" maxlength="64" required></div>
+<div class="field"><label for="client_session_limit">Concurrent client sessions per source IP · entry/reverse hub</label><input id="client_session_limit" name="client_session_limit" type="number" min="1" max="512" value="128"></div>
 <div class="field"><label for="monthly_quota_mib">Entry monthly quota in MiB · blank means unlimited</label><input id="monthly_quota_mib" name="monthly_quota_mib" type="number" min="1" max="1048576" placeholder="Unlimited"></div>
 </div><p class="hint">Quota changes apply after restarting the entry node. The quota counts payload in both directions and resets on the UTC month.</p></section>
 <section class="card"><h2>Secure link</h2><div class="grid">
@@ -259,6 +263,20 @@ def _number(form: dict[str, list[str]], key: str) -> int:
     return number
 
 
+def _client_session_limit(form: dict[str, list[str]]) -> int:
+    raw = _one(form, "client_session_limit", str(DEFAULT_CLIENT_SESSION_LIMIT))
+    if not raw:
+        return DEFAULT_CLIENT_SESSION_LIMIT
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("client session limit must be a whole number") from exc
+    if not 1 <= value <= MAX_CLIENT_SESSION_LIMIT:
+        raise ValueError(
+            f"client session limit must be from 1 to {MAX_CLIENT_SESSION_LIMIT}")
+    return value
+
+
 def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
     role = _one(form, "role")
     if role not in NODE_ROLES:
@@ -280,6 +298,7 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
             "key_file": _one(form, "key_file"),
             "secret": secret,
             "route": route,
+            "client_session_limit": _client_session_limit(form),
         }
         if not all(config[key] for key in ("control_host", "public_host", "cert_file", "key_file")):
             raise ValueError("reverse hub bind addresses, certificate and key are required")
@@ -328,6 +347,7 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
         "exit_host": _one(form, "exit_host"), "exit_port": _number(form, "exit_port"),
         "server_name": _one(form, "server_name"), "ca_file": _one(form, "ca_file"),
         "secret": secret, "route": route,
+        "client_session_limit": _client_session_limit(form),
     }
     if not all(config[key] for key in ("exit_host", "server_name", "ca_file")):
         raise ValueError("exit address, expected TLS name and CA path are required")
@@ -359,7 +379,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.11"
+            server_version = f"SimurghSetup/{VERSION}"
             sys_version = ""
 
             def setup(self):

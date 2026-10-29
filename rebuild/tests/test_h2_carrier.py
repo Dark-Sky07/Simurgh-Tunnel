@@ -18,7 +18,7 @@ def scripted(values):
 
 def test_h2_carrier_is_available_in_setup_wizard():
     config = wizard.build_config("entry", scripted([
-        "1", "3", "", "", "web", "s" * 40, "exit.example.net", "", "", "", "",
+        "1", "3", "", "", "web", "s" * 40, "128", "exit.example.net", "", "", "", "",
     ]), lambda _message: None)
     assert config["carrier"] == "h2"
 

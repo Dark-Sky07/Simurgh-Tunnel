@@ -24,7 +24,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.11"
+VERSION = "0.2.12"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -33,6 +33,8 @@ CONNECT_TIMEOUT = 10.0
 MAX_TCP_SESSIONS = 1024
 MAX_TCP_SESSIONS_PER_PEER = 128
 MAX_UDP_ASSOCIATIONS = 1024
+DEFAULT_CLIENT_SESSION_LIMIT = 128
+MAX_CLIENT_SESSION_LIMIT = 512
 MAX_SPEED_TEST_BYTES = 16 * 1024 * 1024
 DEFAULT_SPEED_TEST_MIB = 4
 _FRAME_HEADER = struct.Struct("!BI")
@@ -73,6 +75,7 @@ class EntryConfig:
     transport: str = "tcp"
     carrier: str = "tls"
     monthly_quota_mib: int | None = None
+    client_session_limit: int = DEFAULT_CLIENT_SESSION_LIMIT
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,7 @@ class ReverseHubConfig:
     secret: str
     route: str
     carrier: str = "tls"
+    client_session_limit: int = DEFAULT_CLIENT_SESSION_LIMIT
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,15 @@ def _port(obj: dict[str, Any], key: str) -> int:
     return value
 
 
+def _client_session_limit(obj: dict[str, Any]) -> int:
+    value = obj.get("client_session_limit", DEFAULT_CLIENT_SESSION_LIMIT)
+    if (isinstance(value, bool) or not isinstance(value, int)
+            or not 1 <= value <= MAX_CLIENT_SESSION_LIMIT):
+        raise ConfigError(
+            f"client_session_limit must be an integer from 1 to {MAX_CLIENT_SESSION_LIMIT}")
+    return value
+
+
 def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | ReverseAgentConfig:
     """Read a JSON config. It is read-only; this function never edits it."""
     try:
@@ -177,6 +190,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
             key_file=Path(_text(raw, "key_file")),
             secret=secret,
             route=route,
+            client_session_limit=_client_session_limit(raw),
         )
 
     if role == "reverse-agent":
@@ -242,6 +256,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
         transport=transport,
         carrier=carrier,
         monthly_quota_mib=monthly_quota_mib,
+        client_session_limit=_client_session_limit(raw),
     )
 
 
@@ -1026,8 +1041,7 @@ class _EntryUdpSession:
                     await remote_writer.wait_closed()
                 except OSError:
                     pass
-            if self.owner.sessions.get(self.client) is self:
-                del self.owner.sessions[self.client]
+            self.owner.remove_session(self.client, self)
 
 
 class _EntryUdpProtocol(asyncio.DatagramProtocol):
@@ -1036,6 +1050,22 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
         self.meter = meter
         self.transport: asyncio.DatagramTransport | None = None
         self.sessions: dict[tuple, _EntryUdpSession] = {}
+        self.peer_sessions: dict[str, int] = {}
+
+    @staticmethod
+    def peer_key(addr) -> str:
+        return str(addr[0]) if isinstance(addr, tuple) and addr else str(addr)
+
+    def remove_session(self, addr, session: _EntryUdpSession) -> None:
+        if self.sessions.get(addr) is not session:
+            return
+        del self.sessions[addr]
+        peer = self.peer_key(addr)
+        remaining = self.peer_sessions[peer] - 1
+        if remaining:
+            self.peer_sessions[peer] = remaining
+        else:
+            del self.peer_sessions[peer]
 
     def connection_made(self, transport) -> None:
         self.transport = transport
@@ -1049,8 +1079,13 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
             if len(self.sessions) >= MAX_UDP_ASSOCIATIONS:
                 LOG.warning("dropping UDP client %r: association limit reached", addr)
                 return
+            peer = self.peer_key(addr)
+            if self.peer_sessions.get(peer, 0) >= self.config.client_session_limit:
+                LOG.debug("dropping UDP client %r: per-address session limit reached", addr)
+                return
             session = _EntryUdpSession(self, addr)
             self.sessions[addr] = session
+            self.peer_sessions[peer] = self.peer_sessions.get(peer, 0) + 1
         session.enqueue(data)
 
     def error_received(self, exc: OSError) -> None:
@@ -1064,6 +1099,7 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
             await asyncio.gather(*(session.task for session in sessions),
                                  return_exceptions=True)
         self.sessions.clear()
+        self.peer_sessions.clear()
 
 
 def _limited_handler(handler, active: list[int], limit: int,
@@ -1162,7 +1198,8 @@ async def serve_entry(config: EntryConfig, usage_path: Path | None = None) -> No
         active = [0]
         server = await asyncio.start_server(
             _limited_handler(lambda reader, writer: _forward_entry(config, reader, writer, meter),
-                             active, MAX_TCP_SESSIONS),
+                             active, MAX_TCP_SESSIONS,
+                             per_peer_limit=config.client_session_limit),
             config.host,
             config.port,
             limit=MAX_HANDSHAKE,

@@ -52,13 +52,15 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
         if role == "entry" and isinstance(config, EntryConfig):
             output(f"entry: configured, {config.transport.upper()} listener "
                    f"{config.host}:{config.port} -> {config.exit_host}:{config.exit_port} "
-                   f"carrier={config.carrier.upper()} route={config.route}")
+                   f"carrier={config.carrier.upper()} route={config.route}; "
+                   f"client cap={config.client_session_limit}/source IP")
         elif role == "exit" and isinstance(config, ExitConfig):
             output(f"exit: configured, {config.carrier.upper()} listener "
                    f"{config.host}:{config.port}; {len(config.routes)} fixed route(s)")
         elif role == "reverse-hub" and isinstance(config, ReverseHubConfig):
             output(f"reverse hub: control {config.control_host}:{config.control_port}; "
-                   f"public TCP {config.public_host}:{config.public_port} route={config.route}")
+                   f"public TCP {config.public_host}:{config.public_port} route={config.route}; "
+                   f"client cap={config.client_session_limit}/source IP")
         elif role == "reverse-agent" and isinstance(config, ReverseAgentConfig):
             output(f"reverse agent: outbound TLS to {config.hub_host}:{config.hub_port}; "
                    f"fixed target {config.target_host}:{config.target_port} route={config.route}")

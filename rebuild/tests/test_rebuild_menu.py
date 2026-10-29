@@ -28,7 +28,7 @@ def test_status_reports_entry_and_exit_routes(tmp_path):
 
     assert roles == ("entry", "exit")
     assert any("UDP listener" in line and "carrier=WSS" in line and "route=dns" in line
-               for line in lines)
+               and "client cap=128/source IP" in line for line in lines)
     assert any("1 fixed route" in line for line in lines)
 
 
@@ -37,7 +37,7 @@ def test_menu_status_and_runner_support_reverse_roles(tmp_path, monkeypatch):
         "role": "reverse-hub", "control_host": "0.0.0.0", "control_port": 9443,
         "public_host": "127.0.0.1", "public_port": 8080,
         "cert_file": "/tmp/hub.crt", "key_file": "/tmp/hub.key",
-        "secret": "h" * 40, "route": "web",
+        "secret": "h" * 40, "route": "web", "client_session_limit": 17,
     }
     agent = {
         "role": "reverse-agent", "hub_host": "hub.example.net", "hub_port": 9443,
@@ -50,7 +50,8 @@ def test_menu_status_and_runner_support_reverse_roles(tmp_path, monkeypatch):
     lines = []
     roles = menu.show_status(tmp_path, lines.append)
     assert roles == ("reverse-hub", "reverse-agent")
-    assert any("public TCP 127.0.0.1:8080" in line for line in lines)
+    assert any("public TCP 127.0.0.1:8080" in line
+               and "client cap=17/source IP" in line for line in lines)
 
     started = []
 
