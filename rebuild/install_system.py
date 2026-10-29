@@ -15,7 +15,10 @@ from pathlib import Path
 ACCOUNT = "simurgh-next"
 SERVICE = "simurgh-next-panel.service"
 MANAGED = "Managed by Simurgh Tunnel independent rebuild"
-MODULES = ("__init__.py", "menu.py", "panel.py", "paths.py", "supervisor.py", "tunnel.py", "updates.py", "usage.py", "wizard.py")
+MODULES = (
+    "__init__.py", "h2stream.py", "menu.py", "notifications.py", "panel.py", "paths.py",
+    "supervisor.py", "tunnel.py", "updates.py", "usage.py", "wizard.py",
+)
 COMMANDS = ("simurgh-next", "simurgh-next-panel", "simurgh-next-setup", "simurgh-next-node", "simurgh-next-update")
 
 
@@ -49,6 +52,10 @@ def _copy_release(source: Path, release: Path, python: str, app_root: Path,
     for name in MODULES:
         shutil.copyfile(source / name, package / name)
         (package / name).chmod(0o644)
+    vendor = release / "vendor"
+    run([python, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+         "--no-warn-script-location", "--no-compile", "--target", str(vendor),
+         "h2>=4.1,<5"])
     shutil.copytree(source / "examples", package / "examples")
     for example in (package / "examples").glob("*.json"):
         example.chmod(0o644)
@@ -65,7 +72,7 @@ def _copy_release(source: Path, release: Path, python: str, app_root: Path,
     }
     for name, module in modules.items():
         script = ("#!/bin/sh\n"
-                  f"export PYTHONPATH=\"{app_root}/current${{PYTHONPATH:+:$PYTHONPATH}}\"\n"
+                  f"export PYTHONPATH=\"{app_root}/current/vendor:{app_root}/current${{PYTHONPATH:+:$PYTHONPATH}}\"\n"
                   "export SIMURGH_NEXT_INSTALL_MODE=system\n"
                   f"export SIMURGH_NEXT_CONFIG_DIR=\"{config_dir}\"\n"
                   f"exec \"{python}\" -m {module} \"$@\"\n")

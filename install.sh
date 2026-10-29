@@ -121,9 +121,11 @@ done
 mkdir -p "$PREFIX/releases" "$PREFIX/bin"
 RELEASE=$(mktemp -d "$PREFIX/releases/$VERSION-XXXXXXXX")
 mkdir -p "$RELEASE/rebuild" "$RELEASE/bin"
-for module in __init__.py menu.py panel.py paths.py supervisor.py tunnel.py updates.py wizard.py; do
+for module in __init__.py h2stream.py menu.py notifications.py panel.py paths.py supervisor.py tunnel.py updates.py usage.py wizard.py; do
     cp "$SOURCE_DIR/$module" "$RELEASE/rebuild/$module"
 done
+"$PYTHON" -m pip install --quiet --disable-pip-version-check --no-warn-script-location \
+    --no-compile --target "$RELEASE/vendor" 'h2>=4.1,<5'
 cp -R "$SOURCE_DIR/examples" "$RELEASE/rebuild/examples"
 cp "$SOURCE_DIR/README.md" "$SOURCE_DIR/SETUP.md" "$SOURCE_DIR/PROTOCOL.md" "$RELEASE/"
 
@@ -139,7 +141,7 @@ from pathlib import Path
 path, prefix, bin_dir, config_dir, service_dir, python, module = sys.argv[1:]
 lines = [
     "#!/bin/sh",
-    "export PYTHONPATH=" + shlex.quote(f"{prefix}/current") + '"${PYTHONPATH:+:$PYTHONPATH}"',
+    "export PYTHONPATH=" + shlex.quote(f"{prefix}/current:{prefix}/current/vendor") + '"${PYTHONPATH:+:$PYTHONPATH}"',
     "export SIMURGH_NEXT_INSTALL_MODE=user",
     "export SIMURGH_NEXT_PREFIX=" + shlex.quote(prefix),
     "export SIMURGH_NEXT_BIN_DIR=" + shlex.quote(bin_dir),

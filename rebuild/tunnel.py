@@ -1,4 +1,4 @@
-"""Independent Simurgh Tunnel protocol with TLS/WSS carriers and TCP/UDP forwarding."""
+"""Independent Simurgh Tunnel protocol with TLS, WSS and HTTP/2 TCP/UDP carriers."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -138,8 +138,8 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
                 raise ConfigError("each exit route needs a short name and host/port object")
             routes[name] = (_text(target, "host"), _port(target, "port"))
         carrier = raw.get("carrier", "tls")
-        if carrier not in ("tls", "wss"):
-            raise ConfigError("carrier must be 'tls' or 'wss'")
+        if carrier not in ("tls", "wss", "h2"):
+            raise ConfigError("carrier must be 'tls', 'wss' or 'h2'")
         return ExitConfig(
             host=host,
             port=port,
@@ -154,8 +154,8 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
     if transport not in ("tcp", "udp"):
         raise ConfigError("entry transport must be 'tcp' or 'udp'")
     carrier = raw.get("carrier", "tls")
-    if carrier not in ("tls", "wss"):
-        raise ConfigError("carrier must be 'tls' or 'wss'")
+    if carrier not in ("tls", "wss", "h2"):
+        raise ConfigError("carrier must be 'tls', 'wss' or 'h2'")
     monthly_quota_mib = raw.get("monthly_quota_mib")
     if monthly_quota_mib is not None and (
             isinstance(monthly_quota_mib, bool) or not isinstance(monthly_quota_mib, int)
@@ -179,6 +179,8 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
 def _server_ssl(config: ExitConfig) -> ssl.SSLContext:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if config.carrier == "h2":
+        context.set_alpn_protocols(["h2"])
     context.load_cert_chain(str(config.cert_file), str(config.key_file))
     return context
 
@@ -186,6 +188,8 @@ def _server_ssl(config: ExitConfig) -> ssl.SSLContext:
 def _client_ssl(config: EntryConfig) -> ssl.SSLContext:
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(config.ca_file))
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if config.carrier == "h2":
+        context.set_alpn_protocols(["h2"])
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
     return context
@@ -726,7 +730,20 @@ async def _open_entry_connection(config: EntryConfig):
     if config.carrier == "tls":
         return reader, writer
     try:
-        stream = await _client_websocket(reader, writer, config.server_name, config.exit_port)
+        if config.carrier == "wss":
+            stream = await _client_websocket(reader, writer, config.server_name, config.exit_port)
+        elif config.carrier == "h2":
+            ssl_object = writer.get_extra_info("ssl_object")
+            if ssl_object is None or ssl_object.selected_alpn_protocol() != "h2":
+                raise ProtocolError("exit did not negotiate the HTTP/2 TLS protocol")
+            from .h2stream import H2TunnelStream
+
+            authority_host = (f"[{config.server_name}]" if ":" in config.server_name
+                              else config.server_name)
+            stream = await H2TunnelStream(reader, writer, client=True).start_client(
+                f"{authority_host}:{config.exit_port}")
+        else:
+            raise ConfigError(f"unsupported carrier: {config.carrier}")
     except BaseException:
         writer.close()
         try:
@@ -1015,9 +1032,19 @@ def _exit_connection_handler(config: ExitConfig):
             await _open_exit_route(config, reader, writer)
             return
         try:
-            stream = await _server_websocket(reader, writer)
+            if config.carrier == "wss":
+                stream = await _server_websocket(reader, writer)
+            elif config.carrier == "h2":
+                ssl_object = writer.get_extra_info("ssl_object")
+                if ssl_object is None or ssl_object.selected_alpn_protocol() != "h2":
+                    raise ProtocolError("client did not negotiate the HTTP/2 TLS protocol")
+                from .h2stream import H2TunnelStream
+
+                stream = await H2TunnelStream(reader, writer, client=False).start_server()
+            else:
+                raise ConfigError(f"unsupported carrier: {config.carrier}")
         except (TimeoutError, ProtocolError, OSError) as exc:
-            LOG.debug("closing invalid WebSocket upgrade: %s", exc)
+            LOG.debug("closing invalid %s tunnel upgrade: %s", config.carrier, exc)
             writer.close()
             try:
                 await writer.wait_closed()

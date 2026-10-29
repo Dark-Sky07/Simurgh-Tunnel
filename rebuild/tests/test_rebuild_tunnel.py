@@ -36,7 +36,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-@pytest.mark.parametrize("carrier", ["tls", "wss"])
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_entry_path_check_validates_tls_and_destination(server_certificate, carrier):
     cert, key = server_certificate
     secret = "health-check-secret-" + "x" * 32
@@ -78,7 +78,7 @@ def test_entry_path_check_validates_tls_and_destination(server_certificate, carr
     run(scenario())
 
 
-@pytest.mark.parametrize("carrier", ["tls", "wss"])
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_entry_speed_test_measures_bounded_synthetic_download(server_certificate, carrier):
     cert, key = server_certificate
     secret = "speed-test-secret-" + "x" * 32
@@ -123,7 +123,7 @@ def test_speed_test_rejects_udp_and_out_of_range_sizes():
         run(tunnel.speed_test_entry(config, 17))
 
 
-@pytest.mark.parametrize("carrier", ["tls", "wss"])
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_entry_tunnel_forwards_data_and_propagates_half_close(
         server_certificate, carrier):
     cert, key = server_certificate
@@ -178,7 +178,7 @@ def test_entry_tunnel_forwards_data_and_propagates_half_close(
     run(scenario())
 
 
-@pytest.mark.parametrize("carrier", ["tls", "wss"])
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_udp_entry_keeps_datagram_boundaries_and_returns_responses(server_certificate, carrier):
     cert, key = server_certificate
     secret = "udp-test-secret-" + "x" * 32
