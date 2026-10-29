@@ -14,7 +14,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .paths import default_config_dir
-from .tunnel import NODE_CONFIG_TYPES, NODE_ROLES, load_config
+from .tunnel import (
+    DEFAULT_CLIENT_SESSION_LIMIT,
+    MAX_CLIENT_SESSION_LIMIT,
+    NODE_CONFIG_TYPES,
+    NODE_ROLES,
+    load_config,
+)
 
 Input = Callable[[str], str]
 Output = Callable[[str], None]
@@ -59,6 +65,21 @@ def _quota_mib(input_fn: Input, output: Output) -> int | None:
         output("Quota must be between 1 and 1,048,576 MiB.")
 
 
+def _client_session_limit(input_fn: Input, output: Output) -> int:
+    while True:
+        answer = _value(
+            "Maximum concurrent client sessions per source IP (1–512)",
+            str(DEFAULT_CLIENT_SESSION_LIMIT), input_fn)
+        try:
+            value = int(answer)
+        except ValueError:
+            output("Enter a whole number from 1 to 512.")
+            continue
+        if 1 <= value <= MAX_CLIENT_SESSION_LIMIT:
+            return value
+        output(f"Enter a whole number from 1 to {MAX_CLIENT_SESSION_LIMIT}.")
+
+
 def _secret(input_fn: Input, output: Output) -> str:
     value = input_fn("Shared secret (leave blank to generate a new one): ").strip()
     if not value:
@@ -80,6 +101,7 @@ def build_config(
     tls_dir = (config_dir or default_config_dir()) / "tls"
     if role == "reverse-hub":
         route = _value("Reverse route name", "web", input_fn)
+        client_session_limit = _client_session_limit(input_fn, output)
         secret = _secret(input_fn, output)
         return {
             "role": role,
@@ -92,6 +114,7 @@ def build_config(
             "key_file": _value("TLS private-key path", str(tls_dir / "server.key"), input_fn),
             "secret": secret,
             "route": route,
+            "client_session_limit": client_session_limit,
         }
     if role == "reverse-agent":
         route = _value("Reverse route name (must match the hub)", "web", input_fn)
@@ -144,6 +167,7 @@ def build_config(
         }
     if role != "entry":
         raise ValueError("role must be entry or exit")
+    client_session_limit = _client_session_limit(input_fn, output)
     config = {
         "role": "entry",
         "transport": transport,
@@ -156,6 +180,7 @@ def build_config(
         "ca_file": _value("CA certificate path", str(tls_dir / "ca.crt"), input_fn),
         "secret": secret,
         "route": route,
+        "client_session_limit": client_session_limit,
     }
     monthly_quota_mib = _quota_mib(input_fn, output)
     if monthly_quota_mib is not None:

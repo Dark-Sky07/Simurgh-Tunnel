@@ -377,7 +377,8 @@ async def _start_reverse_hub(config: ReverseHubConfig):
         public = await asyncio.start_server(
             _limited_handler(_tracked_handler(
                 state, lambda reader, writer: _public_connection(state, reader, writer)),
-                public_active, MAX_TCP_SESSIONS),
+                public_active, MAX_TCP_SESSIONS,
+                per_peer_limit=config.client_session_limit),
             config.public_host, config.public_port, limit=MAX_HANDSHAKE,
         )
     except BaseException:
