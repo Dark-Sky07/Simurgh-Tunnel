@@ -17,7 +17,7 @@ SERVICE = "simurgh-next-panel.service"
 MANAGED = "Managed by Simurgh Tunnel independent rebuild"
 MODULES = (
     "__init__.py", "h2stream.py", "menu.py", "notifications.py", "panel.py", "paths.py",
-    "supervisor.py", "tunnel.py", "updates.py", "usage.py", "wizard.py",
+    "reverse.py", "supervisor.py", "tunnel.py", "updates.py", "usage.py", "wizard.py",
 )
 COMMANDS = ("simurgh-next", "simurgh-next-panel", "simurgh-next-setup", "simurgh-next-node", "simurgh-next-update")
 

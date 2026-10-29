@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .paths import default_config_dir
-from .tunnel import EntryConfig, ExitConfig, load_config
+from .tunnel import NODE_CONFIG_TYPES, NODE_ROLES, load_config
 
 Input = Callable[[str], str]
 Output = Callable[[str], None]
@@ -77,6 +77,38 @@ def build_config(
     config_dir: Path | None = None,
 ) -> dict:
     """Prompt for one node config without reading or altering other files."""
+    tls_dir = (config_dir or default_config_dir()) / "tls"
+    if role == "reverse-hub":
+        route = _value("Reverse route name", "web", input_fn)
+        secret = _secret(input_fn, output)
+        return {
+            "role": role,
+            "control_host": _value("Control bind address (0.0.0.0 accepts remote agents)",
+                                    "0.0.0.0", input_fn),  # nosec B104
+            "control_port": _port("TLS control port", 9443, input_fn),
+            "public_host": _value("Public TCP service bind address", "127.0.0.1", input_fn),
+            "public_port": _port("Public TCP service port", 8080, input_fn),
+            "cert_file": _value("TLS certificate path", str(tls_dir / "server.crt"), input_fn),
+            "key_file": _value("TLS private-key path", str(tls_dir / "server.key"), input_fn),
+            "secret": secret,
+            "route": route,
+        }
+    if role == "reverse-agent":
+        route = _value("Reverse route name (must match the hub)", "web", input_fn)
+        secret = _secret(input_fn, output)
+        return {
+            "role": role,
+            "hub_host": _value("Public reverse hub address", "hub.example.net", input_fn),
+            "hub_port": _port("Hub TLS control port", 9443, input_fn),
+            "server_name": _value("Expected hub TLS DNS name", "hub.example.net", input_fn),
+            "ca_file": _value("Trusted CA certificate path", str(tls_dir / "ca.crt"), input_fn),
+            "secret": secret,
+            "route": route,
+            "target_host": _value("Fixed service address on this private host", "127.0.0.1", input_fn),
+            "target_port": _port("Fixed service port", 8080, input_fn),
+        }
+    if role not in ("entry", "exit"):
+        raise ValueError("unsupported node role")
     transport = "tcp"
     if role == "entry":
         transport = _choice("Local entry transport: 1) TCP  2) UDP: ",
@@ -93,7 +125,6 @@ def build_config(
                         (15353 if transport == "udp" else 18080), input_fn)
     route = _value("Route name (must match on both sides)", "web", input_fn)
     secret = _secret(input_fn, output)
-    tls_dir = (config_dir or default_config_dir()) / "tls"
 
     if role == "exit":
         return {
@@ -165,8 +196,8 @@ def save_config(path: Path, config: dict) -> Path | None:
 
 
 def list_config_backups(config_dir: Path, role: str) -> tuple[Path, ...]:
-    if role not in ("entry", "exit"):
-        raise ValueError("role must be entry or exit")
+    if role not in NODE_ROLES:
+        raise ValueError("unsupported node role")
     pattern = re.compile(rf"^{re.escape(role)}\.json(?:\.[0-9]+)?\.bak$")
     directory = Path(config_dir)
     if not directory.is_dir():
@@ -183,7 +214,7 @@ def restore_config(config_dir: Path, role: str, backup_name: str) -> Path | None
     if source is None:
         raise ValueError("selected config backup is missing or not managed by this installer")
     parsed = load_config(source)
-    expected_type = EntryConfig if role == "entry" else ExitConfig
+    expected_type = NODE_CONFIG_TYPES[role]
     if not isinstance(parsed, expected_type):
         raise ValueError(f"backup does not contain a valid {role} configuration")  # noqa: TRY004
     config = json.loads(source.read_text(encoding="utf-8"))
@@ -192,8 +223,10 @@ def restore_config(config_dir: Path, role: str, backup_name: str) -> Path | None
 
 def setup_menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> int:
     output("Simurgh Tunnel — independent setup")
-    role = _choice("Choose this server's role: 1) Entry  2) Exit  3) Quit: ",
-                   {"1": "entry", "2": "exit", "3": "quit"}, input_fn, output)
+    role = _choice("Choose role: 1) Entry  2) Exit  3) Reverse hub  "
+                   "4) Reverse agent  5) Quit: ",
+                   {"1": "entry", "2": "exit", "3": "reverse-hub",
+                    "4": "reverse-agent", "5": "quit"}, input_fn, output)
     if role == "quit":
         return 0
     config = build_config(role, input_fn, output, config_dir)

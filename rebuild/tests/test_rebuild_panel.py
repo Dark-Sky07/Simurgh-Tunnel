@@ -82,6 +82,7 @@ def test_setup_panel_is_loopback_only_and_offers_role_selection(tmp_path):
             assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
         assert 'name="role"' in body
         assert 'value="entry"' in body and 'value="exit"' in body
+        assert 'value="reverse-hub"' in body and 'value="reverse-agent"' in body
         assert panel.address[0] == "127.0.0.1"
 
         request = urllib.request.Request(url + "/", headers={"Host": "attacker.invalid"})
@@ -112,6 +113,41 @@ def test_panel_rejects_wrong_loopback_port_and_cross_origin_posts(tmp_path):
         same_origin = {"Origin": f"http://127.0.0.1:{port}"}
         with _post(url, "/setup", fields, headers=same_origin) as response:
             assert response.status == 201
+    finally:
+        panel.close()
+
+
+def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path):
+    panel, url = started_panel(tmp_path)
+    try:
+        csrf = _csrf(url)
+        hub = {
+            "role": "reverse-hub", "route": "web", "secret": "h" * 40,
+            "control_host": "0.0.0.0", "control_port": "9443",
+            "public_host": "127.0.0.1", "public_port": "18080",
+            "cert_file": "/etc/simurgh-next/tls/hub.crt",
+            "key_file": "/etc/simurgh-next/tls/hub.key", "csrf": csrf,
+        }
+        with _post(url, "/setup", hub) as response:
+            assert response.status == 201
+        saved_hub = json.loads((tmp_path / "reverse-hub.json").read_text())
+        assert saved_hub["control_port"] == 9443
+        assert saved_hub["public_port"] == 18080
+
+        agent = {
+            "role": "reverse-agent", "route": "web", "secret": "a" * 40,
+            "hub_host": "hub.example.net", "hub_port": "9443",
+            "reverse_server_name": "hub.example.net",
+            "reverse_ca_file": "/etc/simurgh-next/tls/ca.crt",
+            "reverse_target_host": "127.0.0.1", "reverse_target_port": "8080",
+            "csrf": csrf,
+        }
+        with _post(url, "/setup", agent) as response:
+            assert response.status == 201
+        saved_agent = json.loads((tmp_path / "reverse-agent.json").read_text())
+        assert saved_agent["hub_port"] == 9443
+        assert saved_agent["target_host"] == "127.0.0.1"
+        assert saved_agent["target_port"] == 8080
     finally:
         panel.close()
 

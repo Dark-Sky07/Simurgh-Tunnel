@@ -26,6 +26,14 @@ The exit compares the shared secret in constant time and accepts only a route pr
 
 A TCP entry may also request the bounded diagnostic operation `speed`, with the same version, route, and secret fields plus an integer `bytes` from 1 through 16,777,216. The exit returns the accepted byte count and sends that many synthetic bytes in DATA frames followed by FIN; it does not connect to the route target during this operation. The entry verifies the exact count, then acknowledges completion with FIN before the exit closes the session, and reports download throughput. This measures the authenticated tunnel path, not application performance. UDP configs cannot use the speed test.
 
+## Reverse TCP mode (development feature)
+
+Reverse mode is a separate direct-TLS TCP service path. A reverse agent behind NAT initiates a TLS control connection to a reverse hub, validates the hub certificate and DNS name, and sends a version-1 `register` JSON line containing the shared secret and one configured route. The hub accepts only the route configured locally; it does not receive or choose the agent's target address. One agent may be registered per hub process.
+
+For every incoming raw TCP client on the hub's separate public service listener, the hub creates a random channel token and sends an `open` control message to the agent. The agent connects only to its fixed local target from its own configuration, then opens a second verified TLS connection back to the hub and presents the channel token and shared secret in a `data` JSON line. The hub pairs that callback with the waiting public connection. Both directions then use the bounded DATA/FIN frame format below, preserving TCP half-close behavior. Failed target connections are reported without exposing target details to the public client. The agent sends control pings every 25 seconds; an idle control channel is retired after 75 seconds.
+
+The hub's public service listener is raw TCP and is intentionally separate from the TLS control listener. The tunnel protects only agent-to-hub traffic; client-to-hub traffic must use application-layer TLS when confidentiality is required. Reverse mode currently supports one route and one agent per hub, direct TLS only, and TCP only. It is not a mesh, and it does not implement reverse UDP, WSS/H2, or multi-agent routing. Each public and control listener independently enforces a 1,024-session limit and a 128-session per-peer limit.
+
 ## Data frames
 
 After a successful handshake, each frame has a five-byte header: one type byte and a four-byte unsigned big-endian payload length. TCP DATA (type 1) carries 1–65,536 bytes. FIN (type 2) has zero length. UDP DATA (type 3) carries one non-empty datagram of 1–65,507 bytes. Empty datagrams are dropped. Unknown types, oversized frames, truncation and malformed handshakes terminate the connection.
