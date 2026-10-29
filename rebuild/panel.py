@@ -163,11 +163,18 @@ def _dashboard(panel) -> str:
                 label = f"Running · PID {state['pid']}"
                 action = _node_form(panel, "/node/stop", role, f"Stop {role}",
                                     css_class="stop")
+            elif state["state"] == "restarting":
+                label = "Automatic restart scheduled"
+                action = _node_form(panel, "/node/stop", role, f"Cancel restart for {role}",
+                                    css_class="stop")
             else:
                 label = "Configured · stopped"
                 action = _node_form(panel, "/node/start", role, f"Start {role}")
             auto = state["autostart"]
-            autostart_label = "Panel start: enabled" if auto else "Panel start: disabled"
+            autostart_label = ("Panel start/restart: enabled" if auto
+                               else "Panel start/restart: disabled")
+            if state.get("restart_error"):
+                autostart_label += f" · {state['restart_error']}"
             toggle = _node_form(
                 panel, "/node/autostart", role,
                 "Disable auto-start" if auto else "Enable auto-start",
@@ -198,8 +205,9 @@ def _dashboard(panel) -> str:
             + _usage_section(panel.config_dir)
             + '<section class="card"><h2>Node control</h2>'
             '<p class="hint">Processes are started only by this local panel and run as its user. '
-            'Closing the panel stops nodes it launched. “Panel start” starts a configured node '
-            'whenever this panel launches.</p>' + "".join(rows) + "</section>")
+            'Closing the panel stops nodes it launched. “Panel start/restart” starts a configured '
+            'node when the panel launches and retries unexpected exits with bounded backoff '
+            '(up to five attempts per five minutes).</p>' + "".join(rows) + "</section>")
 
 
 def _one(form: dict[str, list[str]], key: str, default: str = "") -> str:
@@ -285,7 +293,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.5"
+            server_version = "SimurghSetup/0.2.6"
             sys_version = ""
 
             def setup(self):
@@ -496,6 +504,7 @@ class SetupPanel:
                                       name="simurgh-rebuild-setup", daemon=True)
         self.thread.start()
         self.supervisor.start_autostart()
+        self.supervisor.start_monitor()
 
     def close(self) -> None:
         if self.thread is not None:

@@ -18,6 +18,10 @@ from .tunnel import ConfigError, EntryConfig, ExitConfig, load_config
 from .wizard import save_config
 
 LOG = logging.getLogger("simurgh.rebuild.supervisor")
+RESTART_BASE_DELAY = 1.0
+RESTART_MAX_DELAY = 30.0
+RESTART_WINDOW = 300.0
+RESTART_MAX_ATTEMPTS = 5
 
 
 @dataclass
@@ -37,6 +41,12 @@ class NodeSupervisor:
         self.autostart_path = self.config_dir / "autostart.json"
         self.nodes: dict[str, ManagedNode] = {}
         self._lock = threading.RLock()
+        self._monitor_stop = threading.Event()
+        self._monitor_thread: threading.Thread | None = None
+        self._restart_due: set[str] = set()
+        self._restart_after: dict[str, float] = {}
+        self._restart_history: dict[str, list[float]] = {}
+        self._restart_errors: dict[str, str] = {}
         try:
             self.autostart_roles = self._load_autostart()
             self.autostart_error: str | None = None
@@ -117,6 +127,9 @@ class NodeSupervisor:
             if process.poll() is not None:
                 self.nodes.pop(role, None)
                 raise RuntimeError(f"{role} exited during startup; inspect {log_path}")
+            self._restart_due.discard(role)
+            self._restart_after.pop(role, None)
+            self._restart_errors.pop(role, None)
             return node
 
     def set_autostart(self, role: str, enabled: bool) -> None:
@@ -136,6 +149,11 @@ class NodeSupervisor:
             backup = save_config(self.autostart_path, {"roles": sorted(updated)})
             self.autostart_roles = updated
             self.autostart_error = None
+            if not enabled:
+                self._restart_due.discard(role)
+                self._restart_after.pop(role, None)
+                self._restart_history.pop(role, None)
+                self._restart_errors.pop(role, None)
             if backup:
                 LOG.info("previous auto-start preferences backed up to %s", backup)
 
@@ -148,8 +166,91 @@ class NodeSupervisor:
                 self.start(role)
             except (ConfigError, RuntimeError, OSError) as exc:
                 failures[role] = str(exc)
+                with self._lock:
+                    self._restart_due.add(role)
+                    self._restart_after[role] = time.monotonic() + RESTART_BASE_DELAY
+                    self._restart_errors[role] = (
+                        f"auto-start failed: {exc}; retrying in {RESTART_BASE_DELAY:g} seconds")
                 LOG.error("could not auto-start %s: %s", role, exc)
         return failures
+
+    def _monitor_once(self, now: float | None = None) -> None:
+        """Restart auto-start nodes after crashes, using bounded exponential backoff."""
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            for role in sorted(self.autostart_roles):
+                node = self.nodes.get(role)
+                if node is not None:
+                    code = node.process.poll()
+                    if code is None:
+                        if time.time() - node.started_at >= RESTART_WINDOW:
+                            self._restart_history.pop(role, None)
+                            self._restart_errors.pop(role, None)
+                        continue
+                    if role not in self._restart_due:
+                        history = [timestamp for timestamp in self._restart_history.get(role, [])
+                                   if current - timestamp < RESTART_WINDOW]
+                        self._restart_history[role] = history
+                        if len(history) >= RESTART_MAX_ATTEMPTS:
+                            self.nodes.pop(role, None)
+                            self._restart_errors[role] = (
+                                f"auto-restart stopped after {RESTART_MAX_ATTEMPTS} attempts "
+                                f"in {int(RESTART_WINDOW)} seconds (exit code {code})")
+                            LOG.error("%s", self._restart_errors[role])
+                            continue
+                        delay = min(RESTART_BASE_DELAY * (2 ** len(history)),
+                                    RESTART_MAX_DELAY)
+                        self._restart_due.add(role)
+                        self._restart_after[role] = current + delay
+                        self._restart_errors[role] = (
+                            f"exited with code {code}; retrying in {delay:g} seconds")
+                        LOG.warning("%s node exited unexpectedly; retry scheduled in %g seconds",
+                                    role, delay)
+
+                if role not in self._restart_due or current < self._restart_after.get(role, current):
+                    continue
+                history = [timestamp for timestamp in self._restart_history.get(role, [])
+                           if current - timestamp < RESTART_WINDOW]
+                if len(history) >= RESTART_MAX_ATTEMPTS:
+                    self._restart_due.discard(role)
+                    self._restart_after.pop(role, None)
+                    self._restart_errors[role] = (
+                        f"auto-restart stopped after {RESTART_MAX_ATTEMPTS} attempts "
+                        f"in {int(RESTART_WINDOW)} seconds")
+                    LOG.error("%s", self._restart_errors[role])
+                    continue
+                history.append(current)
+                self._restart_history[role] = history
+                delay = min(RESTART_BASE_DELAY * (2 ** len(history)), RESTART_MAX_DELAY)
+                self._restart_after[role] = current + delay
+                try:
+                    self.start(role)
+                except (ConfigError, RuntimeError, OSError) as exc:
+                    if len(history) >= RESTART_MAX_ATTEMPTS:
+                        self._restart_due.discard(role)
+                        self._restart_after.pop(role, None)
+                        self._restart_errors[role] = (
+                            f"auto-restart stopped after {RESTART_MAX_ATTEMPTS} attempts "
+                            f"in {int(RESTART_WINDOW)} seconds; last error: {exc}")
+                    else:
+                        self._restart_errors[role] = f"restart attempt {len(history)} failed: {exc}"
+                    LOG.error("could not restart %s: %s", role, exc)
+
+    def _monitor_loop(self) -> None:
+        while not self._monitor_stop.wait(0.5):
+            try:
+                self._monitor_once()
+            except Exception:
+                LOG.exception("node supervision check failed")
+
+    def start_monitor(self) -> None:
+        with self._lock:
+            if self._monitor_thread and self._monitor_thread.is_alive():
+                return
+            self._monitor_stop.clear()
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_loop, name="simurgh-node-supervisor", daemon=True)
+            self._monitor_thread.start()
 
     def status(self) -> dict[str, dict]:
         with self._lock:
@@ -158,18 +259,22 @@ class NodeSupervisor:
                 node = self.nodes.get(role)
                 if node is None:
                     result[role] = {
-                        "state": "stopped", "pid": None, "log": None,
+                        "state": "restarting" if role in self._restart_due else "stopped",
+                        "pid": None, "log": None,
                         "autostart": role in self.autostart_roles,
+                        "restart_error": self._restart_errors.get(role),
                     }
                     continue
                 code = node.process.poll()
                 result[role] = {
-                    "state": "running" if code is None else "stopped",
+                    "state": ("running" if code is None else
+                              "restarting" if role in self._restart_due else "stopped"),
                     "pid": node.process.pid if code is None else None,
                     "exit_code": code,
                     "started_at": node.started_at,
                     "log": str(node.log_path),
                     "autostart": role in self.autostart_roles,
+                    "restart_error": self._restart_errors.get(role),
                 }
             if self.autostart_error:
                 result["error"] = {"state": "invalid-autostart", "message": self.autostart_error}
@@ -181,7 +286,12 @@ class NodeSupervisor:
         with self._lock:
             node = self.nodes.get(role)
             if node is None:
-                return False
+                pending = role in self._restart_due
+                self._restart_due.discard(role)
+                self._restart_after.pop(role, None)
+                self._restart_history.pop(role, None)
+                self._restart_errors.pop(role, None)
+                return pending
             process = node.process
             if process.poll() is None:
                 try:
@@ -199,9 +309,18 @@ class NodeSupervisor:
                 except ProcessLookupError:
                     process.wait(timeout=timeout)
             self.nodes.pop(role, None)
+            self._restart_due.discard(role)
+            self._restart_after.pop(role, None)
+            self._restart_history.pop(role, None)
+            self._restart_errors.pop(role, None)
             return True
 
     def stop_all(self) -> None:
+        self._monitor_stop.set()
+        thread = self._monitor_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5)
+        self._monitor_thread = None
         with self._lock:
             for role in tuple(self.nodes):
                 try:

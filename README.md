@@ -10,7 +10,7 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.5. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.6. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
@@ -22,7 +22,7 @@ Simurgh Tunnel connects an **entry** node to an **exit** node. The entry accepts
 - Per-role carrier selection: direct TLS stream or WSS with strict HTTP upgrade and bounded WebSocket frames.
 - Shared-secret authentication and fixed named routes.
 - Role setup in the panel or terminal menu—never during installation.
-- Loopback-only web panel; panel-started nodes are supervised and can opt into auto-start.
+- Loopback-only web panel; panel-started nodes can opt into auto-start and bounded crash recovery (up to five restart attempts per five-minute window with exponential backoff). Manual stops are never retried.
 - Config backups can be reviewed and restored through the panel; restoration validates the role and backs up the current file first.
 - One installer entry point for both per-user and systemd-managed installation.
 - Namespaced release checks in the panel, plus terminal update installation with SHA-256 asset verification.
