@@ -165,6 +165,19 @@ def test_setup_panel_can_save_wss_entry_configuration(tmp_path):
         panel.close()
 
 
+def test_setup_panel_can_save_h2_entry_configuration(tmp_path):
+    panel, url = started_panel(tmp_path)
+    try:
+        fields = entry_fields()
+        fields.update({"carrier": "h2", "csrf": _csrf(url)})
+        with _post(url, "/setup", fields) as response:
+            assert response.status == 201
+        config = json.loads((tmp_path / "entry.json").read_text())
+        assert config["carrier"] == "h2"
+    finally:
+        panel.close()
+
+
 def test_panel_displays_private_entry_usage_and_quota(tmp_path):
     meter = UsageMeter(tmp_path / "entry-usage.json", quota_mib=1)
     meter.consume("upload", 128 * 1024)

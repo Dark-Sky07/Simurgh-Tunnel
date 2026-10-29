@@ -7,9 +7,10 @@ This is a new implementation contract for this repository. It is independently d
 Each entry TCP flow opens one verified TLS connection to the configured exit. A UDP client source address gets a bounded, idle-expiring TLS association. Both ends must select the same carrier in their local configuration:
 
 - `tls`: the application handshake and frames are carried directly over TLS.
-- `wss`: after TLS, the entry performs an HTTP/1.1 WebSocket upgrade on `/simurgh-tunnel`; the exit validates the request and the RFC WebSocket accept value. The data protocol is carried in complete binary WebSocket messages. Client frames are masked, server frames are not, and extensions/compression and fragmented messages are rejected. This is an interoperability carrier, not an anonymity or censorship-evasion guarantee.
+- `wss`: after TLS, the entry performs an HTTP/1.1 WebSocket upgrade on `/simurgh-tunnel`; the exit validates the request and the RFC WebSocket accept value. The data protocol is carried in complete binary WebSocket messages. Client frames are masked, server frames are not, and extensions/compression and fragmented messages are rejected.
+- `h2`: TLS negotiates ALPN `h2`; the entry sends one `POST /simurgh-tunnel` request with `application/octet-stream`, and the exit returns status 200. The tunnel's existing byte stream is carried in HTTP/2 DATA frames with HTTP/2 flow control; each TLS connection has exactly one request stream and no multiplexing. The `h2` package is installed privately by the role-agnostic installers.
 
-The entry verifies the exit certificate against its CA file and verifies the configured DNS name for either carrier. TLS 1.3 is preferred; TLS 1.2 is the minimum. WebSocket HTTP headers are limited to 8 KiB, binary messages to 65,541 bytes (one complete tunnel frame), and buffered stream data to 256 KiB per connection.
+WSS and H2 are interoperability carriers, not anonymity or censorship-evasion guarantees. The entry verifies the exit certificate against its CA file and verifies the configured DNS name for every carrier. TLS 1.3 is preferred; TLS 1.2 is the minimum. HTTP/2 and WebSocket header lists are limited to 8 KiB; WebSocket binary messages are limited to 65,541 bytes (one complete tunnel frame), and carrier stream buffers are capped at 256 KiB per connection.
 
 Before relaying, the entry sends one UTF-8 JSON object followed by LF. TCP uses `open`; UDP uses `udp`:
 

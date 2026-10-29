@@ -57,7 +57,7 @@ def _form(csrf: str, config_dir: Path) -> str:
 <section class="card"><h2>Role and local listener</h2><div class="grid">
 <div class="field"><label for="role">This server is</label><select id="role" name="role"><option value="entry">Entry · accepts user traffic</option><option value="exit">Exit · connects to a fixed destination</option></select></div>
 <div class="field"><label for="transport">Local entry transport</label><select id="transport" name="transport"><option value="tcp">TCP stream</option><option value="udp">UDP datagrams</option></select></div>
-<div class="field"><label for="carrier">Tunnel carrier · must match both nodes</label><select id="carrier" name="carrier"><option value="tls">TLS stream</option><option value="wss">WebSocket over TLS (WSS)</option></select></div>
+<div class="field"><label for="carrier">Tunnel carrier · must match both nodes</label><select id="carrier" name="carrier"><option value="tls">TLS stream</option><option value="wss">WebSocket over TLS (WSS)</option><option value="h2">HTTP/2 stream over TLS (H2)</option></select></div>
 <div class="field"><label for="listen_host">Listen address</label><input id="listen_host" name="listen_host" value="127.0.0.1" required></div>
 <div class="field"><label for="listen_port">Listen port</label><input id="listen_port" name="listen_port" type="number" min="1" max="65535" value="18080" required></div>
 <div class="field wide"><label for="route">Route name (must match at both ends)</label><input id="route" name="route" value="web" maxlength="64" required></div>
@@ -249,8 +249,8 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
     if transport not in ("tcp", "udp"):
         raise ValueError("transport must be TCP or UDP")
     carrier = _one(form, "carrier", "tls")
-    if carrier not in ("tls", "wss"):
-        raise ValueError("carrier must be TLS or WSS")
+    if carrier not in ("tls", "wss", "h2"):
+        raise ValueError("carrier must be TLS, WSS or H2")
     secret = _one(form, "secret")
     if len(secret.encode("utf-8")) < 32:
         raise ValueError("shared secret must contain at least 32 UTF-8 bytes")
@@ -309,7 +309,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.7"
+            server_version = "SimurghSetup/0.2.8"
             sys_version = ""
 
             def setup(self):

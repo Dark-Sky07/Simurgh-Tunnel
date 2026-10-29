@@ -121,6 +121,9 @@ def test_user_installer_is_role_agnostic_repeatable_and_keeps_old_release(tmp_pa
     assert second_release != first_release
     assert first_release.is_dir()
     assert second_release.is_dir()
+    assert (second_release / "rebuild/h2stream.py").is_file()
+    assert (second_release / "rebuild/notifications.py").is_file()
+    assert (second_release / "vendor/h2").is_dir()
     assert config.read_text() == original_config
     commands = ("simurgh-next", "simurgh-next-panel", "simurgh-next-setup",
                 "simurgh-next-node", "simurgh-next-update")
@@ -218,6 +221,9 @@ def test_system_installer_preserves_legacy_config_and_upgrades_release(tmp_path)
     subprocess.run(["sh", str(INSTALLER), "--system"], cwd=ROOT, env=env,
                    check=True, capture_output=True, text=True)
     first_release = (app_root / "current").resolve()
+    assert (first_release / "rebuild/h2stream.py").is_file()
+    assert (first_release / "rebuild/notifications.py").is_file()
+    assert (first_release / "vendor/h2").is_dir()
     assert existing.read_text() == '{"role":"entry","secret":"preserve"}\n'
     assert (legacy / "preserve.txt").read_text() == "legacy stays\n"
     assert service.exists() and "User=simurgh-next" in service.read_text()
@@ -227,6 +233,11 @@ def test_system_installer_preserves_legacy_config_and_upgrades_release(tmp_path)
     assert backups[0].stat().st_mode & 0o777 == 0o600
     assert existing.stat().st_mode & 0o777 == 0o600
     assert config_dir.stat().st_mode & 0o777 == 0o750
+    panel_help = subprocess.run(
+        [str(first_release / "bin/simurgh-next-panel"), "--help"], env=env,
+        capture_output=True, text=True, check=True,
+    )
+    assert "loopback-only" in panel_help.stdout
     analyzer = shutil.which("systemd-analyze")
     if analyzer:
         checked = subprocess.run([analyzer, "verify", str(service)],
