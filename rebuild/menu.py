@@ -13,6 +13,7 @@ from .tunnel import (
     ConfigError,
     EntryConfig,
     ExitConfig,
+    check_entry_path,
     load_config,
     serve_entry,
     serve_exit,
@@ -82,6 +83,25 @@ def run_role(role: str, config_dir: Path, output: Output = print) -> int:
     return 0
 
 
+def check_entry(config_dir: Path, output: Output = print) -> int:
+    path = config_dir / "entry.json"
+    try:
+        config = load_config(path)
+    except (ConfigError, OSError) as exc:
+        output(f"Cannot check entry path: {exc}")
+        return 2
+    if not isinstance(config, EntryConfig):
+        output("Path checks must be run from a configured entry node.")
+        return 2
+    try:
+        result = asyncio.run(check_entry_path(config))
+    except (ConnectionError, OSError, TimeoutError) as exc:
+        output(f"Entry path check failed: {exc}")
+        return 1
+    output(result)
+    return 0
+
+
 def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> int:
     while True:
         output("\nSimurgh Tunnel — independent rebuild")
@@ -89,8 +109,9 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
         output("2) Run entry in foreground")
         output("3) Run exit in foreground")
         output("4) Show configured roles")
-        output("5) Check/apply release update")
-        output("6) Quit")
+        output("5) Check the entry-to-exit path")
+        output("6) Check/apply release update")
+        output("7) Quit")
         choice = input_fn("Choose: ").strip()
         if choice == "1":
             setup_menu(config_dir, input_fn, output)
@@ -107,11 +128,13 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
         elif choice == "4":
             show_status(config_dir, output)
         elif choice == "5":
-            interactive_update(config_dir)
+            check_entry(config_dir, output)
         elif choice == "6":
+            interactive_update(config_dir)
+        elif choice == "7":
             return 0
         else:
-            output("Choose 1, 2, 3, 4, 5 or 6.")
+            output("Choose a number from 1 to 7.")
 
 
 def main(argv: list[str] | None = None) -> int:

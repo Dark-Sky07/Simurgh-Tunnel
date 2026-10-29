@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -692,6 +692,39 @@ async def _open_entry_connection(config: EntryConfig):
     return stream, stream
 
 
+async def check_entry_path(config: EntryConfig) -> str:
+    """Verify the authenticated tunnel and destination setup without forwarding user data."""
+    reader = writer = None
+    operation = "udp" if config.transport == "udp" else "open"
+    try:
+        reader, writer = await _open_entry_connection(config)
+        await _send_json(writer, {
+            "version": 1,
+            "op": operation,
+            "route": config.route,
+            "secret": config.secret,
+        })
+        response = await asyncio.wait_for(_read_json(reader), timeout=HANDSHAKE_TIMEOUT)
+        if response.get("ok") is not True:
+            reason = response.get("error", "route was rejected")
+            raise ConnectionError(f"exit declined the route ({reason})")
+        if config.transport == "udp":
+            return (f"{config.carrier.upper()} path and UDP association are available; the UDP "
+                    "destination did not receive a test datagram, so application reachability "
+                    "is unverified.")
+        return (f"{config.carrier.upper()} path authenticated and the fixed TCP destination "
+                "accepted a connection.")
+    except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
+        raise ConnectionError(f"path check failed: {exc}") from exc
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=2)
+            except (TimeoutError, OSError):
+                pass
+
+
 async def _forward_entry(config: EntryConfig, local_reader: asyncio.StreamReader,
                          local_writer: asyncio.StreamWriter) -> None:
     remote_writer = None
@@ -945,6 +978,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Independent Simurgh TCP/UDP tunnel")
     parser.add_argument("--version", action="version", version=f"Simurgh rebuild {VERSION}")
     parser.add_argument("--config", type=Path, required=True, help="path to a JSON node config")
+    parser.add_argument("--check", action="store_true",
+                        help="test an entry's authenticated path and configured destination")
     parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info")
     args = parser.parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper()),
@@ -952,6 +987,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         _check_permissions(args.config)
+        if args.check:
+            if not isinstance(config, EntryConfig):
+                LOG.error("path check requires an entry config; run it from the entry server")
+                return 2
+            try:
+                print(asyncio.run(check_entry_path(config)))
+            except (ConnectionError, OSError, ssl.SSLError, TimeoutError) as exc:
+                LOG.error("%s", exc)
+                return 1
+            return 0
         asyncio.run(serve_exit(config) if isinstance(config, ExitConfig)
                     else serve_entry(config))
     except (ConfigError, OSError, ssl.SSLError, KeyboardInterrupt) as exc:

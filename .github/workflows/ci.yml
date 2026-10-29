@@ -76,6 +76,7 @@ jobs:
           python -m pip install --no-deps dist/*.whl
           simurgh-next --help
           simurgh-next-panel --help
+          simurgh-next-node --help
           simurgh-next-update --help
 
   shell:
