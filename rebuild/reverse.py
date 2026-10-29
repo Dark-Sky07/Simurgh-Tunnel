@@ -145,10 +145,12 @@ async def _hub_data(state: _HubState, reader: asyncio.StreamReader,
             await _send_json(writer, {"ok": False, "error": "expired"})
             return
         await _send_json(writer, {"ok": True})
+        activity = asyncio.Event()
         try:
             await _join_directions(
-                _copy_from_tunnel(reader, pending.writer),
-                _copy_to_tunnel(pending.reader, writer),
+                _copy_from_tunnel(reader, pending.writer, activity=activity),
+                _copy_to_tunnel(pending.reader, writer, activity=activity),
+                activity=activity,
             )
         except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
             LOG.debug("reverse data channel ended: %s", exc)
@@ -256,9 +258,11 @@ async def _agent_channel(config: ReverseAgentConfig, channel: str,
         response = await asyncio.wait_for(_read_json(data_reader), timeout=HANDSHAKE_TIMEOUT)
         if response.get("ok") is not True:
             raise ConnectionError("reverse hub rejected the data channel")
+        activity = asyncio.Event()
         await _join_directions(
-            _copy_from_tunnel(data_reader, target_writer),
-            _copy_to_tunnel(target_reader, data_writer),
+            _copy_from_tunnel(data_reader, target_writer, activity=activity),
+            _copy_to_tunnel(target_reader, data_writer, activity=activity),
+            activity=activity,
         )
     except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("reverse data channel %s ended: %s", channel, exc)
