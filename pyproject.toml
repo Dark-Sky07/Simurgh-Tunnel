@@ -1,9 +1,9 @@
 [build-system]
-# Ubuntu 22.04 ships setuptools 59.6 and wheel 0.37.  Keep the metadata in
-# setup.cfg so those distribution packages can build Simurgh without downloading
-# a newer build backend from PyPI (which is often unreachable from a relay).
 requires = ["setuptools>=59.6", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["rebuild/tests"]
+
+[tool.ruff]
+target-version = "py310"

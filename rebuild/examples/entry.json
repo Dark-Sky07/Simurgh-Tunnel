@@ -1,0 +1,11 @@
+{
+  "role": "entry",
+  "listen_host": "127.0.0.1",
+  "listen_port": 18080,
+  "exit_host": "203.0.113.10",
+  "exit_port": 8443,
+  "server_name": "exit.example.net",
+  "ca_file": "/etc/simurgh-next/tls/ca.crt",
+  "secret": "REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES",
+  "route": "web"
+}

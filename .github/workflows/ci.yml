@@ -8,15 +8,13 @@ permissions:
   contents: read
 
 jobs:
-  tests:
-    name: tests on python ${{ matrix.python }}
+  python:
+    name: Python ${{ matrix.python }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 is the oldest interpreter the installer accepts, 3.12 the newest
-        # of the two 3.11+ lines; the installer itself runs in both
-        python: ["3.9", "3.12"]
+        python: ["3.10", "3.12"]
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -26,221 +24,31 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      # One matrix leg has the compiled engine too, so the Python suite really
-      # runs its Go <-> Python interoperability cases instead of skipping them.
-      - name: Set up Go for cross-engine tests
-        if: matrix.python == '3.12'
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go/go.mod
-          cache: false
-
-      - name: Install test tooling
-        # Installer tests run without root and create system-site venvs.  Supply
-        # the same build tools that install.sh installs through the OS package
-        # manager on a real root server; Python 3.12 ensurepip omits setuptools.
+      - name: Install test and lint dependencies
         run: python -m pip install --quiet pytest "cryptography>=41" ruff "setuptools>=59.6" wheel
 
-      - name: Lint (undefined names, dead imports)
-        run: ruff check simurgh tests --select F,E9
+      - name: Lint the independent implementation
+        run: ruff check rebuild
 
-      # the web panel is half JavaScript: node runs that half against a stubbed
-      # DOM (tests/test_panel_js.py skips itself if node is missing)
-      - name: Show the node version the panel's tests will use
-        run: node --version
+      - name: Run all tests
+        run: python -m pytest -q
 
-      - name: Check the panel's JavaScript syntax
+      - name: Build and inspect the installable wheel
         run: |
-          node --check simurgh/assets/app.js
-          node --check simurgh/assets/login.js
-
-      - name: Run the test suite
-        run: |
-          set -o pipefail
-          python -m pytest -q 2>&1 | tee "$RUNNER_TEMP/pytest.log"
-
-      # Ubuntu 22.04 ships Python 3.10, where the standard library has no
-      # tomllib: the bundled reader has to take over, and that is exactly what
-      # the installer hit on a stock server.
-      - name: Run the test suite without tomllib
-        if: matrix.python == '3.12'
-        env:
-          SIMURGH_TEST_NO_TOMLLIB: "1"
-        run: |
-          set -o pipefail
-          python -m pytest -q 2>&1 | tee "$RUNNER_TEMP/pytest-no-tomllib.log"
-
-      # show the failing tests both in the job summary and as an annotation
-      # (annotations are readable through the checks API without downloading
-      # the whole job log)
-      - name: Summarise failures
-        if: failure()
-        run: |
-          for log in "$RUNNER_TEMP"/pytest*.log; do
-            [ -f "$log" ] || continue
-            title="pytest $(basename "$log")"
-            echo "::error title=$title::$(tail -n 12 "$log" | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
-            {
-              echo "### python ${{ matrix.python }} — $(basename "$log")"
-              echo '```'
-              grep -E "FAILED|ERROR|assert|Error|error:" "$log" | tail -n 40
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          done
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+          python -m pip install --no-deps dist/*.whl
+          simurgh-next --help
+          simurgh-next-panel --help
 
   shell:
-    name: installer and shell scripts
+    name: Installer syntax and static analysis
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
         uses: actions/checkout@v7
 
       - name: Syntax check
-        run: |
-          bash -n install.sh
-          bash -n tools/build-go.sh
+        run: bash -n install.sh
 
       - name: ShellCheck
-        run: |
-          shellcheck --version
-          shellcheck -S warning install.sh tools/build-go.sh
-
-  offline-install:
-    name: offline install on Ubuntu 22.04
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v7
-
-      # Reproduce a stock Iranian relay: Ubuntu 22.04 supplies Python 3.10,
-      # setuptools 59.6 and wheel 0.37.  Python and its venv/build packages are
-      # initially absent.  pip may never use an index, while apt remains
-      # available just as it was in the reported installation log.
-      - name: Install on a fresh Python 3.10 system with PyPI disabled
-        run: |
-          docker run --rm -i \
-            --volume "$GITHUB_WORKSPACE:/source-ro:ro" \
-            --env PIP_NO_INDEX=1 \
-            --env PIP_RETRIES=0 \
-            --env PIP_TIMEOUT=1 \
-            --env SIMURGH_NO_TTY=1 \
-            ubuntu:22.04 \
-            bash -s <<'CONTAINER'
-          set -e
-          cp -a /source-ro /tmp/simurgh-source
-          SIMURGH_SRC=/tmp/simurgh-source \
-            bash /tmp/simurgh-source/install.sh \
-            --yes --no-go --no-systemd --role relay
-          simurgh --version
-          grep "include-system-site-packages = true" /opt/simurgh/venv/pyvenv.cfg
-          test -z "$(find /opt/simurgh/venv -name simurgh-src.pth -print -quit)"
-          /opt/simurgh/venv/bin/python -I - <<'PY'
-          import cryptography
-          import importlib.metadata as m
-          from simurgh import panel_ui
-
-          distribution = m.distribution("simurgh-tunnel")
-          assert "simurgh = simurgh.cli:main" in distribution.read_text("entry_points.txt")
-          assert panel_ui.read_asset("index.html")
-          assert panel_ui.read_asset("simurgh.png")
-          print("Ubuntu 22.04 offline installation: OK")
-          PY
-          CONTAINER
-
-  packages:
-    name: packages (.deb, .rpm, tarball, image)
-    # Pin the package build to Ubuntu 24.04 so the toolchain does not drift
-    # when GitHub moves the ubuntu-latest alias.
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go/go.mod
-          cache: false
-
-      - name: Test the Go data plane and race detector
-        working-directory: go
-        run: |
-          set -o pipefail
-          GOPROXY=off go test ./... 2>&1 | tee "$RUNNER_TEMP/go-test.log"
-          GOPROXY=off go test -race ./... 2>&1 | tee "$RUNNER_TEMP/go-race.log"
-
-      # Go failures need the same actionable annotations as the Python jobs;
-      # the raw Actions log archive is not always accessible to maintainers.
-      - name: Summarise Go failures
-        if: failure()
-        run: |
-          for log in "$RUNNER_TEMP"/go-*.log; do
-            [ -f "$log" ] || continue
-            title="go $(basename "$log")"
-            echo "::error title=$title::$(tail -n 30 "$log" | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
-            {
-              echo "### $(basename "$log")"
-              echo '```'
-              tail -n 60 "$log"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          done
-
-      - name: Build the compiled engine
-        run: bash tools/build-go.sh --release dist
-
-      - name: rpmbuild (dpkg-deb is already there)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq rpm
-
-      - name: Build every package from the same tree
-        run: |
-          bash packaging/build-packages.sh --out dist
-          bash packaging/build-packages.sh --out dist \
-               --go-binary dist/simurgh-go-linux-amd64
-          ls -l dist
-
-      - name: Inspect what was built
-        run: |
-          set -e
-          dpkg-deb -I dist/simurgh_*_all.deb
-          dpkg-deb -c dist/simurgh_*_amd64.deb | grep -E 'usr/bin/(simurgh|simurgh-go)$'
-          rpm -qip dist/simurgh-*.noarch.rpm
-          rpm -qlp dist/simurgh-*.x86_64.rpm | grep -E '^/usr/bin/simurgh(-go)?$'
-
-      - name: Run the tarball the way a user would
-        run: |
-          set -e
-          mkdir -p /tmp/root && tar -xzf dist/simurgh-*-noarch.tar.gz -C /tmp/root
-          SIMURGH_LIB=/tmp/root/usr/lib/simurgh /tmp/root/usr/bin/simurgh --version
-          SIMURGH_LIB=/tmp/root/usr/lib/simurgh /tmp/root/usr/bin/simurgh tune
-
-      - name: Build the image and the compose file
-        run: |
-          set -x
-          docker build -t simurgh:ci .
-          docker run --rm simurgh:ci --version
-          # the compiled engine, straight through the entrypoint's override
-          docker run --rm --entrypoint /usr/bin/simurgh-go simurgh:ci version
-          docker compose config -q
-          # a role with no config must refuse to start, and say why
-          if docker run --rm --entrypoint /bin/sh simurgh:ci -c \
-               'SIMURGH_HOME=/tmp/none simurgh-entrypoint relay'; then
-            echo "the entrypoint started an unconfigured role" >&2
-            exit 1
-          fi
-
-      - name: Keep the packages
-        uses: actions/upload-artifact@v7
-        with:
-          name: packages
-          path: dist/*.deb
-          retention-days: 7
-
-      - name: Keep the tarballs and rpms too
-        uses: actions/upload-artifact@v7
-        with:
-          name: packages-extra
-          path: |
-            dist/*.rpm
-            dist/*.tar.gz
-          retention-days: 7
+        run: shellcheck -S warning install.sh

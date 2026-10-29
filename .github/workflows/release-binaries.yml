@@ -1,90 +1,53 @@
-name: Release Go binaries
+name: Release Python package
 
 on:
   release:
     types: [published]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing release tag to upload binaries to
-        required: true
-        type: string
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build and attach release binaries
+  package:
+    name: Build and attach release artifacts
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out source
+      - name: Check out the released source
         uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
         with:
-          go-version-file: go/go.mod
-          cache: false
+          ref: ${{ github.event.release.tag_name }}
 
-      - name: Build all release targets
-        run: bash tools/build-go.sh --release dist
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
 
-      - name: Create SHA-256 checksums
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION=$(python -c 'from rebuild.tunnel import VERSION; print(VERSION)')
+          case "$RELEASE_TAG" in "v$VERSION"|"$VERSION") ;; *)
+            echo "Release tag $RELEASE_TAG does not match source version $VERSION" >&2
+            exit 1
+            ;;
+          esac
+
+      - name: Build wheel and source archive
+        run: |
+          python -m pip install --quiet "setuptools>=59.6" wheel
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+          python setup.py sdist --dist-dir dist
+
+      - name: Create checksums
         run: |
           cd dist
-          sha256sum simurgh-go-* > SHA256SUMS.txt
+          sha256sum * > SHA256SUMS.txt
 
-      - name: Attach binaries and checksums
+      - name: Attach artifacts to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           gh release upload "$RELEASE_TAG" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
-
-  packages:
-    name: Build and attach packages
-    # Match CI and keep package builds on the pinned Ubuntu 24.04 image.
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go/go.mod
-          cache: false
-
-      - name: Build the compiled engine for this runner
-        run: bash tools/build-go.sh --release dist
-
-      - name: rpmbuild for the .rpm (dpkg-deb ships with the runner)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq rpm
-
-      - name: Build every package (pure Python and with the engine)
-        run: |
-          bash packaging/build-packages.sh --out dist
-          bash packaging/build-packages.sh --out dist \
-               --go-binary dist/simurgh-go-linux-amd64
-
-      # the binaries have their own file, produced by the build job
-      - name: Checksums for the packages
-        run: |
-          cd dist
-          sha256sum *.deb *.rpm *.tar.gz > SHA256SUMS-packages.txt
-          cat SHA256SUMS-packages.txt
-
-      - name: Attach the packages to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            dist/*.deb dist/*.rpm dist/*.tar.gz dist/SHA256SUMS-packages.txt \
             --repo "$GITHUB_REPOSITORY" --clobber
-
-      - name: Say what went out
-        run: ls -l dist
