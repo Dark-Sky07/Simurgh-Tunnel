@@ -44,6 +44,21 @@ def _port(prompt: str, default: int, input_fn: Input) -> int:
             return value
 
 
+def _quota_mib(input_fn: Input, output: Output) -> int | None:
+    while True:
+        answer = input_fn("Entry monthly transfer quota in MiB (blank = unlimited): ").strip()
+        if not answer:
+            return None
+        try:
+            quota = int(answer)
+        except ValueError:
+            output("Enter a whole number of MiB, or leave blank for unlimited.")
+            continue
+        if 1 <= quota <= 1_048_576:
+            return quota
+        output("Quota must be between 1 and 1,048,576 MiB.")
+
+
 def _secret(input_fn: Input, output: Output) -> str:
     value = input_fn("Shared secret (leave blank to generate a new one): ").strip()
     if not value:
@@ -97,7 +112,7 @@ def build_config(
         }
     if role != "entry":
         raise ValueError("role must be entry or exit")
-    return {
+    config = {
         "role": "entry",
         "transport": transport,
         "carrier": carrier,
@@ -110,6 +125,10 @@ def build_config(
         "secret": secret,
         "route": route,
     }
+    monthly_quota_mib = _quota_mib(input_fn, output)
+    if monthly_quota_mib is not None:
+        config["monthly_quota_mib"] = monthly_quota_mib
+    return config
 
 
 def save_config(path: Path, config: dict) -> Path | None:

@@ -10,6 +10,7 @@ The current core provides authenticated TLS and WSS forwarding for TCP and UDP:
 - **exit** validates the shared secret and maps a configured route name to a fixed destination; peers cannot choose arbitrary hosts or ports;
 - TCP flows use a framed bidirectional stream and preserve half-close behavior;
 - UDP datagrams retain message boundaries and use bounded per-client sessions with an idle timeout;
+- entry payload bytes are counted by direction, with an optional UTC-month MiB quota enforced for TCP/UDP and visible in the local panel/menu;
 - carriers are direct TLS streams or WebSocket binary streams over verified TLS; the entry verifies the exit certificate and DNS name for either;
 - no third-party runtime dependencies.
 

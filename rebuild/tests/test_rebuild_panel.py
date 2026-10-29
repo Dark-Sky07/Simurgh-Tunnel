@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from rebuild import panel as panel_module
 from rebuild.panel import SetupPanel
+from rebuild.usage import UsageMeter
 from rebuild.wizard import list_config_backups, save_config
 
 
@@ -133,6 +134,24 @@ def test_setup_panel_requires_form_token_and_keeps_secret_out_of_response(tmp_pa
         panel.close()
 
 
+def test_setup_panel_saves_and_validates_entry_monthly_quota(tmp_path):
+    panel, url = started_panel(tmp_path)
+    try:
+        fields = entry_fields()
+        fields.update({"monthly_quota_mib": "512", "csrf": _csrf(url)})
+        with _post(url, "/setup", fields) as response:
+            assert response.status == 201
+        config = json.loads((tmp_path / "entry.json").read_text())
+        assert config["monthly_quota_mib"] == 512
+        fields["monthly_quota_mib"] = "0"
+        fields["replace"] = "yes"
+        with pytest.raises(urllib.error.HTTPError) as error:
+            _post(url, "/setup", fields)
+        assert error.value.code == 400
+    finally:
+        panel.close()
+
+
 def test_setup_panel_can_save_wss_entry_configuration(tmp_path):
     panel, url = started_panel(tmp_path)
     try:
@@ -142,6 +161,22 @@ def test_setup_panel_can_save_wss_entry_configuration(tmp_path):
             assert response.status == 201
         config = json.loads((tmp_path / "entry.json").read_text())
         assert config["carrier"] == "wss"
+    finally:
+        panel.close()
+
+
+def test_panel_displays_private_entry_usage_and_quota(tmp_path):
+    meter = UsageMeter(tmp_path / "entry-usage.json", quota_mib=1)
+    meter.consume("upload", 128 * 1024)
+    meter.consume("download", 256 * 1024)
+    meter.flush()
+    panel, url = started_panel(tmp_path)
+    try:
+        body = urllib.request.urlopen(url + "/").read().decode()
+        assert "Entry traffic" in body
+        assert "Upload: 128.00 KiB" in body
+        assert "Download: 256.00 KiB" in body
+        assert "Monthly quota: 1.00 MiB" in body
     finally:
         panel.close()
 

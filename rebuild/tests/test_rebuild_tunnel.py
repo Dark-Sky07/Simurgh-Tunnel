@@ -378,6 +378,23 @@ def test_config_defaults_carrier_and_rejects_unknown_carrier(tmp_path):
         tunnel.load_config(path)
 
 
+def test_config_validates_optional_monthly_quota(tmp_path):
+    path = tmp_path / "entry.json"
+    config = {
+        "role": "entry", "listen_host": "127.0.0.1", "listen_port": 1,
+        "exit_host": "localhost", "exit_port": 2, "server_name": "localhost",
+        "ca_file": "/tmp/ca.crt", "secret": "s" * 32, "route": "web",
+        "monthly_quota_mib": 256,
+    }
+    path.write_text(json.dumps(config))
+    assert tunnel.load_config(path).monthly_quota_mib == 256
+    for invalid in (0, -1, True, "256", 1_048_577):
+        config["monthly_quota_mib"] = invalid
+        path.write_text(json.dumps(config))
+        with pytest.raises(tunnel.ConfigError, match="monthly_quota_mib"):
+            tunnel.load_config(path)
+
+
 def test_config_normalizes_idn_and_rejects_websocket_host_injection(tmp_path):
     path = tmp_path / "entry.json"
     config = {

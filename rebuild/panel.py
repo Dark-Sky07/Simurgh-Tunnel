@@ -20,6 +20,7 @@ from .paths import default_config_dir
 from .supervisor import NodeSupervisor
 from .tunnel import EntryConfig, check_entry_path, load_config, speed_test_entry
 from .updates import UpdateError, latest_update
+from .usage import format_bytes, read_usage_snapshot
 from .wizard import list_config_backups, restore_config, save_config
 
 LOG = logging.getLogger("simurgh.rebuild.panel")
@@ -60,7 +61,8 @@ def _form(csrf: str, config_dir: Path) -> str:
 <div class="field"><label for="listen_host">Listen address</label><input id="listen_host" name="listen_host" value="127.0.0.1" required></div>
 <div class="field"><label for="listen_port">Listen port</label><input id="listen_port" name="listen_port" type="number" min="1" max="65535" value="18080" required></div>
 <div class="field wide"><label for="route">Route name (must match at both ends)</label><input id="route" name="route" value="web" maxlength="64" required></div>
-</div></section>
+<div class="field"><label for="monthly_quota_mib">Entry monthly quota in MiB · blank means unlimited</label><input id="monthly_quota_mib" name="monthly_quota_mib" type="number" min="1" max="1048576" placeholder="Unlimited"></div>
+</div><p class="hint">Quota changes apply after restarting the entry node. The quota counts payload in both directions and resets on the UTC month.</p></section>
 <section class="card"><h2>Secure link</h2><div class="grid">
 <div class="field"><label for="secret">Shared secret · 32 bytes minimum</label><input id="secret" name="secret" type="password" minlength="32" autocomplete="new-password" required></div>
 <div class="field"><label for="exit_host">Exit address · entry only</label><input id="exit_host" name="exit_host" value="exit.example.net"></div>
@@ -120,6 +122,31 @@ def _backup_section(panel) -> str:
     return '<section class="card"><h2>Configuration backups</h2>' + content + '</section>'
 
 
+def _usage_section(config_dir: Path) -> str:
+    try:
+        snapshot = read_usage_snapshot(config_dir / "entry-usage.json")
+    except (OSError, ValueError):
+        return ('<section class="card"><h2>Entry traffic</h2>'
+                '<p class="hint">Usage state is unreadable; check its file and permissions.</p></section>')
+    if snapshot is None:
+        return ('<section class="card"><h2>Entry traffic</h2>'
+                '<p class="hint">Traffic totals appear after the entry node runs.</p></section>')
+    uploaded = snapshot["upload_bytes"]
+    downloaded = snapshot["download_bytes"]
+    used = uploaded + downloaded
+    quota = snapshot["quota_bytes"]
+    if quota:
+        percent = min(100, int(used * 100 / quota))
+        quota_label = f"<p>Monthly quota: {format_bytes(quota)} ({percent}% used)</p>"
+    else:
+        quota_label = "<p>Monthly quota: unlimited</p>"
+    return (f'<section class="card"><h2>Entry traffic · {html.escape(snapshot["month"])}</h2>'
+            f'<p>Upload: {format_bytes(uploaded)} · Download: {format_bytes(downloaded)} · '
+            f'Total: {format_bytes(used)}</p>{quota_label}'
+            '<p class="hint">Counts client payload bytes at the entry; month resets use UTC.</p>'
+            '</section>')
+
+
 def _dashboard(panel) -> str:
     rows = []
     states = panel.supervisor.status()
@@ -168,6 +195,7 @@ def _dashboard(panel) -> str:
         warning = (f'<div class="notice" role="alert">Auto-start state error: '
                    f'{html.escape(state_error["message"])}</div>')
     return (warning + _update_form(panel) + _backup_section(panel)
+            + _usage_section(panel.config_dir)
             + '<section class="card"><h2>Node control</h2>'
             '<p class="hint">Processes are started only by this local panel and run as its user. '
             'Closing the panel stops nodes it launched. “Panel start” starts a configured node '
@@ -229,6 +257,15 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
     }
     if not all(config[key] for key in ("exit_host", "server_name", "ca_file")):
         raise ValueError("exit address, expected TLS name and CA path are required")
+    quota_text = _one(form, "monthly_quota_mib")
+    if quota_text:
+        try:
+            quota_mib = int(quota_text)
+        except ValueError as exc:
+            raise ValueError("monthly quota must be a whole number of MiB") from exc
+        if not 1 <= quota_mib <= 1_048_576:
+            raise ValueError("monthly quota must be from 1 to 1,048,576 MiB")
+        config["monthly_quota_mib"] = quota_mib
     return role, config
 
 
@@ -248,7 +285,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.4"
+            server_version = "SimurghSetup/0.2.5"
             sys_version = ""
 
             def setup(self):

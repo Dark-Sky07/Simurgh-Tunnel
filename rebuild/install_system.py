@@ -15,7 +15,7 @@ from pathlib import Path
 ACCOUNT = "simurgh-next"
 SERVICE = "simurgh-next-panel.service"
 MANAGED = "Managed by Simurgh Tunnel independent rebuild"
-MODULES = ("__init__.py", "menu.py", "panel.py", "paths.py", "supervisor.py", "tunnel.py", "updates.py", "wizard.py")
+MODULES = ("__init__.py", "menu.py", "panel.py", "paths.py", "supervisor.py", "tunnel.py", "updates.py", "usage.py", "wizard.py")
 COMMANDS = ("simurgh-next", "simurgh-next-panel", "simurgh-next-setup", "simurgh-next-node", "simurgh-next-update")
 
 
