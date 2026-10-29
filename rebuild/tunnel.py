@@ -623,7 +623,8 @@ async def _remote_udp_session(reader: asyncio.StreamReader,
             transport.close()
 
 
-async def _serve_speed_test(writer: asyncio.StreamWriter, byte_count: int) -> None:
+async def _serve_speed_test(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                           byte_count: int) -> None:
     await _send_json(writer, {"ok": True, "bytes": byte_count})
     block = b"\x00" * MAX_FRAME
     remaining = byte_count
@@ -632,6 +633,9 @@ async def _serve_speed_test(writer: asyncio.StreamWriter, byte_count: int) -> No
         await _write_frame(writer, _DATA, payload)
         remaining -= len(payload)
     await _write_frame(writer, _FIN)
+    kind, payload = await asyncio.wait_for(_read_frame(reader), timeout=HANDSHAKE_TIMEOUT)
+    if kind != _FIN or payload:
+        raise ProtocolError("speed test completion acknowledgement is invalid")
 
 
 async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
@@ -656,7 +660,7 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
                     or not 1 <= byte_count <= MAX_SPEED_TEST_BYTES):
                 await _send_json(writer, {"ok": False, "error": "invalid_test_size"})
                 return
-            await _serve_speed_test(writer, byte_count)
+            await _serve_speed_test(reader, writer, byte_count)
             return
         target_host, target_port = config.routes[route_name]
         if operation == "udp":
@@ -779,6 +783,7 @@ async def speed_test_entry(config: EntryConfig,
         kind, payload = await asyncio.wait_for(_read_frame(reader), timeout=60)
         if kind != _FIN or payload:
             raise ProtocolError("speed test did not finish at the declared byte count")
+        await _write_frame(writer, _FIN)
         elapsed = max(time.perf_counter() - started, 1e-6)
         rate_mbps = byte_count * 8 / elapsed / 1_000_000
         return (f"Received {mebibytes} MiB over {config.carrier.upper()} in {elapsed:.2f} s "
