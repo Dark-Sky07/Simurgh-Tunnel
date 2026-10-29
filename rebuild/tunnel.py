@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0

@@ -112,13 +112,27 @@ def list_project_releases() -> list[dict[str, Any]]:
     return [dict(release, _simurgh_version=version) for _, version, release in matching]
 
 
+def _source_archive_name(release: dict[str, Any], version: str) -> str:
+    expected = {
+        f"simurgh-tunnel-{version}.tar.gz",
+        f"simurgh_tunnel-{version}.tar.gz",
+    }
+    matches = [asset.get("name") for asset in release.get("assets", [])
+               if isinstance(asset, dict) and asset.get("name") in expected]
+    if len(matches) != 1:
+        if not matches:
+            raise UpdateError("release is missing its versioned source archive")
+        raise UpdateError("release contains ambiguous versioned source archives")
+    return matches[0]
+
+
 def latest_update(current_version: str = VERSION) -> dict[str, Any] | None:
     current = _version_key(current_version)
     for release in list_project_releases():
         version = release["_simurgh_version"]
         if _version_key(version) <= current:
             continue
-        _asset(release, f"simurgh-tunnel-{version}.tar.gz")
+        _asset(release, _source_archive_name(release, version))
         _asset(release, "SHA256SUMS.txt")
         return release
     return None
@@ -137,7 +151,7 @@ def _asset(release: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _download_verified_source(release: dict[str, Any], directory: Path) -> Path:
     version = release["_simurgh_version"]
-    archive_name = f"simurgh-tunnel-{version}.tar.gz"
+    archive_name = _source_archive_name(release, version)
     archive_asset = _asset(release, archive_name)
     sums_asset = _asset(release, "SHA256SUMS.txt")
     archive_size = archive_asset.get("size")

@@ -10,7 +10,7 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.0. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.1. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 

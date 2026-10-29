@@ -46,6 +46,14 @@ def test_release_filter_ignores_old_project_tags_and_prereleases(monkeypatch):
     assert latest["_simurgh_version"] == "0.3.0"
 
 
+def test_release_listing_accepts_setuptools_normalized_source_asset(monkeypatch):
+    release = _release("0.3.0")
+    release["assets"][0]["name"] = "simurgh_tunnel-0.3.0.tar.gz"
+    monkeypatch.setattr(updates, "_read_url", lambda *_args, **_kwargs: json.dumps([release]).encode())
+    latest = updates.latest_update("0.2.0")
+    assert latest is not None and latest["_simurgh_version"] == "0.3.0"
+
+
 def test_url_allowlist_rejects_credentials_and_nonstandard_ports():
     assert not updates._approved_https_url("https://user:pass@github.com/release")
     assert not updates._approved_https_url("https://github.com:444/release")
@@ -74,6 +82,19 @@ def test_download_accepts_matching_sha256(tmp_path, monkeypatch):
     monkeypatch.setattr(updates, "_read_url", lambda url, **_kwargs: values[url.rsplit('/', 1)[-1]])
     archive = updates._download_verified_source(_release(), tmp_path)
     assert archive.read_bytes() == payload
+
+
+def test_download_accepts_setuptools_normalized_source_filename(tmp_path, monkeypatch):
+    archive_name = "simurgh_tunnel-0.3.0.tar.gz"
+    payload = b"setuptools source archive"
+    digest = hashlib.sha256(payload).hexdigest()
+    values = {"archive": payload,
+              "SHA256SUMS.txt": f"{digest}  {archive_name}\n".encode()}
+    monkeypatch.setattr(updates, "_read_url", lambda url, **_kwargs: values[url.rsplit('/', 1)[-1]])
+    release = _release()
+    release["assets"][0]["name"] = archive_name
+    archive = updates._download_verified_source(release, tmp_path)
+    assert archive.name == archive_name and archive.read_bytes() == payload
 
 
 def test_download_requires_matching_sha256(tmp_path, monkeypatch):
