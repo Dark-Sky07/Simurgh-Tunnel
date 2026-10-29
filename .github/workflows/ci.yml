@@ -25,10 +25,13 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install test and lint dependencies
-        run: python -m pip install --quiet pytest "cryptography>=41" ruff "setuptools>=59.6" wheel
+        run: python -m pip install --quiet pytest "cryptography>=41" ruff bandit "setuptools>=59.6" wheel
 
       - name: Lint the independent implementation
         run: ruff check rebuild
+
+      - name: Scan implementation for security issues
+        run: bandit -r rebuild --exclude rebuild/tests -ll -s B104
 
       - name: Run all tests
         run: |

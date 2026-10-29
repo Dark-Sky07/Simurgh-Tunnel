@@ -37,12 +37,14 @@ def _csrf(url):
     return re.search(r'name="csrf" value="([^"]+)"', body).group(1)
 
 
-def _post(url, path, fields):
+def _post(url, path, fields, headers=None):
+    request_headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    request_headers.update(headers or {})
     request = urllib.request.Request(
         url + path,
         data=urlencode(fields).encode(),
         method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers=request_headers,
     )
     return urllib.request.urlopen(request)
 
@@ -85,6 +87,30 @@ def test_setup_panel_is_loopback_only_and_offers_role_selection(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request)
         assert error.value.code == 421
+    finally:
+        panel.close()
+
+
+def test_panel_rejects_wrong_loopback_port_and_cross_origin_posts(tmp_path):
+    panel, url = started_panel(tmp_path)
+    try:
+        port = panel.address[1]
+        request = urllib.request.Request(url + "/", headers={"Host": f"localhost:{port + 1}"})
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+        assert error.value.code == 421
+
+        fields = entry_fields()
+        fields["csrf"] = _csrf(url)
+        wrong_origin = {"Origin": f"http://localhost:{port + 1}"}
+        with pytest.raises(urllib.error.HTTPError) as error:
+            _post(url, "/setup", fields, headers=wrong_origin)
+        assert error.value.code == 403
+        assert not (tmp_path / "entry.json").exists()
+
+        same_origin = {"Origin": f"http://127.0.0.1:{port}"}
+        with _post(url, "/setup", fields, headers=same_origin) as response:
+            assert response.status == 201
     finally:
         panel.close()
 

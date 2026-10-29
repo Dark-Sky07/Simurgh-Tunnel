@@ -164,14 +164,16 @@ def _download_verified_source(release: dict[str, Any], directory: Path) -> Path:
     sums_url = sums_asset["browser_download_url"]
     archive_data = _read_url(archive_url, limit=_MAX_ASSET)
     sums_data = _read_url(sums_url, limit=128 * 1024)
-    expected = None
+    matching_digests = []
     for line in sums_data.decode("ascii", "strict").splitlines():
         match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *](.+)", line)
         if match and match.group(2) == archive_name:
-            expected = match.group(1).lower()
-            break
-    if expected is None:
-        raise UpdateError("release checksum file does not contain the source archive")
+            matching_digests.append(match.group(1).lower())
+    if len(matching_digests) != 1:
+        if not matching_digests:
+            raise UpdateError("release checksum file does not contain the source archive")
+        raise UpdateError("release checksum file contains ambiguous source digests")
+    expected = matching_digests[0]
     actual = hashlib.sha256(archive_data).hexdigest()
     if not hmac.compare_digest(actual, expected):
         raise UpdateError("source archive SHA-256 checksum mismatch")
@@ -190,10 +192,12 @@ def _safe_extract(archive: Path, destination: Path) -> Path:
         validated = []
         for member in members:
             name = PurePosixPath(member.name)
-            if name.is_absolute() or not name.parts or any(part in ("", ".", "..") for part in name.parts):
+            if (name.is_absolute() or not name.parts
+                    or any(part in ("", ".", "..") for part in name.parts)):
                 raise UpdateError("source archive contains an unsafe path")
-            if len(name.parts) > 1:
-                root_candidates.add(name.parts[0])
+            if len(name.parts) == 1 and not member.isdir():
+                raise UpdateError("source archive contains a file outside its project directory")
+            root_candidates.add(name.parts[0])
             if not (member.isdir() or member.isfile()) or member.issym() or member.islnk():
                 raise UpdateError("source archive contains a non-regular file")
             total += member.size
@@ -221,9 +225,12 @@ def _safe_extract(archive: Path, destination: Path) -> Path:
         source_version = (project / "rebuild/tunnel.py").read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise UpdateError("could not inspect the source version") from exc
-    if not re.search(rf'^VERSION = "{re.escape(project.name.rsplit("-", 1)[-1])}"$',
-                     source_version, re.MULTILINE):
-        raise UpdateError("source archive version does not match its directory name")
+    project_version = re.fullmatch(r"simurgh[-_]tunnel-([0-9]+\.[0-9]+\.[0-9]+)",
+                                   project.name)
+    if (project_version is None
+            or not re.search(rf'^VERSION = "{re.escape(project_version.group(1))}"$',
+                             source_version, re.MULTILINE)):
+        raise UpdateError("source archive project name/version does not match its runtime")
     return project
 
 

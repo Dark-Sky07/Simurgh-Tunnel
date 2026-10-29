@@ -235,7 +235,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2"
+            server_version = "SimurghSetup/0.2.2"
             sys_version = ""
 
             def setup(self):
@@ -260,14 +260,30 @@ class SetupPanel:
                 self.wfile.write(body)
 
             def _host_is_local(self) -> bool:
-                header = self.headers.get("Host", "").strip().lower()
-                if header.startswith("[") and "]" in header:
-                    hostname = header[1:header.index("]")]
-                elif header.count(":") == 1:
-                    hostname = header.rsplit(":", 1)[0]
-                else:
-                    hostname = header
-                return hostname in ("127.0.0.1", "localhost", "::1")
+                header = self.headers.get("Host", "").strip()
+                try:
+                    authority = urlparse(f"//{header}")
+                    hostname = authority.hostname
+                    port = authority.port or 80
+                except ValueError:
+                    return False
+                return (hostname in ("127.0.0.1", "localhost", "::1")
+                        and authority.username is None and authority.password is None
+                        and not authority.path and not authority.query and not authority.fragment
+                        and port == panel.address[1])
+
+            def _origin_is_same_panel(self, origin: str) -> bool:
+                try:
+                    parsed = urlparse(origin)
+                    hostname = parsed.hostname
+                    port = parsed.port or 80
+                except ValueError:
+                    return False
+                return (parsed.scheme == "http"
+                        and hostname in ("127.0.0.1", "localhost", "::1")
+                        and parsed.username is None and parsed.password is None
+                        and not parsed.path and not parsed.query and not parsed.fragment
+                        and port == panel.address[1])
 
             def do_GET(self):
                 if not self._host_is_local():
@@ -286,11 +302,9 @@ class SetupPanel:
                     self._send(404, _page("", status="Not found."))
                     return
                 origin = self.headers.get("Origin")
-                if origin:
-                    origin_host = urlparse(origin).hostname
-                    if origin_host not in ("127.0.0.1", "localhost", "::1"):
-                        self._send(403, _page("", status="Cross-site form submission refused."))
-                        return
+                if origin and not self._origin_is_same_panel(origin):
+                    self._send(403, _page("", status="Cross-site form submission refused."))
+                    return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                 except ValueError:

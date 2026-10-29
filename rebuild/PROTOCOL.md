@@ -32,7 +32,7 @@ For TCP, DATA frames carry stream chunks and FIN propagates a half-close to the 
 ## Security and current limits
 
 - TLS handshakes time out after ten seconds; the application handshake is capped at 8 KiB and has a five-second deadline.
-- TCP sessions and UDP associations are capped at 1,024 per process. Per-association UDP queues hold at most 128 datagrams and expire after 45 idle seconds.
+- Established TCP sessions are capped at 1,024 per process and 128 per peer IP; this gate runs after TLS completes and is not a defense against pre-handshake floods. UDP associations are capped at 1,024 per process. Per-association UDP queues hold at most 128 datagrams and expire after 45 idle seconds.
 - Secrets travel only inside the verified TLS channel; configs contain secrets and should be mode 0600.
 - Destinations are configured and allowlisted on the exit, never selected by the connecting peer.
 - There is no unauthenticated fallback, protocol downgrade or arbitrary destination override.

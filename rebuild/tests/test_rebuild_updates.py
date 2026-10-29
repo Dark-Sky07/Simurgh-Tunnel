@@ -97,6 +97,17 @@ def test_download_accepts_setuptools_normalized_source_filename(tmp_path, monkey
     assert archive.name == archive_name and archive.read_bytes() == payload
 
 
+def test_download_rejects_ambiguous_duplicate_checksum_lines(tmp_path, monkeypatch):
+    archive_name = "simurgh-tunnel-0.3.0.tar.gz"
+    payload = b"release source archive"
+    digest = hashlib.sha256(payload).hexdigest()
+    checksums = f"{digest}  {archive_name}\n{digest}  {archive_name}\n".encode()
+    values = {"archive": payload, "SHA256SUMS.txt": checksums}
+    monkeypatch.setattr(updates, "_read_url", lambda url, **_kwargs: values[url.rsplit('/', 1)[-1]])
+    with pytest.raises(updates.UpdateError, match="ambiguous source digests"):
+        updates._download_verified_source(_release(), tmp_path)
+
+
 def test_download_requires_matching_sha256(tmp_path, monkeypatch):
     archive_name = "simurgh-tunnel-0.3.0.tar.gz"
     payload = b"release source archive"
@@ -108,8 +119,10 @@ def test_download_requires_matching_sha256(tmp_path, monkeypatch):
         updates._download_verified_source(release, tmp_path)
 
 
-def _make_source_archive(path: Path, *, version="0.3.0", unsafe=False):
-    project = f"simurgh-tunnel-{version}"
+def _make_source_archive(path: Path, *, version="0.3.0", unsafe=False,
+                         stray=False, underscore=False):
+    separator = "_" if underscore else "-"
+    project = f"simurgh{separator}tunnel-{version}"
     with tarfile.open(path, "w:gz") as archive:
         files = {
             f"{project}/install.sh": b"#!/bin/sh\nexit 0\n",
@@ -124,6 +137,10 @@ def _make_source_archive(path: Path, *, version="0.3.0", unsafe=False):
             member = tarfile.TarInfo(f"{project}/../../outside")
             member.size = 1
             archive.addfile(member, io.BytesIO(b"x"))
+        if stray:
+            member = tarfile.TarInfo("unscoped-file.txt")
+            member.size = 1
+            archive.addfile(member, io.BytesIO(b"x"))
 
 
 def test_safe_extract_accepts_expected_source_layout(tmp_path):
@@ -132,6 +149,20 @@ def test_safe_extract_accepts_expected_source_layout(tmp_path):
     project = updates._safe_extract(archive, tmp_path / "extract")
     assert project.name == "simurgh-tunnel-0.3.0"
     assert (project / "install.sh").stat().st_mode & 0o777 == 0o755
+
+
+def test_safe_extract_accepts_setuptools_normalized_project_root(tmp_path):
+    archive = tmp_path / "normalized.tar.gz"
+    _make_source_archive(archive, underscore=True)
+    project = updates._safe_extract(archive, tmp_path / "extract")
+    assert project.name == "simurgh_tunnel-0.3.0"
+
+
+def test_safe_extract_rejects_entries_outside_project_root(tmp_path):
+    archive = tmp_path / "stray.tar.gz"
+    _make_source_archive(archive, stray=True)
+    with pytest.raises(updates.UpdateError, match="outside its project directory"):
+        updates._safe_extract(archive, tmp_path / "extract")
 
 
 def test_safe_extract_rejects_path_traversal(tmp_path):

@@ -7,9 +7,11 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import ssl
 import stat
@@ -19,13 +21,14 @@ from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
 TLS_HANDSHAKE_TIMEOUT = 10.0
 CONNECT_TIMEOUT = 10.0
 MAX_TCP_SESSIONS = 1024
+MAX_TCP_SESSIONS_PER_PEER = 128
 MAX_UDP_ASSOCIATIONS = 1024
 _FRAME_HEADER = struct.Struct("!BI")
 _DATA = 1
@@ -71,6 +74,27 @@ def _text(obj: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{key} must be a non-empty string")
     return value.strip()
+
+
+def _server_name(value: str) -> str:
+    if (not value or len(value) > 253 or "%" in value
+            or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in value)
+            or value.endswith("..") or any(char in value for char in "/\\?#@[]")):
+        raise ConfigError("server_name must be a DNS name or IP address without header characters")
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        try:
+            ascii_name = value.encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise ConfigError("server_name is not a valid DNS name") from exc
+        labels = ascii_name.rstrip(".").split(".")
+        if (not ascii_name or len(ascii_name.rstrip(".")) > 253
+                or any(not label or len(label) > 63
+                       or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label)
+                       for label in labels)):
+            raise ConfigError("server_name is not a valid DNS name")
+        return ascii_name
 
 
 def _port(obj: dict[str, Any], key: str) -> int:
@@ -131,7 +155,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
         port=port,
         exit_host=_text(raw, "exit_host"),
         exit_port=_port(raw, "exit_port"),
-        server_name=_text(raw, "server_name"),
+        server_name=_server_name(_text(raw, "server_name")),
         ca_file=Path(_text(raw, "ca_file")),
         secret=secret,
         route=_text(raw, "route"),
@@ -163,7 +187,7 @@ _WS_HEADER_LIMIT = 8192
 
 
 def _ws_accept(key: str) -> str:
-    digest = hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()
+    digest = hashlib.sha1((key + _WS_GUID).encode("ascii"), usedforsecurity=False).digest()
     return base64.b64encode(digest).decode("ascii")
 
 
@@ -812,9 +836,14 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
         self.sessions.clear()
 
 
-def _limited_handler(handler, active: list[int], limit: int):
+def _limited_handler(handler, active: list[int], limit: int,
+                     per_peer_limit: int = MAX_TCP_SESSIONS_PER_PEER):
+    peer_active: dict[str, int] = {}
+
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        if active[0] >= limit:
+        peer = writer.get_extra_info("peername")
+        peer_key = str(peer[0]) if isinstance(peer, tuple) and peer else str(peer)
+        if active[0] >= limit or peer_active.get(peer_key, 0) >= per_peer_limit:
             writer.close()
             try:
                 await writer.wait_closed()
@@ -822,10 +851,16 @@ def _limited_handler(handler, active: list[int], limit: int):
                 pass
             return
         active[0] += 1
+        peer_active[peer_key] = peer_active.get(peer_key, 0) + 1
         try:
             await handler(reader, writer)
         finally:
             active[0] -= 1
+            remaining = peer_active[peer_key] - 1
+            if remaining:
+                peer_active[peer_key] = remaining
+            else:
+                del peer_active[peer_key]
     return serve
 
 

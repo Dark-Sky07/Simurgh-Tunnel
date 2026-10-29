@@ -291,6 +291,22 @@ def test_config_defaults_carrier_and_rejects_unknown_carrier(tmp_path):
         tunnel.load_config(path)
 
 
+def test_config_normalizes_idn_and_rejects_websocket_host_injection(tmp_path):
+    path = tmp_path / "entry.json"
+    config = {
+        "role": "entry", "listen_host": "127.0.0.1", "listen_port": 1,
+        "exit_host": "localhost", "exit_port": 2,
+        "server_name": "münich.example", "ca_file": "/tmp/ca.crt",
+        "secret": "s" * 32, "route": "web",
+    }
+    path.write_text(json.dumps(config))
+    assert tunnel.load_config(path).server_name == "xn--mnich-kva.example"
+    config["server_name"] = "localhost\r\nX-Injected: yes"
+    path.write_text(json.dumps(config))
+    with pytest.raises(tunnel.ConfigError, match="without header characters"):
+        tunnel.load_config(path)
+
+
 def test_config_rejects_arbitrary_exit_target_shape(tmp_path):
     path = tmp_path / "exit.json"
     path.write_text(json.dumps({
@@ -356,6 +372,51 @@ def test_unknown_frames_are_rejected():
     run(scenario())
 
 
+def test_connection_gate_enforces_per_peer_limit():
+    async def scenario():
+        active = [0]
+        entered = []
+        release = asyncio.Event()
+
+        class Writer:
+            def __init__(self, peer):
+                self.peer = peer
+                self.closed = False
+
+            def get_extra_info(self, name):
+                return (self.peer, 1234) if name == "peername" else None
+
+            def close(self):
+                self.closed = True
+
+            async def wait_closed(self):
+                return None
+
+        async def handler(_reader, writer):
+            entered.append(writer.peer)
+            await release.wait()
+
+        gate = tunnel._limited_handler(handler, active, 10, per_peer_limit=1)
+        first = Writer("192.0.2.1")
+        same_peer = Writer("192.0.2.1")
+        other_peer = Writer("192.0.2.2")
+        first_task = asyncio.create_task(gate(None, first))
+        while not entered:
+            await asyncio.sleep(0)
+        await gate(None, same_peer)
+        other_task = asyncio.create_task(gate(None, other_peer))
+        while len(entered) < 2:
+            await asyncio.sleep(0)
+        assert same_peer.closed
+        assert entered == ["192.0.2.1", "192.0.2.2"]
+        assert active == [2]
+        release.set()
+        await asyncio.gather(first_task, other_task)
+        assert active == [0]
+
+    run(scenario())
+
+
 def test_connection_gate_rejects_excess_session_without_leaking_counter():
     async def scenario():
         started = asyncio.Event()
@@ -367,6 +428,9 @@ def test_connection_gate_rejects_excess_session_without_leaking_counter():
 
             def close(self):
                 self.closed = True
+
+            def get_extra_info(self, name):
+                return ("127.0.0.1", 1000) if name == "peername" else None
 
             async def wait_closed(self):
                 return None

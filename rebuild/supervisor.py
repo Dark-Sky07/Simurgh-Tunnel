@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -61,7 +62,10 @@ class NodeSupervisor:
     def _validate(self, role: str) -> Path:
         if role not in ("entry", "exit"):
             raise ValueError("role must be entry or exit")
-        path = (self.config_dir / f"{role}.json").resolve()
+        candidate = self.config_dir / f"{role}.json"
+        if candidate.is_symlink():
+            raise ConfigError(f"refusing symlinked node configuration: {candidate}")
+        path = candidate.resolve()
         config = load_config(path)
         expected = EntryConfig if role == "entry" else ExitConfig
         if not isinstance(config, expected):
@@ -77,14 +81,23 @@ class NodeSupervisor:
             if existing:
                 self.nodes.pop(role, None)
 
+            if self.log_dir.is_symlink():
+                raise OSError(f"refusing symlinked node log directory: {self.log_dir}")
             self.log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            try:
-                os.chmod(self.log_dir, 0o700)
-            except OSError:
-                pass
+            if self.log_dir.is_symlink() or not self.log_dir.is_dir():
+                raise OSError(f"node log path is not a safe directory: {self.log_dir}")
+            os.chmod(self.log_dir, 0o700)
             log_path = self.log_dir / f"{role}.log"
-            fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            os.chmod(log_path, 0o600)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            fd = os.open(log_path, flags, 0o600)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError(f"refusing non-regular node log file: {log_path}")
+                os.fchmod(fd, 0o600)
+            except BaseException:
+                os.close(fd)
+                raise
             output = os.fdopen(fd, "ab", buffering=0)
             try:
                 process = subprocess.Popen(

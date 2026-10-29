@@ -13,6 +13,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from rebuild import wizard as setup
+from rebuild.supervisor import NodeSupervisor
+from rebuild.tunnel import ConfigError
 
 
 def scripted(values):
@@ -105,6 +107,42 @@ def test_save_config_refuses_to_follow_a_symlink(tmp_path):
         setup.save_config(target, {"role": "entry"})
     assert outside.read_text() == '{"secret":"external"}\n'
     assert target.is_symlink()
+
+
+def test_supervisor_refuses_a_symlinked_node_config(tmp_path):
+    outside = tmp_path / "external-entry.json"
+    outside.write_text(json.dumps({
+        "role": "entry", "listen_host": "127.0.0.1", "listen_port": 18080,
+        "exit_host": "127.0.0.1", "exit_port": 8443,
+        "server_name": "localhost", "ca_file": "/tmp/ca.crt",
+        "secret": "s" * 40, "route": "web",
+    }))
+    config = tmp_path / "entry.json"
+    config.symlink_to(outside)
+    supervisor = NodeSupervisor(tmp_path)
+    with pytest.raises(ConfigError, match="symlinked node configuration"):
+        supervisor.start("entry")
+    assert supervisor.nodes == {}
+
+
+def test_supervisor_refuses_symlinked_log_files(tmp_path):
+    config = tmp_path / "entry.json"
+    config.write_text(json.dumps({
+        "role": "entry", "listen_host": "127.0.0.1", "listen_port": 18080,
+        "exit_host": "127.0.0.1", "exit_port": 8443,
+        "server_name": "localhost", "ca_file": "/tmp/ca.crt",
+        "secret": "s" * 40, "route": "web",
+    }))
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    outside = tmp_path / "external.log"
+    outside.write_text("preserve external file\n")
+    (log_dir / "entry.log").symlink_to(outside)
+    supervisor = NodeSupervisor(tmp_path)
+    with pytest.raises(OSError):
+        supervisor.start("entry")
+    assert outside.read_text() == "preserve external file\n"
+    assert supervisor.nodes == {}
 
 
 def test_setup_menu_cancel_keeps_existing_bytes(tmp_path):

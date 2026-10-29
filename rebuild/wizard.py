@@ -68,8 +68,11 @@ def build_config(
                             {"1": "tcp", "2": "udp"}, input_fn, output)
     carrier = _choice("Tunnel carrier: 1) TLS stream  2) WebSocket over TLS (WSS): ",
                       {"1": "tls", "2": "wss"}, input_fn, output)
-    bind_default = "0.0.0.0" if role == "exit" else "127.0.0.1"
-    listen_host = _value("Local listen address", bind_default, input_fn)
+    # Exit listeners must accept remote entries; the next prompt states the exposure explicitly.
+    bind_default = "0.0.0.0" if role == "exit" else "127.0.0.1"  # nosec B104
+    bind_prompt = ("Exit tunnel bind address (0.0.0.0 exposes all interfaces)"
+                   if role == "exit" else "Local entry bind address")
+    listen_host = _value(bind_prompt, bind_default, input_fn)
     listen_port = _port("Local listen port", 8443 if role == "exit" else
                         (15353 if transport == "udp" else 18080), input_fn)
     route = _value("Route name (must match on both sides)", "web", input_fn)
