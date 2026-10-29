@@ -30,6 +30,7 @@ def _installer_env(tmp_path, *, with_systemctl=False):
         "HOME": str(home),
         "SIMURGH_NEXT_PREFIX": str(prefix),
         "SIMURGH_NEXT_BIN_DIR": str(bindir),
+        "XDG_CONFIG_HOME": str(home / ".config"),
     })
     if with_systemctl:
         fake_bin = tmp_path / "fake-bin"
