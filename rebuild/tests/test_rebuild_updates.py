@@ -143,6 +143,7 @@ def test_signature_verifier_pins_expected_github_workflow_claims(tmp_path, monke
     assert command[:4] == [sys.executable, "-m", "sigstore", "verify"]
     assert command[4:6] == ["github", str(archive)]
     assert "--bundle" in command and str(bundle) in command
+    assert "--offline" in command
     assert command[command.index("--repository") + 1] == "Dark-Sky07/Simurgh-Tunnel"
     assert command[command.index("--cert-identity") + 1] == (
         "https://github.com/Dark-Sky07/Simurgh-Tunnel/.github/workflows/"

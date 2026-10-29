@@ -309,7 +309,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.9"
+            server_version = "SimurghSetup/0.2.10"
             sys_version = ""
 
             def setup(self):

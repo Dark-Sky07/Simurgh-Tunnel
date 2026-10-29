@@ -10,7 +10,7 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.9. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.10. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
@@ -68,7 +68,7 @@ Then open `http://127.0.0.1:8780/` on your workstation. For the system service, 
 
 ## Updates and trust limits
 
-The panel can check for releases tagged `simurgh-next-vX.Y.Z`; the terminal menu can download, verify and install one. The standalone command is `simurgh-next-update --apply`; for a system install, run `sudo simurgh-next-update --apply --mode system` from an administrator terminal. Updates keep previous code releases and use the same config-preserving installer. The updater validates namespaced releases, restricts downloads to GitHub HTTPS hosts, checks the source archive against its SHA-256 manifest, and verifies the archive's Sigstore build provenance against this repository, the `Release Python package` workflow, the `release` event, and the exact version tag before installation. Missing or invalid provenance is a hard failure; unsafe archive paths are rejected. This helps detect substituted release assets, but does not protect against compromise of the repository, workflow, or authorized maintainers. Review releases and keep backups.
+The panel can check for releases tagged `simurgh-next-vX.Y.Z`; the terminal menu can download, verify and install one. The standalone command is `simurgh-next-update --apply`; for a system install, run `sudo simurgh-next-update --apply --mode system` from an administrator terminal. Updates keep previous code releases and use the same config-preserving installer. The updater validates namespaced releases, restricts downloads to GitHub HTTPS hosts, checks the source archive against its SHA-256 manifest, and verifies the archive's Sigstore build provenance against this repository, the `Release Python package` workflow, the `release` event, and the exact version tag before installation. The verifier uses the Sigstore trust root bundled with the privately installed verifier and verifies offline, so update checks need no Sigstore service access beyond the GitHub release assets. Missing or invalid provenance is a hard failure; unsafe archive paths are rejected. This helps detect substituted release assets, but does not protect against compromise of the repository, workflow, authorized maintainers, or the bundled verifier trust root. Review releases and keep backups.
 
 ## Development and tests
 

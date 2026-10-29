@@ -163,7 +163,7 @@ def _verify_github_signature(archive: Path, bundle: Path, version: str) -> None:
     environment["PYTHONPATH"] = os.pathsep.join(path for path in pythonpath if path)
     command = [
         sys.executable, "-m", "sigstore", "verify", "github", str(archive),
-        "--bundle", str(bundle), "--repository", _REPOSITORY,
+        "--bundle", str(bundle), "--offline", "--repository", _REPOSITORY,
         "--cert-identity",
         f"https://github.com/{_REPOSITORY}/.github/workflows/release-binaries.yml@refs/tags/{_TAG_PREFIX}{version}",
         "--name", "Release Python package", "--trigger", "release",
