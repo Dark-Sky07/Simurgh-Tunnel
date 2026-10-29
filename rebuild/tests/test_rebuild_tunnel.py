@@ -79,6 +79,51 @@ def test_entry_path_check_validates_tls_and_destination(server_certificate, carr
 
 
 @pytest.mark.parametrize("carrier", ["tls", "wss"])
+def test_entry_speed_test_measures_bounded_synthetic_download(server_certificate, carrier):
+    cert, key = server_certificate
+    secret = "speed-test-secret-" + "x" * 32
+
+    async def scenario():
+        exit_config = tunnel.ExitConfig(
+            "127.0.0.1", 0, cert, key, secret,
+            {"health": ("127.0.0.1", 9)}, carrier,
+        )
+        exit_server = await asyncio.start_server(
+            tunnel._exit_connection_handler(exit_config), "127.0.0.1", 0,
+            ssl=tunnel._server_ssl(exit_config), limit=tunnel.MAX_HANDSHAKE,
+        )
+        entry_config = tunnel.EntryConfig(
+            "127.0.0.1", 0, "localhost", exit_server.sockets[0].getsockname()[1],
+            "localhost", cert, secret, "health", "tcp", carrier,
+        )
+        try:
+            result = await asyncio.wait_for(
+                tunnel.speed_test_entry(entry_config, 1), timeout=10)
+            assert "Received 1 MiB" in result
+            assert "Mbit/s" in result
+        finally:
+            exit_server.close()
+            await exit_server.wait_closed()
+
+    run(scenario())
+
+
+def test_speed_test_rejects_udp_and_out_of_range_sizes():
+    config = tunnel.EntryConfig(
+        "127.0.0.1", 0, "localhost", 443, "localhost", Path("/unused"),
+        "s" * 32, "x", "udp", "tls",
+    )
+    with pytest.raises(ValueError, match="TCP entry"):
+        run(tunnel.speed_test_entry(config))
+    config = tunnel.EntryConfig(
+        "127.0.0.1", 0, "localhost", 443, "localhost", Path("/unused"),
+        "s" * 32, "x", "tcp", "tls",
+    )
+    with pytest.raises(ValueError, match="1 to 16 MiB"):
+        run(tunnel.speed_test_entry(config, 17))
+
+
+@pytest.mark.parametrize("carrier", ["tls", "wss"])
 def test_entry_tunnel_forwards_data_and_propagates_half_close(
         server_certificate, carrier):
     cert, key = server_certificate

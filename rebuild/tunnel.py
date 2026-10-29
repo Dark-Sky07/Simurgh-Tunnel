@@ -16,12 +16,13 @@ import secrets
 import ssl
 import stat
 import struct
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -30,6 +31,8 @@ CONNECT_TIMEOUT = 10.0
 MAX_TCP_SESSIONS = 1024
 MAX_TCP_SESSIONS_PER_PEER = 128
 MAX_UDP_ASSOCIATIONS = 1024
+MAX_SPEED_TEST_BYTES = 16 * 1024 * 1024
+DEFAULT_SPEED_TEST_MIB = 4
 _FRAME_HEADER = struct.Struct("!BI")
 _DATA = 1
 _FIN = 2
@@ -620,6 +623,17 @@ async def _remote_udp_session(reader: asyncio.StreamReader,
             transport.close()
 
 
+async def _serve_speed_test(writer: asyncio.StreamWriter, byte_count: int) -> None:
+    await _send_json(writer, {"ok": True, "bytes": byte_count})
+    block = b"\x00" * MAX_FRAME
+    remaining = byte_count
+    while remaining:
+        payload = block[:min(remaining, MAX_FRAME)]
+        await _write_frame(writer, _DATA, payload)
+        remaining -= len(payload)
+    await _write_frame(writer, _FIN)
+
+
 async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
                            writer: asyncio.StreamWriter) -> None:
     remote_writer: asyncio.StreamWriter | None = None
@@ -629,12 +643,20 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
         peer_secret = hello.get("secret")
         operation = hello.get("op")
         valid = (type(hello.get("version")) is int and hello.get("version") == 1
-                 and operation in ("open", "udp") and isinstance(peer_secret, str)
+                 and operation in ("open", "udp", "speed") and isinstance(peer_secret, str)
                  and hmac.compare_digest(peer_secret.encode("utf-8"),
                                          config.secret.encode("utf-8"))
                  and isinstance(route_name, str) and route_name in config.routes)
         if not valid:
             await _send_json(writer, {"ok": False, "error": "denied"})
+            return
+        if operation == "speed":
+            byte_count = hello.get("bytes")
+            if (isinstance(byte_count, bool) or not isinstance(byte_count, int)
+                    or not 1 <= byte_count <= MAX_SPEED_TEST_BYTES):
+                await _send_json(writer, {"ok": False, "error": "invalid_test_size"})
+                return
+            await _serve_speed_test(writer, byte_count)
             return
         target_host, target_port = config.routes[route_name]
         if operation == "udp":
@@ -716,6 +738,54 @@ async def check_entry_path(config: EntryConfig) -> str:
                 "accepted a connection.")
     except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
         raise ConnectionError(f"path check failed: {exc}") from exc
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=2)
+            except (TimeoutError, OSError):
+                pass
+
+
+async def speed_test_entry(config: EntryConfig,
+                            mebibytes: int = DEFAULT_SPEED_TEST_MIB) -> str:
+    """Measure authenticated tunnel download throughput with a bounded synthetic payload."""
+    if config.transport != "tcp":
+        raise ValueError("speed tests require a TCP entry; no UDP traffic is sent")
+    if (isinstance(mebibytes, bool) or not isinstance(mebibytes, int)
+            or not 1 <= mebibytes <= MAX_SPEED_TEST_BYTES // (1024 * 1024)):
+        raise ValueError("speed test size must be an integer from 1 to 16 MiB")
+    byte_count = mebibytes * 1024 * 1024
+    reader = writer = None
+    try:
+        reader, writer = await _open_entry_connection(config)
+        started = time.perf_counter()
+        await _send_json(writer, {
+            "version": 1,
+            "op": "speed",
+            "route": config.route,
+            "secret": config.secret,
+            "bytes": byte_count,
+        })
+        response = await asyncio.wait_for(_read_json(reader), timeout=HANDSHAKE_TIMEOUT)
+        if response.get("ok") is not True or response.get("bytes") != byte_count:
+            raise ProtocolError(f"exit refused the speed test ({response.get('error', 'bad response')})")
+        received = 0
+        while received < byte_count:
+            kind, payload = await asyncio.wait_for(_read_frame(reader), timeout=60)
+            if kind != _DATA or received + len(payload) > byte_count:
+                raise ProtocolError("speed test returned invalid data frames")
+            received += len(payload)
+        kind, payload = await asyncio.wait_for(_read_frame(reader), timeout=60)
+        if kind != _FIN or payload:
+            raise ProtocolError("speed test did not finish at the declared byte count")
+        elapsed = max(time.perf_counter() - started, 1e-6)
+        rate_mbps = byte_count * 8 / elapsed / 1_000_000
+        return (f"Received {mebibytes} MiB over {config.carrier.upper()} in {elapsed:.2f} s "
+                f"({rate_mbps:.2f} Mbit/s). This measures tunnel download capacity, "
+                "not end-to-end application performance.")
+    except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
+        raise ConnectionError(f"speed test failed: {exc}") from exc
     finally:
         if writer is not None:
             writer.close()
@@ -978,8 +1048,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Independent Simurgh TCP/UDP tunnel")
     parser.add_argument("--version", action="version", version=f"Simurgh rebuild {VERSION}")
     parser.add_argument("--config", type=Path, required=True, help="path to a JSON node config")
-    parser.add_argument("--check", action="store_true",
-                        help="test an entry's authenticated path and configured destination")
+    diagnostics = parser.add_mutually_exclusive_group()
+    diagnostics.add_argument("--check", action="store_true",
+                             help="test an entry's authenticated path and configured destination")
+    diagnostics.add_argument("--speed-test-mib", type=int, metavar="MIB",
+                             help="measure tunnel download speed (1–16 MiB, TCP entry only)")
     parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info")
     args = parser.parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper()),
@@ -987,13 +1060,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         _check_permissions(args.config)
-        if args.check:
+        if args.check or args.speed_test_mib is not None:
             if not isinstance(config, EntryConfig):
-                LOG.error("path check requires an entry config; run it from the entry server")
+                LOG.error("diagnostics require an entry config; run them from the entry server")
                 return 2
             try:
-                print(asyncio.run(check_entry_path(config)))
-            except (ConnectionError, OSError, ssl.SSLError, TimeoutError) as exc:
+                if args.check:
+                    print(asyncio.run(check_entry_path(config)))
+                else:
+                    print(asyncio.run(speed_test_entry(config, args.speed_test_mib)))
+            except (ConnectionError, OSError, TimeoutError, ValueError) as exc:
                 LOG.error("%s", exc)
                 return 1
             return 0

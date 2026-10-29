@@ -33,7 +33,7 @@ def test_status_reports_entry_and_exit_routes(tmp_path):
 
 
 def test_menu_requires_config_before_running_and_can_exit(tmp_path):
-    answers = iter(["2", "7"])
+    answers = iter(["2", "8"])
     lines = []
     assert menu.menu(tmp_path, lambda _prompt: next(answers), lines.append) == 0
     assert any("Entry is not configured" in line for line in lines)
@@ -42,7 +42,7 @@ def test_menu_requires_config_before_running_and_can_exit(tmp_path):
 def test_menu_exposes_release_update_action(tmp_path, monkeypatch):
     called = []
     monkeypatch.setattr(menu, "interactive_update", lambda config_dir: called.append(config_dir) or 0)
-    answers = iter(["6", "7"])
+    answers = iter(["7", "8"])
     assert menu.menu(tmp_path, lambda _prompt: next(answers), lambda _message: None) == 0
     assert called == [tmp_path]
 
@@ -69,10 +69,28 @@ def test_menu_checks_entry_path_before_update(tmp_path, monkeypatch):
         return "path looks good"
 
     monkeypatch.setattr(menu, "check_entry_path", check)
-    answers = iter(["5", "7"])
+    answers = iter(["5", "8"])
     lines = []
     assert menu.menu(tmp_path, lambda _prompt: next(answers), lines.append) == 0
     assert "path looks good" in lines
+
+
+def test_menu_runs_speed_test_for_tcp_entry(tmp_path, monkeypatch):
+    (tmp_path / "entry.json").write_text(json.dumps({
+        "role": "entry", "transport": "tcp", "listen_host": "127.0.0.1",
+        "listen_port": 18080, "exit_host": "exit.example.net", "exit_port": 8443,
+        "server_name": "exit.example.net", "ca_file": "/tmp/ca.crt",
+        "secret": "s" * 40, "route": "web",
+    }))
+
+    async def speed_test(_config):
+        return "4 MiB measured"
+
+    monkeypatch.setattr(menu, "speed_test_entry", speed_test)
+    answers = iter(["6", "8"])
+    lines = []
+    assert menu.menu(tmp_path, lambda _prompt: next(answers), lines.append) == 0
+    assert "4 MiB measured" in lines
 
 
 def test_run_entry_starts_foreground_service_and_handles_ctrl_c(tmp_path, monkeypatch):

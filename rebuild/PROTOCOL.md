@@ -23,6 +23,8 @@ Before relaying, the entry sends one UTF-8 JSON object followed by LF. TCP uses 
 
 The exit compares the shared secret in constant time and accepts only a route present in its local allowlist. A route maps to a fixed host and port configured at the exit; the peer cannot supply a destination address. The exit responds with one JSON line, either `{"ok":true}` or a generic rejection.
 
+A TCP entry may also request the bounded diagnostic operation `speed`, with the same version, route, and secret fields plus an integer `bytes` from 1 through 16,777,216. The exit returns the accepted byte count and sends that many synthetic bytes in DATA frames followed by FIN; it does not connect to the route target during this operation. The entry verifies the exact count and reports download throughput. This measures the authenticated tunnel path, not application performance. UDP configs cannot use the speed test.
+
 ## Data frames
 
 After a successful handshake, each frame has a five-byte header: one type byte and a four-byte unsigned big-endian payload length. TCP DATA (type 1) carries 1–65,536 bytes. FIN (type 2) has zero length. UDP DATA (type 3) carries one non-empty datagram of 1–65,507 bytes. Empty datagrams are dropped. Unknown types, oversized frames, truncation and malformed handshakes terminate the connection.

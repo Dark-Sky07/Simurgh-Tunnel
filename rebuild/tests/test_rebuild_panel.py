@@ -146,23 +146,33 @@ def test_setup_panel_can_save_wss_entry_configuration(tmp_path):
         panel.close()
 
 
-def test_panel_entry_route_check_is_csrf_protected(tmp_path, monkeypatch):
+def test_panel_entry_diagnostics_are_csrf_protected(tmp_path, monkeypatch):
     write_test_entry(tmp_path)
 
     async def fake_check(config):
         assert config.route == "test"
         return "TLS path is healthy."
 
+    async def fake_speed_test(config):
+        assert config.route == "test"
+        return "4 MiB measured."
+
     monkeypatch.setattr(panel_module, "check_entry_path", fake_check)
+    monkeypatch.setattr(panel_module, "speed_test_entry", fake_speed_test)
     panel, url = started_panel(tmp_path)
     try:
         body = urllib.request.urlopen(url + "/").read().decode()
         assert "Check route" in body
+        assert "Speed test · 4 MiB" in body
         csrf = _csrf(url)
         with _post(url, "/node/check", {"csrf": csrf, "role": "entry"}) as response:
             body = response.read().decode()
             assert response.status == 200
         assert "Route check: TLS path is healthy." in body
+        with _post(url, "/node/speed", {"csrf": csrf, "role": "entry"}) as response:
+            body = response.read().decode()
+            assert response.status == 200
+        assert "Speed test: 4 MiB measured." in body
         with pytest.raises(urllib.error.HTTPError) as error:
             _post(url, "/node/check", {"csrf": "invalid", "role": "entry"})
         assert error.value.code == 403
