@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .notifications import WebhookNotifier
 from .tunnel import ConfigError, EntryConfig, ExitConfig, load_config
 from .wizard import save_config
 
@@ -47,6 +48,7 @@ class NodeSupervisor:
         self._restart_after: dict[str, float] = {}
         self._restart_history: dict[str, list[float]] = {}
         self._restart_errors: dict[str, str] = {}
+        self.notifier = WebhookNotifier(self.config_dir / "notifications.json")
         try:
             self.autostart_roles = self._load_autostart()
             self.autostart_error: str | None = None
@@ -130,7 +132,11 @@ class NodeSupervisor:
             self._restart_due.discard(role)
             self._restart_after.pop(role, None)
             self._restart_errors.pop(role, None)
+            self.notifier.notify("node_started", role)
             return node
+
+    def set_webhook(self, url: str) -> None:
+        self.notifier.set_url(url)
 
     def set_autostart(self, role: str, enabled: bool) -> None:
         if role not in ("entry", "exit"):
@@ -171,6 +177,7 @@ class NodeSupervisor:
                     self._restart_after[role] = time.monotonic() + RESTART_BASE_DELAY
                     self._restart_errors[role] = (
                         f"auto-start failed: {exc}; retrying in {RESTART_BASE_DELAY:g} seconds")
+                self.notifier.notify("autostart_failed", role)
                 LOG.error("could not auto-start %s: %s", role, exc)
         return failures
 
@@ -196,6 +203,7 @@ class NodeSupervisor:
                             self._restart_errors[role] = (
                                 f"auto-restart stopped after {RESTART_MAX_ATTEMPTS} attempts "
                                 f"in {int(RESTART_WINDOW)} seconds (exit code {code})")
+                            self.notifier.notify("restart_circuit_open", role)
                             LOG.error("%s", self._restart_errors[role])
                             continue
                         delay = min(RESTART_BASE_DELAY * (2 ** len(history)),
@@ -204,6 +212,7 @@ class NodeSupervisor:
                         self._restart_after[role] = current + delay
                         self._restart_errors[role] = (
                             f"exited with code {code}; retrying in {delay:g} seconds")
+                        self.notifier.notify("node_crashed", role)
                         LOG.warning("%s node exited unexpectedly; retry scheduled in %g seconds",
                                     role, delay)
 
@@ -217,6 +226,7 @@ class NodeSupervisor:
                     self._restart_errors[role] = (
                         f"auto-restart stopped after {RESTART_MAX_ATTEMPTS} attempts "
                         f"in {int(RESTART_WINDOW)} seconds")
+                    self.notifier.notify("restart_circuit_open", role)
                     LOG.error("%s", self._restart_errors[role])
                     continue
                 history.append(current)
@@ -234,6 +244,7 @@ class NodeSupervisor:
                             f"in {int(RESTART_WINDOW)} seconds; last error: {exc}")
                     else:
                         self._restart_errors[role] = f"restart attempt {len(history)} failed: {exc}"
+                    self.notifier.notify("restart_failed", role)
                     LOG.error("could not restart %s: %s", role, exc)
 
     def _monitor_loop(self) -> None:
@@ -327,3 +338,4 @@ class NodeSupervisor:
                     self.stop(role)
                 except (OSError, subprocess.SubprocessError):
                     LOG.exception("could not stop managed %s process", role)
+        self.notifier.close()
