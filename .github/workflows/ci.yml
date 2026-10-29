@@ -31,7 +31,41 @@ jobs:
         run: ruff check rebuild
 
       - name: Run all tests
-        run: python -m pytest -q
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ.get("RUNNER_TEMP", ".")) / "pytest-results.xml"
+          result = subprocess.run(
+              [sys.executable, "-m", "pytest", "-q", f"--junitxml={report}"],
+              text=True, capture_output=True,
+          )
+          sys.stdout.write(result.stdout)
+          sys.stderr.write(result.stderr)
+          if result.returncode:
+              if report.exists():
+                  root = ET.parse(report).getroot()
+                  for testcase in root.findall(".//testcase"):
+                      failure = testcase.find("failure")
+                      if failure is None:
+                          failure = testcase.find("error")
+                      if failure is None:
+                          continue
+                      name = f"{testcase.get('classname', '')}::{testcase.get('name', 'test')}"
+                      message = failure.get("message", "") or failure.text or "test failure"
+                      escaped_name = name.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                      escaped = message[:4000].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                      print(f"::error title=pytest {escaped_name}::{escaped}")
+              else:
+                  message = (result.stdout + result.stderr)[-4000:]
+                  escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                  print(f"::error title=pytest did not produce a report::{escaped}")
+              raise SystemExit(result.returncode)
+          PY
 
       - name: Build and inspect the installable wheel
         run: |

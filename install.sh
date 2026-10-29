@@ -2,7 +2,7 @@
 # User-space development installer for the independent rebuild.
 set -eu
 
-REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR="$REPO_DIR/rebuild"
 ENABLE_SERVICE=0
 SYSTEM_INSTALL=0
