@@ -21,8 +21,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .usage import QuotaReached, UsageMeter
+
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -70,6 +72,7 @@ class EntryConfig:
     route: str
     transport: str = "tcp"
     carrier: str = "tls"
+    monthly_quota_mib: int | None = None
 
 
 def _text(obj: dict[str, Any], key: str) -> str:
@@ -153,6 +156,11 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
     carrier = raw.get("carrier", "tls")
     if carrier not in ("tls", "wss"):
         raise ConfigError("carrier must be 'tls' or 'wss'")
+    monthly_quota_mib = raw.get("monthly_quota_mib")
+    if monthly_quota_mib is not None and (
+            isinstance(monthly_quota_mib, bool) or not isinstance(monthly_quota_mib, int)
+            or not 1 <= monthly_quota_mib <= 1_048_576):
+        raise ConfigError("monthly_quota_mib must be an integer from 1 to 1048576 when set")
     return EntryConfig(
         host=host,
         port=port,
@@ -164,6 +172,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
         route=_text(raw, "route"),
         transport=transport,
         carrier=carrier,
+        monthly_quota_mib=monthly_quota_mib,
     )
 
 
@@ -518,17 +527,23 @@ async def _read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
 
 
 async def _copy_to_tunnel(reader: asyncio.StreamReader,
-                          writer: asyncio.StreamWriter) -> None:
+                          writer: asyncio.StreamWriter,
+                          meter: UsageMeter | None = None) -> None:
     while True:
         chunk = await reader.read(MAX_FRAME)
         if not chunk:
             await _write_frame(writer, _FIN)
             return
-        await _write_frame(writer, _DATA, chunk)
+        allowed = meter.consume("upload", len(chunk)) if meter else len(chunk)
+        if allowed:
+            await _write_frame(writer, _DATA, chunk[:allowed])
+        if allowed < len(chunk) or (meter and meter.exhausted):
+            raise QuotaReached("monthly transfer quota reached")
 
 
 async def _copy_from_tunnel(reader: asyncio.StreamReader,
-                            writer: asyncio.StreamWriter) -> None:
+                            writer: asyncio.StreamWriter,
+                            meter: UsageMeter | None = None) -> None:
     while True:
         kind, payload = await _read_frame(reader)
         if kind == _FIN:
@@ -540,8 +555,12 @@ async def _copy_from_tunnel(reader: asyncio.StreamReader,
             return
         if kind != _DATA:
             raise ProtocolError("UDP frame received on a TCP flow")
-        writer.write(payload)
-        await writer.drain()
+        allowed = meter.consume("download", len(payload)) if meter else len(payload)
+        if allowed:
+            writer.write(payload[:allowed])
+            await writer.drain()
+        if allowed < len(payload) or (meter and meter.exhausted):
+            raise QuotaReached("monthly transfer quota reached")
 
 
 async def _wait_for_tasks(coroutines, *, first_completed: bool) -> None:
@@ -801,9 +820,13 @@ async def speed_test_entry(config: EntryConfig,
 
 
 async def _forward_entry(config: EntryConfig, local_reader: asyncio.StreamReader,
-                         local_writer: asyncio.StreamWriter) -> None:
+                         local_writer: asyncio.StreamWriter,
+                         meter: UsageMeter | None = None) -> None:
     remote_writer = None
     try:
+        if meter and meter.exhausted:
+            LOG.warning("refusing new flow: monthly transfer quota reached")
+            return
         remote_reader, remote_writer = await _open_entry_connection(config)
         await _send_json(remote_writer, {
             "version": 1,
@@ -817,9 +840,11 @@ async def _forward_entry(config: EntryConfig, local_reader: asyncio.StreamReader
                         response.get("error", "unknown error"))
             return
         await _join_directions(
-            _copy_to_tunnel(local_reader, remote_writer),
-            _copy_from_tunnel(remote_reader, local_writer),
+            _copy_to_tunnel(local_reader, remote_writer, meter),
+            _copy_from_tunnel(remote_reader, local_writer, meter),
         )
+    except QuotaReached as exc:
+        LOG.info("closing entry flow: %s", exc)
     except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
         LOG.warning("tunnel flow to %s:%s failed: %s", config.exit_host,
                     config.exit_port, exc)
@@ -860,6 +885,10 @@ class _EntryUdpSession:
             LOG.debug("dropping UDP datagram from %r because its send queue is full",
                       self.client)
             return
+        if (self.owner.meter
+                and not self.owner.meter.allow_datagram("upload", len(payload))):
+            LOG.debug("dropping UDP datagram from %r: monthly quota reached", self.client)
+            return
         self.queue.put_nowait(payload)
 
     async def run(self) -> None:
@@ -894,6 +923,9 @@ class _EntryUdpSession:
                         return
                     if kind != _UDP_DATA:
                         raise ProtocolError("TCP frame received on a UDP association")
+                    meter = self.owner.meter
+                    if meter and not meter.allow_datagram("download", len(payload)):
+                        raise QuotaReached("monthly transfer quota reached")
                     transport = self.owner.transport
                     if transport is not None:
                         transport.sendto(payload, self.client)
@@ -913,8 +945,9 @@ class _EntryUdpSession:
 
 
 class _EntryUdpProtocol(asyncio.DatagramProtocol):
-    def __init__(self, config: EntryConfig):
+    def __init__(self, config: EntryConfig, meter: UsageMeter | None = None):
         self.config = config
+        self.meter = meter
         self.transport: asyncio.DatagramTransport | None = None
         self.sessions: dict[tuple, _EntryUdpSession] = {}
 
@@ -922,6 +955,9 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr) -> None:
+        if self.meter and self.meter.exhausted:
+            LOG.debug("dropping UDP client %r: monthly transfer quota reached", addr)
+            return
         session = self.sessions.get(addr)
         if session is None:
             if len(self.sessions) >= MAX_UDP_ASSOCIATIONS:
@@ -1009,34 +1045,40 @@ async def serve_exit(config: ExitConfig) -> None:
         await server.serve_forever()
 
 
-async def serve_entry(config: EntryConfig) -> None:
-    if config.transport == "udp":
-        protocol = _EntryUdpProtocol(config)
-        transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-            lambda: protocol, local_addr=(config.host, config.port))
-        addresses = str(transport.get_extra_info("sockname") or (config.host, config.port))
-        LOG.info("UDP entry listening on %s -> %s:%s via %s (%s)", addresses,
-                 config.exit_host, config.exit_port, config.carrier.upper(), config.route)
-        try:
-            await asyncio.Future()
-        finally:
-            transport.close()
-            await protocol.close()
-        return
+async def serve_entry(config: EntryConfig, usage_path: Path | None = None) -> None:
+    meter = (UsageMeter(usage_path, config.monthly_quota_mib)
+             if usage_path is not None else None)
+    try:
+        if config.transport == "udp":
+            protocol = _EntryUdpProtocol(config, meter)
+            transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                lambda: protocol, local_addr=(config.host, config.port))
+            addresses = str(transport.get_extra_info("sockname") or (config.host, config.port))
+            LOG.info("UDP entry listening on %s -> %s:%s via %s (%s)", addresses,
+                     config.exit_host, config.exit_port, config.carrier.upper(), config.route)
+            try:
+                await asyncio.Future()
+            finally:
+                transport.close()
+                await protocol.close()
+            return
 
-    active = [0]
-    server = await asyncio.start_server(
-        _limited_handler(lambda reader, writer: _forward_entry(config, reader, writer),
-                         active, MAX_TCP_SESSIONS),
-        config.host,
-        config.port,
-        limit=MAX_HANDSHAKE,
-    )
-    addresses = ", ".join(str(sock.getsockname()) for sock in server.sockets or ())
-    LOG.info("TCP entry listening on %s -> %s:%s via %s (%s)", addresses,
-             config.exit_host, config.exit_port, config.carrier.upper(), config.route)
-    async with server:
-        await server.serve_forever()
+        active = [0]
+        server = await asyncio.start_server(
+            _limited_handler(lambda reader, writer: _forward_entry(config, reader, writer, meter),
+                             active, MAX_TCP_SESSIONS),
+            config.host,
+            config.port,
+            limit=MAX_HANDSHAKE,
+        )
+        addresses = ", ".join(str(sock.getsockname()) for sock in server.sockets or ())
+        LOG.info("TCP entry listening on %s -> %s:%s via %s (%s)", addresses,
+                 config.exit_host, config.exit_port, config.carrier.upper(), config.route)
+        async with server:
+            await server.serve_forever()
+    finally:
+        if meter:
+            meter.flush()
 
 
 def _check_permissions(path: Path) -> None:
@@ -1078,8 +1120,10 @@ def main(argv: list[str] | None = None) -> int:
                 LOG.error("%s", exc)
                 return 1
             return 0
-        asyncio.run(serve_exit(config) if isinstance(config, ExitConfig)
-                    else serve_entry(config))
+        if isinstance(config, ExitConfig):
+            asyncio.run(serve_exit(config))
+        else:
+            asyncio.run(serve_entry(config, args.config.parent / "entry-usage.json"))
     except (ConfigError, OSError, ssl.SSLError, KeyboardInterrupt) as exc:
         if not isinstance(exc, KeyboardInterrupt):
             LOG.error("startup failed: %s", exc)

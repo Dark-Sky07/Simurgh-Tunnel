@@ -12,6 +12,7 @@ venv/
 
 # Local secrets, generated configurations and TLS material
 /rebuild/autostart.json
+/rebuild/examples/entry-usage.json
 /rebuild/config.local.json
 /rebuild/entry.json
 /rebuild/exit.json

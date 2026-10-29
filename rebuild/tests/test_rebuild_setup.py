@@ -24,7 +24,7 @@ def scripted(values):
 
 def test_entry_wizard_supports_udp_and_requires_the_shared_route():
     config = setup.build_config("entry", scripted([
-        "2", "1", "", "", "dns", "s" * 40, "203.0.113.8", "", "", "",
+        "2", "1", "", "", "dns", "s" * 40, "203.0.113.8", "", "", "", "",
     ]), lambda _message: None)
 
     assert config["role"] == "entry"
@@ -38,10 +38,17 @@ def test_entry_wizard_supports_udp_and_requires_the_shared_route():
 
 def test_entry_wizard_can_select_wss_carrier():
     config = setup.build_config("entry", scripted([
-        "1", "2", "", "", "web", "s" * 40, "exit.example.net", "", "", "",
+        "1", "2", "", "", "web", "s" * 40, "exit.example.net", "", "", "", "",
     ]), lambda _message: None)
     assert config["transport"] == "tcp"
     assert config["carrier"] == "wss"
+
+
+def test_entry_wizard_accepts_monthly_transfer_quota():
+    config = setup.build_config("entry", scripted([
+        "1", "1", "", "", "web", "s" * 40, "exit.example.net", "", "", "", "256",
+    ]), lambda _message: None)
+    assert config["monthly_quota_mib"] == 256
 
 
 def test_exit_wizard_creates_fixed_destination_route(tmp_path):
@@ -150,7 +157,7 @@ def test_setup_menu_cancel_keeps_existing_bytes(tmp_path):
     original = b'{"role":"entry","secret":"old"}\n'
     path.write_bytes(original)
     answers = scripted(["1", "1", "1", "", "", "web", "x" * 40,
-                        "exit.example.net", "", "", "", "n"])
+                        "exit.example.net", "", "", "", "", "n"])
     assert setup.setup_menu(tmp_path, answers, lambda _message: None) == 1
     assert path.read_bytes() == original
     assert not (tmp_path / "entry.json.bak").exists()

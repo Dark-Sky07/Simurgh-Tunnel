@@ -20,6 +20,7 @@ from .tunnel import (
     speed_test_entry,
 )
 from .updates import interactive_update
+from .usage import format_bytes, read_usage_snapshot
 from .wizard import setup_menu
 
 LOG = logging.getLogger("simurgh.rebuild.menu")
@@ -52,6 +53,18 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
                    f"{config.host}:{config.port}; {len(config.routes)} fixed route(s)")
         else:
             output(f"{role}: config role does not match its filename")
+    try:
+        usage = read_usage_snapshot(config_dir / "entry-usage.json")
+    except (OSError, ValueError) as exc:
+        output(f"entry usage: unavailable ({exc})")
+    else:
+        if usage:
+            total = usage["upload_bytes"] + usage["download_bytes"]
+            quota = (format_bytes(usage["quota_bytes"])
+                     if usage["quota_bytes"] else "unlimited")
+            output(f"entry usage for {usage['month']} UTC: {format_bytes(total)} total "
+                   f"(up {format_bytes(usage['upload_bytes'])}, down "
+                   f"{format_bytes(usage['download_bytes'])}; quota {quota})")
     return roles
 
 
@@ -73,8 +86,10 @@ def run_role(role: str, config_dir: Path, output: Output = print) -> int:
         return 2
     output(f"Starting {role} in the foreground. Press Ctrl+C to stop it.")
     try:
-        asyncio.run(serve_entry(config) if isinstance(config, EntryConfig)
-                    else serve_exit(config))
+        if isinstance(config, EntryConfig):
+            asyncio.run(serve_entry(config, config_dir / "entry-usage.json"))
+        else:
+            asyncio.run(serve_exit(config))
     except KeyboardInterrupt:
         output(f"Stopped {role}.")
     except OSError as exc:

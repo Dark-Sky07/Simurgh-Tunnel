@@ -48,6 +48,8 @@ On the exit, configure the route name and its fixed destination. On the entry, s
 
 The wizard writes files mode 0600, uses an atomic replacement, and makes a private backup before replacing a file. The panel lists managed per-role backups and restores only a valid backup for that role, after preserving the current file again. It never modifies `/etc/simurgh`.
 
+An entry can optionally set `monthly_quota_mib` in its JSON config (or use the quota field in either setup UI). The number is MiB per UTC calendar month and counts client payload in both directions, excluding TLS and protocol overhead. The panel/menu display the current upload, download and total. The ledger lives beside the entry config as `entry-usage.json`, mode 0600. TCP flows close when the shared limit is reached; UDP datagrams that do not fit are dropped whole. Blank means unlimited; restart the entry node after changing the setting. A crash before the next one-second checkpoint can lose a small amount of usage accounting.
+
 ## 3. Run a node manually
 
 ```sh

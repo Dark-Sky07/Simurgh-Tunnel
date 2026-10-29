@@ -102,7 +102,7 @@ def test_run_entry_starts_foreground_service_and_handles_ctrl_c(tmp_path, monkey
     }))
     started = []
 
-    async def serve(config):
+    async def serve(config, _usage_path=None):
         started.append(config.route)
 
     def run(coro):
