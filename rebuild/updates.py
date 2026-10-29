@@ -126,14 +126,20 @@ def _source_archive_name(release: dict[str, Any], version: str) -> str:
     return matches[0]
 
 
+def _signature_bundle_name(archive_name: str) -> str:
+    return f"{archive_name}.sigstore.json"
+
+
 def latest_update(current_version: str = VERSION) -> dict[str, Any] | None:
     current = _version_key(current_version)
     for release in list_project_releases():
         version = release["_simurgh_version"]
         if _version_key(version) <= current:
             continue
-        _asset(release, _source_archive_name(release, version))
+        archive_name = _source_archive_name(release, version)
+        _asset(release, archive_name)
         _asset(release, "SHA256SUMS.txt")
+        _asset(release, _signature_bundle_name(archive_name))
         return release
     return None
 
@@ -149,21 +155,47 @@ def _asset(release: dict[str, Any], name: str) -> dict[str, Any]:
     raise UpdateError(f"release is missing required asset {name}")
 
 
+def _verify_github_signature(archive: Path, bundle: Path, version: str) -> None:
+    """Verify Sigstore identity, GitHub workflow claims, and the archive subject digest."""
+    vendor = Path(__file__).resolve().parent.parent / "vendor"
+    environment = os.environ.copy()
+    pythonpath = [str(vendor), environment.get("PYTHONPATH", "")]
+    environment["PYTHONPATH"] = os.pathsep.join(path for path in pythonpath if path)
+    command = [
+        sys.executable, "-m", "sigstore", "verify", "github", str(archive),
+        "--bundle", str(bundle), "--repository", _REPOSITORY,
+        "--cert-identity",
+        f"https://github.com/{_REPOSITORY}/.github/workflows/release-binaries.yml@refs/tags/{_TAG_PREFIX}{version}",
+        "--name", "Release Python package", "--trigger", "release",
+        "--ref", f"refs/tags/{_TAG_PREFIX}{version}",
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True, env=environment,
+                       timeout=120)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise UpdateError(
+            "source archive Sigstore provenance verification failed; refusing to install"
+        ) from exc
+
+
 def _download_verified_source(release: dict[str, Any], directory: Path) -> Path:
     version = release["_simurgh_version"]
     archive_name = _source_archive_name(release, version)
     archive_asset = _asset(release, archive_name)
     sums_asset = _asset(release, "SHA256SUMS.txt")
+    bundle_asset = _asset(release, _signature_bundle_name(archive_name))
     archive_size = archive_asset.get("size")
     if isinstance(archive_size, int) and archive_size > _MAX_ASSET:
         raise UpdateError("source archive is larger than the configured download limit")
     sums_size = sums_asset.get("size")
     if isinstance(sums_size, int) and sums_size > 128 * 1024:
         raise UpdateError("release checksum file is too large")
-    archive_url = archive_asset["browser_download_url"]
-    sums_url = sums_asset["browser_download_url"]
-    archive_data = _read_url(archive_url, limit=_MAX_ASSET)
-    sums_data = _read_url(sums_url, limit=128 * 1024)
+    bundle_size = bundle_asset.get("size")
+    if isinstance(bundle_size, int) and bundle_size > _MAX_METADATA:
+        raise UpdateError("Sigstore provenance bundle is too large")
+    archive_data = _read_url(archive_asset["browser_download_url"], limit=_MAX_ASSET)
+    sums_data = _read_url(sums_asset["browser_download_url"], limit=128 * 1024)
+    bundle_data = _read_url(bundle_asset["browser_download_url"], limit=_MAX_METADATA)
     matching_digests = []
     for line in sums_data.decode("ascii", "strict").splitlines():
         match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *](.+)", line)
@@ -178,7 +210,10 @@ def _download_verified_source(release: dict[str, Any], directory: Path) -> Path:
     if not hmac.compare_digest(actual, expected):
         raise UpdateError("source archive SHA-256 checksum mismatch")
     archive = directory / archive_name
+    bundle = directory / _signature_bundle_name(archive_name)
     archive.write_bytes(archive_data)
+    bundle.write_bytes(bundle_data)
+    _verify_github_signature(archive, bundle, version)
     return archive
 
 
@@ -279,7 +314,7 @@ def interactive_update(config_dir: Path) -> int:
             print(f"Simurgh Tunnel {VERSION} is up to date (no newer stable rebuild release found).")
             return 0
         version = release["_simurgh_version"]
-        print(f"A verified source release, Simurgh Tunnel {version}, is available.")
+        print(f"A source release, Simurgh Tunnel {version}, is available for provenance verification.")
         answer = input("Download, verify and install it now? [y/N]: ").strip().lower()
         if answer not in ("y", "yes"):
             return 0
