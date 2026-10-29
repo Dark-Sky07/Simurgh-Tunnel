@@ -147,6 +147,22 @@ def _usage_section(config_dir: Path) -> str:
             '</section>')
 
 
+def _notifications_section(panel) -> str:
+    state = "enabled" if panel.supervisor.notifier.configured else "disabled"
+    return (
+        '<section class="card"><h2>Notifications</h2>'
+        f'<p class="hint">HTTPS webhook notifications are {state}. Events contain only '
+        'the event name, node role, software version and timestamp.</p>'
+        '<form method="post" action="/notifications">'
+        f'<input type="hidden" name="csrf" value="{html.escape(panel.csrf)}">'
+        '<label for="webhook_url">Public HTTPS webhook URL</label>'
+        '<input id="webhook_url" name="webhook_url" type="url" maxlength="2048" '
+        'autocomplete="off" placeholder="https://notify.example.net/hook">'
+        '<p class="hint">The URL is stored privately and never shown back. Only public IP '
+        'addresses are contacted; redirects are not followed. Leave blank to disable.</p>'
+        '<button type="submit">Save notification setting</button></form></section>')
+
+
 def _dashboard(panel) -> str:
     rows = []
     states = panel.supervisor.status()
@@ -202,7 +218,7 @@ def _dashboard(panel) -> str:
         warning = (f'<div class="notice" role="alert">Auto-start state error: '
                    f'{html.escape(state_error["message"])}</div>')
     return (warning + _update_form(panel) + _backup_section(panel)
-            + _usage_section(panel.config_dir)
+            + _usage_section(panel.config_dir) + _notifications_section(panel)
             + '<section class="card"><h2>Node control</h2>'
             '<p class="hint">Processes are started only by this local panel and run as its user. '
             'Closing the panel stops nodes it launched. “Panel start/restart” starts a configured '
@@ -293,7 +309,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.6"
+            server_version = "SimurghSetup/0.2.7"
             sys_version = ""
 
             def setup(self):
@@ -356,7 +372,8 @@ class SetupPanel:
                     self._send(421, _page("", status="Use the loopback address or an SSH tunnel."))
                     return
                 if self.path not in ("/setup", "/node/start", "/node/stop", "/node/check",
-                                      "/node/speed", "/node/autostart", "/update/check", "/config/restore"):
+                                      "/node/speed", "/node/autostart", "/update/check",
+                                      "/config/restore", "/notifications"):
                     self._send(404, _page("", status="Not found."))
                     return
                 origin = self.headers.get("Origin")
@@ -374,6 +391,18 @@ class SetupPanel:
                                 keep_blank_values=True)
                 if not secrets.compare_digest(_one(form, "csrf"), panel.csrf):
                     self._send(403, _page("", status="Form token expired; reload the page."))
+                    return
+                if self.path == "/notifications":
+                    try:
+                        panel.supervisor.set_webhook(_one(form, "webhook_url"))
+                        state = "enabled" if panel.supervisor.notifier.configured else "disabled"
+                        self._send(200, _page(
+                            _dashboard(panel) + _form(panel.csrf, panel.config_dir),
+                            status=f"HTTPS webhook notifications {state}."))
+                    except (ValueError, OSError, RuntimeError) as exc:
+                        self._send(400, _page(
+                            _dashboard(panel) + _form(panel.csrf, panel.config_dir),
+                            status=f"Notification setting rejected: {exc}"))
                     return
                 if self.path in ("/node/check", "/node/speed"):
                     label = "Route check" if self.path == "/node/check" else "Speed test"
