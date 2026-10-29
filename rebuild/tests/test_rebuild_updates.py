@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -28,6 +29,9 @@ def _release(version="0.3.0", archive_url="https://github.com/Dark-Sky07/Simurgh
             {"name": "SHA256SUMS.txt",
              "browser_download_url": "https://github.com/Dark-Sky07/Simurgh-Tunnel/releases/download/x/SHA256SUMS.txt",
              "size": 100},
+            {"name": f"{archive_name}.sigstore.json",
+             "browser_download_url": f"https://github.com/Dark-Sky07/Simurgh-Tunnel/releases/download/x/{archive_name}.sigstore.json",
+             "size": 1024},
         ],
     }
 
@@ -49,6 +53,7 @@ def test_release_filter_ignores_old_project_tags_and_prereleases(monkeypatch):
 def test_release_listing_accepts_setuptools_normalized_source_asset(monkeypatch):
     release = _release("0.3.0")
     release["assets"][0]["name"] = "simurgh_tunnel-0.3.0.tar.gz"
+    release["assets"][2]["name"] = "simurgh_tunnel-0.3.0.tar.gz.sigstore.json"
     monkeypatch.setattr(updates, "_read_url", lambda *_args, **_kwargs: json.dumps([release]).encode())
     latest = updates.latest_update("0.2.0")
     assert latest is not None and latest["_simurgh_version"] == "0.3.0"
@@ -78,8 +83,10 @@ def test_download_accepts_matching_sha256(tmp_path, monkeypatch):
     payload = b"release source archive"
     digest = hashlib.sha256(payload).hexdigest()
     checksums = f"{digest}  {archive_name}\n".encode()
-    values = {"archive": payload, "SHA256SUMS.txt": checksums}
+    values = {"archive": payload, "SHA256SUMS.txt": checksums,
+              "simurgh-tunnel-0.3.0.tar.gz.sigstore.json": b"bundle"}
     monkeypatch.setattr(updates, "_read_url", lambda url, **_kwargs: values[url.rsplit('/', 1)[-1]])
+    monkeypatch.setattr(updates, "_verify_github_signature", lambda *_args: None)
     archive = updates._download_verified_source(_release(), tmp_path)
     assert archive.read_bytes() == payload
 
@@ -89,10 +96,14 @@ def test_download_accepts_setuptools_normalized_source_filename(tmp_path, monkey
     payload = b"setuptools source archive"
     digest = hashlib.sha256(payload).hexdigest()
     values = {"archive": payload,
-              "SHA256SUMS.txt": f"{digest}  {archive_name}\n".encode()}
+              "SHA256SUMS.txt": f"{digest}  {archive_name}\n".encode(),
+              f"{archive_name}.sigstore.json": b"bundle"}
     monkeypatch.setattr(updates, "_read_url", lambda url, **_kwargs: values[url.rsplit('/', 1)[-1]])
+    monkeypatch.setattr(updates, "_verify_github_signature", lambda *_args: None)
     release = _release()
     release["assets"][0]["name"] = archive_name
+    release["assets"][2]["name"] = f"{archive_name}.sigstore.json"
+    release["assets"][2]["browser_download_url"] = f"https://github.com/Dark-Sky07/Simurgh-Tunnel/releases/download/x/{archive_name}.sigstore.json"
     archive = updates._download_verified_source(release, tmp_path)
     assert archive.name == archive_name and archive.read_bytes() == payload
 
@@ -102,7 +113,8 @@ def test_download_rejects_ambiguous_duplicate_checksum_lines(tmp_path, monkeypat
     payload = b"release source archive"
     digest = hashlib.sha256(payload).hexdigest()
     checksums = f"{digest}  {archive_name}\n{digest}  {archive_name}\n".encode()
-    values = {"archive": payload, "SHA256SUMS.txt": checksums}
+    values = {"archive": payload, "SHA256SUMS.txt": checksums,
+              "simurgh-tunnel-0.3.0.tar.gz.sigstore.json": b"bundle"}
     monkeypatch.setattr(updates, "_read_url", lambda url, **_kwargs: values[url.rsplit('/', 1)[-1]])
     with pytest.raises(updates.UpdateError, match="ambiguous source digests"):
         updates._download_verified_source(_release(), tmp_path)
@@ -112,11 +124,52 @@ def test_download_requires_matching_sha256(tmp_path, monkeypatch):
     archive_name = "simurgh-tunnel-0.3.0.tar.gz"
     payload = b"release source archive"
     checksums = f"{'0' * 64}  {archive_name}\n".encode()
-    values = {"archive": payload, "SHA256SUMS.txt": checksums}
+    values = {"archive": payload, "SHA256SUMS.txt": checksums,
+              "simurgh-tunnel-0.3.0.tar.gz.sigstore.json": b"bundle"}
     monkeypatch.setattr(updates, "_read_url", lambda url, **_kwargs: values[url.rsplit('/', 1)[-1]])
     release = _release()
     with pytest.raises(updates.UpdateError, match="checksum mismatch"):
         updates._download_verified_source(release, tmp_path)
+
+
+def test_signature_verifier_pins_expected_github_workflow_claims(tmp_path, monkeypatch):
+    archive = tmp_path / "source.tar.gz"
+    bundle = tmp_path / "source.tar.gz.sigstore.json"
+    calls = []
+    monkeypatch.setattr(updates.subprocess, "run",
+                        lambda command, **kwargs: calls.append((command, kwargs)))
+    updates._verify_github_signature(archive, bundle, "0.3.0")
+    command, kwargs = calls[0]
+    assert command[:4] == [sys.executable, "-m", "sigstore", "verify"]
+    assert command[4:6] == ["github", str(archive)]
+    assert "--bundle" in command and str(bundle) in command
+    assert command[command.index("--repository") + 1] == "Dark-Sky07/Simurgh-Tunnel"
+    assert command[command.index("--cert-identity") + 1] == (
+        "https://github.com/Dark-Sky07/Simurgh-Tunnel/.github/workflows/"
+        "release-binaries.yml@refs/tags/simurgh-next-v0.3.0"
+    )
+    assert command[command.index("--name") + 1] == "Release Python package"
+    assert command[command.index("--trigger") + 1] == "release"
+    assert command[command.index("--ref") + 1] == "refs/tags/simurgh-next-v0.3.0"
+    assert kwargs["check"] and kwargs["capture_output"]
+
+
+def test_signature_verification_failure_is_fail_closed(tmp_path, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, "sigstore")
+
+    monkeypatch.setattr(updates.subprocess, "run", fail)
+    with pytest.raises(updates.UpdateError, match="provenance verification failed"):
+        updates._verify_github_signature(tmp_path / "source.tar.gz",
+                                        tmp_path / "bundle.json", "0.3.0")
+
+
+def test_latest_update_rejects_release_without_provenance_bundle(monkeypatch):
+    release = _release()
+    release["assets"].pop()
+    monkeypatch.setattr(updates, "_read_url", lambda *_args, **_kwargs: json.dumps([release]).encode())
+    with pytest.raises(updates.UpdateError, match="missing required asset"):
+        updates.latest_update("0.2.0")
 
 
 def _make_source_archive(path: Path, *, version="0.3.0", unsafe=False,

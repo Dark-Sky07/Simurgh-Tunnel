@@ -55,7 +55,7 @@ def _copy_release(source: Path, release: Path, python: str, app_root: Path,
     vendor = release / "vendor"
     run([python, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
          "--no-warn-script-location", "--no-compile", "--target", str(vendor),
-         "h2>=4.1,<5"])
+         "h2>=4.1,<5", "sigstore>=4.0,<5"])
     shutil.copytree(source / "examples", package / "examples")
     for example in (package / "examples").glob("*.json"):
         example.chmod(0o644)

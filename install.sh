@@ -125,7 +125,7 @@ for module in __init__.py h2stream.py menu.py notifications.py panel.py paths.py
     cp "$SOURCE_DIR/$module" "$RELEASE/rebuild/$module"
 done
 "$PYTHON" -m pip install --quiet --disable-pip-version-check --no-warn-script-location \
-    --no-compile --target "$RELEASE/vendor" 'h2>=4.1,<5'
+    --no-compile --target "$RELEASE/vendor" 'h2>=4.1,<5' 'sigstore>=4.0,<5'
 cp -R "$SOURCE_DIR/examples" "$RELEASE/rebuild/examples"
 cp "$SOURCE_DIR/README.md" "$SOURCE_DIR/SETUP.md" "$SOURCE_DIR/PROTOCOL.md" "$RELEASE/"
 
