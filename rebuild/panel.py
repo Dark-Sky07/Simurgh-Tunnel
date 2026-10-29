@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .paths import default_config_dir
 from .supervisor import NodeSupervisor
-from .tunnel import EntryConfig, check_entry_path, load_config
+from .tunnel import EntryConfig, check_entry_path, load_config, speed_test_entry
 from .updates import UpdateError, latest_update
 from .wizard import list_config_backups, restore_config, save_config
 
@@ -148,7 +148,16 @@ def _dashboard(panel) -> str:
             )
             check_action = (_node_form(panel, "/node/check", role, "Check route")
                             if role == "entry" else "")
-            actions = f'<div class="node-actions">{action}{toggle}{check_action}</div>'
+            speed_action = ""
+            if role == "entry":
+                try:
+                    entry_config = load_config(path)
+                except (ValueError, OSError):
+                    entry_config = None
+                if isinstance(entry_config, EntryConfig) and entry_config.transport == "tcp":
+                    speed_action = _node_form(panel, "/node/speed", role, "Speed test · 4 MiB")
+            actions = (f'<div class="node-actions">{action}{toggle}'
+                       f'{check_action}{speed_action}</div>')
         log_link = (f'<p class="hint">Log: <code>{html.escape(state["log"])}</code></p>'
                     if state.get("log") else "")
         rows.append(f'<article class="node"><div><h3>{role.title()}</h3>'
@@ -239,7 +248,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.3"
+            server_version = "SimurghSetup/0.2.4"
             sys_version = ""
 
             def setup(self):
@@ -302,7 +311,7 @@ class SetupPanel:
                     self._send(421, _page("", status="Use the loopback address or an SSH tunnel."))
                     return
                 if self.path not in ("/setup", "/node/start", "/node/stop", "/node/check",
-                                      "/node/autostart", "/update/check", "/config/restore"):
+                                      "/node/speed", "/node/autostart", "/update/check", "/config/restore"):
                     self._send(404, _page("", status="Not found."))
                     return
                 origin = self.headers.get("Origin")
@@ -321,21 +330,25 @@ class SetupPanel:
                 if not secrets.compare_digest(_one(form, "csrf"), panel.csrf):
                     self._send(403, _page("", status="Form token expired; reload the page."))
                     return
-                if self.path == "/node/check":
+                if self.path in ("/node/check", "/node/speed"):
+                    label = "Route check" if self.path == "/node/check" else "Speed test"
                     try:
                         if _one(form, "role") != "entry":
-                            raise ValueError("path checks are available only for the entry role")
+                            raise ValueError("diagnostics are available only for the entry role")
                         config = load_config(panel.config_dir / "entry.json")
                         if not isinstance(config, EntryConfig):
                             raise TypeError("entry.json does not contain an entry config")
-                        result = asyncio.run(check_entry_path(config))
+                        if self.path == "/node/check":
+                            result = asyncio.run(check_entry_path(config))
+                        else:
+                            result = asyncio.run(speed_test_entry(config))
                         self._send(200, _page(
                             _dashboard(panel) + _form(panel.csrf, panel.config_dir),
-                            status=f"Route check: {result}"))
+                            status=f"{label}: {result}"))
                     except (TypeError, ValueError, OSError, TimeoutError) as exc:
                         self._send(503, _page(
                             _dashboard(panel) + _form(panel.csrf, panel.config_dir),
-                            status=f"Route check failed: {exc}"))
+                            status=f"{label} failed: {exc}"))
                     return
                 if self.path == "/config/restore":
                     try:

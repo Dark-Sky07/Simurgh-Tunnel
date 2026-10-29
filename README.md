@@ -10,7 +10,7 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.3. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.4. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
@@ -27,6 +27,7 @@ Simurgh Tunnel connects an **entry** node to an **exit** node. The entry accepts
 - One installer entry point for both per-user and systemd-managed installation.
 - Namespaced release checks in the panel, plus terminal update installation with SHA-256 asset verification.
 - An entry-side route check (`simurgh-next-node --check --config ...`) verifies TLS/WSS authentication and whether the configured TCP destination accepts a connection. For UDP it confirms tunnel association setup only; it does not send a probe datagram to the destination.
+- A bounded synthetic download speed test is available for TCP entries from the CLI (`--speed-test-mib 4`), terminal menu, and local panel. It measures tunnel capacity, not end-to-end application throughput; UDP is intentionally unsupported.
 
 This is a deliberately small development release. Detached signatures or build attestations for updates, real-host deployment testing and further production hardening remain. WSS is an interoperability option, not a promise of concealment or availability. Do not deploy this as a production replacement yet.
 
@@ -74,6 +75,7 @@ python3 -m rebuild.tunnel --config rebuild/examples/exit.json
 python3 -m rebuild.tunnel --config rebuild/examples/entry.json
 python3 -m rebuild.tunnel --config rebuild/examples/entry-udp.json
 python3 -m rebuild.tunnel --check --config rebuild/examples/entry.json
+python3 -m rebuild.tunnel --speed-test-mib 4 --config rebuild/examples/entry.json
 
 python3 -m pip install pytest cryptography ruff
 python3 -m pytest -q

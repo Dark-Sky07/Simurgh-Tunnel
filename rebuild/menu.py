@@ -17,6 +17,7 @@ from .tunnel import (
     load_config,
     serve_entry,
     serve_exit,
+    speed_test_entry,
 )
 from .updates import interactive_update
 from .wizard import setup_menu
@@ -102,6 +103,25 @@ def check_entry(config_dir: Path, output: Output = print) -> int:
     return 0
 
 
+def run_speed_test(config_dir: Path, output: Output = print) -> int:
+    path = config_dir / "entry.json"
+    try:
+        config = load_config(path)
+    except (ConfigError, OSError) as exc:
+        output(f"Cannot test tunnel speed: {exc}")
+        return 2
+    if not isinstance(config, EntryConfig):
+        output("Speed tests require a configured entry node.")
+        return 2
+    try:
+        result = asyncio.run(speed_test_entry(config))
+    except (ConnectionError, OSError, TimeoutError, ValueError) as exc:
+        output(f"Speed test failed: {exc}")
+        return 1
+    output(result)
+    return 0
+
+
 def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> int:
     while True:
         output("\nSimurgh Tunnel — independent rebuild")
@@ -110,8 +130,9 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
         output("3) Run exit in foreground")
         output("4) Show configured roles")
         output("5) Check the entry-to-exit path")
-        output("6) Check/apply release update")
-        output("7) Quit")
+        output("6) Measure tunnel download speed (TCP only)")
+        output("7) Check/apply release update")
+        output("8) Quit")
         choice = input_fn("Choose: ").strip()
         if choice == "1":
             setup_menu(config_dir, input_fn, output)
@@ -130,11 +151,13 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
         elif choice == "5":
             check_entry(config_dir, output)
         elif choice == "6":
-            interactive_update(config_dir)
+            run_speed_test(config_dir, output)
         elif choice == "7":
+            interactive_update(config_dir)
+        elif choice == "8":
             return 0
         else:
-            output("Choose a number from 1 to 7.")
+            output("Choose a number from 1 to 8.")
 
 
 def main(argv: list[str] | None = None) -> int:
