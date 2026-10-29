@@ -24,7 +24,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.10"
+VERSION = "0.2.11"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -75,6 +75,41 @@ class EntryConfig:
     monthly_quota_mib: int | None = None
 
 
+@dataclass(frozen=True)
+class ReverseHubConfig:
+    control_host: str
+    control_port: int
+    public_host: str
+    public_port: int
+    cert_file: Path
+    key_file: Path
+    secret: str
+    route: str
+    carrier: str = "tls"
+
+
+@dataclass(frozen=True)
+class ReverseAgentConfig:
+    hub_host: str
+    hub_port: int
+    server_name: str
+    ca_file: Path
+    secret: str
+    route: str
+    target_host: str
+    target_port: int
+    carrier: str = "tls"
+
+
+NODE_CONFIG_TYPES = {
+    "entry": EntryConfig,
+    "exit": ExitConfig,
+    "reverse-hub": ReverseHubConfig,
+    "reverse-agent": ReverseAgentConfig,
+}
+NODE_ROLES = tuple(NODE_CONFIG_TYPES)
+
+
 def _text(obj: dict[str, Any], key: str) -> str:
     value = obj.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -110,7 +145,7 @@ def _port(obj: dict[str, Any], key: str) -> int:
     return value
 
 
-def load_config(path: Path) -> ExitConfig | EntryConfig:
+def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | ReverseAgentConfig:
     """Read a JSON config. It is read-only; this function never edits it."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -119,14 +154,48 @@ def load_config(path: Path) -> ExitConfig | EntryConfig:
     if not isinstance(raw, dict):
         raise ConfigError("the top-level configuration must be a JSON object")
     role = raw.get("role")
-    if role not in ("entry", "exit"):
-        raise ConfigError("role must be 'entry' or 'exit'")
-    host = _text(raw, "listen_host")
-    port = _port(raw, "listen_port")
+    if role not in ("entry", "exit", "reverse-hub", "reverse-agent"):
+        raise ConfigError("role must be entry, exit, reverse-hub or reverse-agent")
     secret = _text(raw, "secret")
     if len(secret.encode("utf-8")) < 32:
         raise ConfigError("secret must contain at least 32 UTF-8 bytes")
 
+    if role == "reverse-hub":
+        route = _text(raw, "route")
+        if len(route) > 64:
+            raise ConfigError("route must contain at most 64 characters")
+        control_port = _port(raw, "control_port")
+        public_port = _port(raw, "public_port")
+        if control_port == public_port:
+            raise ConfigError("reverse hub control_port and public_port must differ")
+        return ReverseHubConfig(
+            control_host=_text(raw, "control_host"),
+            control_port=control_port,
+            public_host=_text(raw, "public_host"),
+            public_port=public_port,
+            cert_file=Path(_text(raw, "cert_file")),
+            key_file=Path(_text(raw, "key_file")),
+            secret=secret,
+            route=route,
+        )
+
+    if role == "reverse-agent":
+        route = _text(raw, "route")
+        if len(route) > 64:
+            raise ConfigError("route must contain at most 64 characters")
+        return ReverseAgentConfig(
+            hub_host=_text(raw, "hub_host"),
+            hub_port=_port(raw, "hub_port"),
+            server_name=_server_name(_text(raw, "server_name")),
+            ca_file=Path(_text(raw, "ca_file")),
+            secret=secret,
+            route=route,
+            target_host=_text(raw, "target_host"),
+            target_port=_port(raw, "target_port"),
+        )
+
+    host = _text(raw, "listen_host")
+    port = _port(raw, "listen_port")
     if role == "exit":
         raw_routes = raw.get("routes")
         if not isinstance(raw_routes, dict) or not raw_routes:
@@ -1149,8 +1218,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if isinstance(config, ExitConfig):
             asyncio.run(serve_exit(config))
-        else:
+        elif isinstance(config, EntryConfig):
             asyncio.run(serve_entry(config, args.config.parent / "entry-usage.json"))
+        else:
+            from .reverse import serve_reverse_agent, serve_reverse_hub
+
+            if isinstance(config, ReverseHubConfig):
+                asyncio.run(serve_reverse_hub(config))
+            else:
+                asyncio.run(serve_reverse_agent(config))
     except (ConfigError, OSError, ssl.SSLError, KeyboardInterrupt) as exc:
         if not isinstance(exc, KeyboardInterrupt):
             LOG.error("startup failed: %s", exc)

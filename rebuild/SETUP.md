@@ -2,6 +2,48 @@
 
 This is a development milestone, not a production release. The same role-agnostic installer has a user mode (`sh install.sh`) and a system mode (`sudo sh install.sh --system`). In system mode, a dedicated unprivileged account runs a loopback-only web panel from a systemd service; existing `/etc/simurgh-next` files are archived before ownership changes, and `/etc/simurgh` is never touched. On either mode, roles are selected after installation, and roles marked for panel auto-start start when the panel does and receive bounded crash recovery: up to five restart attempts per five-minute window with exponential backoff. Manual stops are not retried; disabling auto-start cancels a pending restart. The user-level service option (`--enable-service`) may need systemd lingering for operation before login. The installer does not open firewall ports or upgrade Simurgh v3. It stages the `h2` package and its dependencies privately in each release, so installation and updates need access to the configured Python package index. Do not use it on a production server yet.
 
+## Reverse TCP forwarding (development feature)
+
+Reverse mode lets a private-side agent initiate the connection to a public hub, so the hub does not need inbound reachability to the private host. Use the setup panel or terminal menu to configure **Reverse hub** on the public server and **Reverse agent** on the private server; installation remains role-agnostic. Copy the hub certificate's public CA/certificate to the agent through a trusted channel. Use the same route and a 32-byte-minimum secret on both nodes.
+
+The hub has two ports: a TLS control port (default 9443) for the agent's outbound connection, and a public raw TCP service port (default loopback:8080). To make the service reachable to outside clients, explicitly bind the public listener to the intended interface and allow that port through the firewall. The control listener should be reachable from the agent. The service-side TCP stream is not TLS-wrapped by the tunnel; rely on the application protocol's own TLS if its data needs encryption. The reverse agent only connects to its configured fixed target; the hub cannot supply a destination host or port.
+
+This increment supports direct TLS and TCP only, one configured route and one connected agent per hub. It supports multiple concurrent clients within the global and per-peer limits. Reverse UDP, WSS/H2, multi-agent routing, and real-host validation remain outstanding; do not treat this as a general private network or production-ready service.
+
+Example reverse hub config:
+
+```json
+{
+  "role": "reverse-hub",
+  "control_host": "0.0.0.0",
+  "control_port": 9443,
+  "public_host": "127.0.0.1",
+  "public_port": 8080,
+  "cert_file": "/etc/simurgh-next/tls/server.crt",
+  "key_file": "/etc/simurgh-next/tls/server.key",
+  "secret": "REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES",
+  "route": "web"
+}
+```
+
+Example reverse agent config:
+
+```json
+{
+  "role": "reverse-agent",
+  "hub_host": "hub.example.net",
+  "hub_port": 9443,
+  "server_name": "hub.example.net",
+  "ca_file": "/etc/simurgh-next/tls/ca.crt",
+  "secret": "REPLACE_WITH_AT_LEAST_32_RANDOM_BYTES",
+  "route": "web",
+  "target_host": "127.0.0.1",
+  "target_port": 8080
+}
+```
+
+The agent reconnects with bounded exponential backoff after control-channel failure. Public clients are rejected if no agent is registered or if the agent cannot open its fixed target. Start the nodes from the terminal menu or with `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-hub.json"` and `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-agent.json"`. Existing configuration backups and auto-start controls also apply to the reverse roles.
+
 ## 1. Prepare an exit certificate
 
 Choose the same `carrier` (`tls`, `wss`, or `h2`) in both node configurations. WSS uses an HTTP/1.1 WebSocket upgrade at `/simurgh-tunnel`; H2 negotiates ALPN `h2` and uses one `POST /simurgh-tunnel` byte stream per TLS connection. Any reverse proxy must preserve the selected protocol and stream body. Do not terminate TLS at an untrusted proxy, because the tunnel secret and data are visible after TLS termination.

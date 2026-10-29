@@ -18,7 +18,13 @@ from urllib.parse import parse_qs, urlparse
 
 from .paths import default_config_dir
 from .supervisor import NodeSupervisor
-from .tunnel import EntryConfig, check_entry_path, load_config, speed_test_entry
+from .tunnel import (
+    NODE_ROLES,
+    EntryConfig,
+    check_entry_path,
+    load_config,
+    speed_test_entry,
+)
 from .updates import UpdateError, latest_update
 from .usage import format_bytes, read_usage_snapshot
 from .wizard import list_config_backups, restore_config, save_config
@@ -44,7 +50,7 @@ def _page(body: str, *, status: str = "") -> bytes:
 <meta name="color-scheme" content="dark"><title>{title}</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'">
 <style>{_STYLE}</style></head><body><main><header><div class="eyebrow">Simurgh · independent rebuild</div>
-<h1>Set up this node</h1><p class="lede">Choose this server’s role and define a fixed route. The entry never chooses a destination; the exit keeps that allowlist.</p></header>
+<h1>Set up this node</h1><p class="lede">Choose this server’s role and define a fixed route. Forward mode pins destinations at the exit; reverse mode pins the private target at the agent.</p></header>
 {message}{body}<p class="footer">Local setup only · HTTP listens on loopback · existing /etc/simurgh is never changed</p></main></body></html>"""
     return page.encode("utf-8")
 
@@ -55,7 +61,7 @@ def _form(csrf: str, config_dir: Path) -> str:
     return f"""<form method="post" action="/setup">
 <input type="hidden" name="csrf" value="{token}">
 <section class="card"><h2>Role and local listener</h2><div class="grid">
-<div class="field"><label for="role">This server is</label><select id="role" name="role"><option value="entry">Entry · accepts user traffic</option><option value="exit">Exit · connects to a fixed destination</option></select></div>
+<div class="field"><label for="role">This server is</label><select id="role" name="role"><option value="entry">Entry · accepts user traffic</option><option value="exit">Exit · connects to a fixed destination</option><option value="reverse-hub">Reverse hub · public listener</option><option value="reverse-agent">Reverse agent · private target</option></select></div>
 <div class="field"><label for="transport">Local entry transport</label><select id="transport" name="transport"><option value="tcp">TCP stream</option><option value="udp">UDP datagrams</option></select></div>
 <div class="field"><label for="carrier">Tunnel carrier · must match both nodes</label><select id="carrier" name="carrier"><option value="tls">TLS stream</option><option value="wss">WebSocket over TLS (WSS)</option><option value="h2">HTTP/2 stream over TLS (H2)</option></select></div>
 <div class="field"><label for="listen_host">Listen address</label><input id="listen_host" name="listen_host" value="127.0.0.1" required></div>
@@ -76,6 +82,18 @@ def _form(csrf: str, config_dir: Path) -> str:
 <div class="field"><label for="cert_file">Exit TLS certificate path</label><input id="cert_file" name="cert_file" value="{tls_dir}/server.crt"></div>
 <div class="field"><label for="key_file">Exit TLS private key path</label><input id="key_file" name="key_file" value="{tls_dir}/server.key"></div>
 </div><p class="hint">The connecting entry can request only the route name above. It cannot send a host or port.</p></section>
+<section class="card"><h2>Reverse TCP settings · used by reverse roles</h2><div class="grid">
+<div class="field"><label for="control_host">Hub TLS bind address</label><input id="control_host" name="control_host" value="0.0.0.0"></div>
+<div class="field"><label for="control_port">Hub TLS control port</label><input id="control_port" name="control_port" type="number" min="1" max="65535" value="9443"></div>
+<div class="field"><label for="public_host">Hub public service bind address</label><input id="public_host" name="public_host" value="127.0.0.1"></div>
+<div class="field"><label for="public_port">Hub public service port</label><input id="public_port" name="public_port" type="number" min="1" max="65535" value="8080"></div>
+<div class="field"><label for="hub_host">Reverse hub address</label><input id="hub_host" name="hub_host" value="hub.example.net"></div>
+<div class="field"><label for="hub_port">Reverse hub TLS port</label><input id="hub_port" name="hub_port" type="number" min="1" max="65535" value="9443"></div>
+<div class="field"><label for="reverse_server_name">Expected hub TLS DNS name</label><input id="reverse_server_name" name="reverse_server_name" value="hub.example.net"></div>
+<div class="field wide"><label for="reverse_ca_file">Trusted CA certificate path</label><input id="reverse_ca_file" name="reverse_ca_file" value="{tls_dir}/ca.crt"></div>
+<div class="field"><label for="reverse_target_host">Fixed private service address</label><input id="reverse_target_host" name="reverse_target_host" value="127.0.0.1"></div>
+<div class="field"><label for="reverse_target_port">Fixed private service port</label><input id="reverse_target_port" name="reverse_target_port" type="number" min="1" max="65535" value="8080"></div>
+</div><p class="hint">Reverse mode is direct TLS and TCP-only. The agent initiates outbound connections; the hub exposes a public TCP listener to callers and forwards to the agent's fixed local target.</p></section>
 <section class="notice">The panel can start or stop its own node processes. It does not install services, change firewall rules, or replace existing files without making a private backup.</section>
 <div class="action"><button class="button" type="submit">Save node configuration</button><label class="replace"><input type="checkbox" name="replace" value="yes">I understand that an existing rebuild config will be backed up before replacement.</label></div>
 </form>"""
@@ -103,7 +121,7 @@ def _update_form(panel) -> str:
 
 def _backup_section(panel) -> str:
     rows = []
-    for role in ("entry", "exit"):
+    for role in NODE_ROLES:
         for backup in list_config_backups(panel.config_dir, role)[:10]:
             name = html.escape(backup.name, quote=True)
             token = html.escape(panel.csrf, quote=True)
@@ -167,7 +185,7 @@ def _dashboard(panel) -> str:
     rows = []
     states = panel.supervisor.status()
     state_error = states.get("error")
-    for role in ("entry", "exit"):
+    for role in NODE_ROLES:
         path = panel.config_dir / f"{role}.json"
         state = states[role]
         if not path.is_file():
@@ -243,21 +261,53 @@ def _number(form: dict[str, list[str]], key: str) -> int:
 
 def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
     role = _one(form, "role")
-    if role not in ("entry", "exit"):
-        raise ValueError("choose entry or exit")
+    if role not in NODE_ROLES:
+        raise ValueError("choose a supported node role")
+    secret = _one(form, "secret")
+    if len(secret.encode("utf-8")) < 32:
+        raise ValueError("shared secret must contain at least 32 UTF-8 bytes")
+    route = _one(form, "route")
+    if not route or len(route) > 64:
+        raise ValueError("a route name of 1–64 characters is required")
+    if role == "reverse-hub":
+        config = {
+            "role": role,
+            "control_host": _one(form, "control_host"),
+            "control_port": _number(form, "control_port"),
+            "public_host": _one(form, "public_host"),
+            "public_port": _number(form, "public_port"),
+            "cert_file": _one(form, "cert_file"),
+            "key_file": _one(form, "key_file"),
+            "secret": secret,
+            "route": route,
+        }
+        if not all(config[key] for key in ("control_host", "public_host", "cert_file", "key_file")):
+            raise ValueError("reverse hub bind addresses, certificate and key are required")
+        return role, config
+    if role == "reverse-agent":
+        config = {
+            "role": role,
+            "hub_host": _one(form, "hub_host"),
+            "hub_port": _number(form, "hub_port"),
+            "server_name": _one(form, "reverse_server_name"),
+            "ca_file": _one(form, "reverse_ca_file"),
+            "secret": secret,
+            "route": route,
+            "target_host": _one(form, "reverse_target_host"),
+            "target_port": _number(form, "reverse_target_port"),
+        }
+        if not all(config[key] for key in ("hub_host", "server_name", "ca_file", "target_host")):
+            raise ValueError("hub address, TLS identity, CA path and fixed target are required")
+        return role, config
     transport = _one(form, "transport", "tcp")
     if transport not in ("tcp", "udp"):
         raise ValueError("transport must be TCP or UDP")
     carrier = _one(form, "carrier", "tls")
     if carrier not in ("tls", "wss", "h2"):
         raise ValueError("carrier must be TLS, WSS or H2")
-    secret = _one(form, "secret")
-    if len(secret.encode("utf-8")) < 32:
-        raise ValueError("shared secret must contain at least 32 UTF-8 bytes")
     listen_host = _one(form, "listen_host")
-    route = _one(form, "route")
-    if not listen_host or not route or len(route) > 64:
-        raise ValueError("listen address and a route name of 1–64 characters are required")
+    if not listen_host:
+        raise ValueError("listen address is required")
 
     if role == "exit":
         config = {
@@ -309,7 +359,7 @@ class SetupPanel:
         panel = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "SimurghSetup/0.2.10"
+            server_version = "SimurghSetup/0.2.11"
             sys_version = ""
 
             def setup(self):

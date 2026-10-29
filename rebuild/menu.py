@@ -9,10 +9,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .paths import default_config_dir
+from .reverse import serve_reverse_agent, serve_reverse_hub
 from .tunnel import (
+    NODE_CONFIG_TYPES,
+    NODE_ROLES,
     ConfigError,
     EntryConfig,
     ExitConfig,
+    ReverseAgentConfig,
+    ReverseHubConfig,
     check_entry_path,
     load_config,
     serve_entry,
@@ -29,7 +34,7 @@ Output = Callable[[str], None]
 
 
 def _configured_roles(config_dir: Path) -> tuple[str, ...]:
-    return tuple(role for role in ("entry", "exit")
+    return tuple(role for role in NODE_ROLES
                  if (config_dir / f"{role}.json").is_file())
 
 
@@ -51,6 +56,12 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
         elif role == "exit" and isinstance(config, ExitConfig):
             output(f"exit: configured, {config.carrier.upper()} listener "
                    f"{config.host}:{config.port}; {len(config.routes)} fixed route(s)")
+        elif role == "reverse-hub" and isinstance(config, ReverseHubConfig):
+            output(f"reverse hub: control {config.control_host}:{config.control_port}; "
+                   f"public TCP {config.public_host}:{config.public_port} route={config.route}")
+        elif role == "reverse-agent" and isinstance(config, ReverseAgentConfig):
+            output(f"reverse agent: outbound TLS to {config.hub_host}:{config.hub_port}; "
+                   f"fixed target {config.target_host}:{config.target_port} route={config.route}")
         else:
             output(f"{role}: config role does not match its filename")
     try:
@@ -69,8 +80,8 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
 
 
 def run_role(role: str, config_dir: Path, output: Output = print) -> int:
-    if role not in ("entry", "exit"):
-        output("Choose entry or exit.")
+    if role not in NODE_ROLES:
+        output("Choose a supported node role.")
         return 2
     path = config_dir / f"{role}.json"
     try:
@@ -78,18 +89,23 @@ def run_role(role: str, config_dir: Path, output: Output = print) -> int:
     except ConfigError as exc:
         output(f"Cannot start {role}: {exc}")
         return 2
-    if role == "entry" and not isinstance(config, EntryConfig):
-        output("The selected entry file does not contain an entry config.")
-        return 2
-    if role == "exit" and not isinstance(config, ExitConfig):
-        output("The selected exit file does not contain an exit config.")
+    expected = NODE_CONFIG_TYPES[role]
+    if not isinstance(config, expected):
+        if role in ("entry", "exit"):
+            output(f"The selected {role} file does not contain an {role} config.")
+        else:
+            output(f"The selected {role} file does not contain a matching config.")
         return 2
     output(f"Starting {role} in the foreground. Press Ctrl+C to stop it.")
     try:
         if isinstance(config, EntryConfig):
             asyncio.run(serve_entry(config, config_dir / "entry-usage.json"))
-        else:
+        elif isinstance(config, ExitConfig):
             asyncio.run(serve_exit(config))
+        elif isinstance(config, ReverseHubConfig):
+            asyncio.run(serve_reverse_hub(config))
+        else:
+            asyncio.run(serve_reverse_agent(config))
     except KeyboardInterrupt:
         output(f"Stopped {role}.")
     except OSError as exc:
@@ -148,6 +164,8 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
         output("6) Measure tunnel download speed (TCP only)")
         output("7) Check/apply release update")
         output("8) Quit")
+        output("9) Run reverse hub in foreground")
+        output("10) Run reverse agent in foreground")
         choice = input_fn("Choose: ").strip()
         if choice == "1":
             setup_menu(config_dir, input_fn, output)
@@ -171,8 +189,18 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
             interactive_update(config_dir)
         elif choice == "8":
             return 0
+        elif choice == "9":
+            if not (config_dir / "reverse-hub.json").is_file():
+                output("Reverse hub is not configured; choose option 1 first.")
+            else:
+                run_role("reverse-hub", config_dir, output)
+        elif choice == "10":
+            if not (config_dir / "reverse-agent.json").is_file():
+                output("Reverse agent is not configured; choose option 1 first.")
+            else:
+                run_role("reverse-agent", config_dir, output)
         else:
-            output("Choose a number from 1 to 8.")
+            output("Choose a number from 1 to 10.")
 
 
 def main(argv: list[str] | None = None) -> int:

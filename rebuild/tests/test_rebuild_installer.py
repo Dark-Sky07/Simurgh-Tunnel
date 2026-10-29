@@ -123,6 +123,7 @@ def test_user_installer_is_role_agnostic_repeatable_and_keeps_old_release(tmp_pa
     assert second_release.is_dir()
     assert (second_release / "rebuild/h2stream.py").is_file()
     assert (second_release / "rebuild/notifications.py").is_file()
+    assert (second_release / "rebuild/reverse.py").is_file()
     assert (second_release / "vendor/h2").is_dir()
     assert (second_release / "vendor/sigstore").is_dir()
     assert config.read_text() == original_config
@@ -224,6 +225,7 @@ def test_system_installer_preserves_legacy_config_and_upgrades_release(tmp_path)
     first_release = (app_root / "current").resolve()
     assert (first_release / "rebuild/h2stream.py").is_file()
     assert (first_release / "rebuild/notifications.py").is_file()
+    assert (first_release / "rebuild/reverse.py").is_file()
     assert (first_release / "vendor/h2").is_dir()
     assert (first_release / "vendor/sigstore").is_dir()
     assert existing.read_text() == '{"role":"entry","secret":"preserve"}\n'

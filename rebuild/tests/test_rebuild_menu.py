@@ -32,6 +32,36 @@ def test_status_reports_entry_and_exit_routes(tmp_path):
     assert any("1 fixed route" in line for line in lines)
 
 
+def test_menu_status_and_runner_support_reverse_roles(tmp_path, monkeypatch):
+    hub = {
+        "role": "reverse-hub", "control_host": "0.0.0.0", "control_port": 9443,
+        "public_host": "127.0.0.1", "public_port": 8080,
+        "cert_file": "/tmp/hub.crt", "key_file": "/tmp/hub.key",
+        "secret": "h" * 40, "route": "web",
+    }
+    agent = {
+        "role": "reverse-agent", "hub_host": "hub.example.net", "hub_port": 9443,
+        "server_name": "hub.example.net", "ca_file": "/tmp/ca.crt",
+        "secret": "a" * 40, "route": "web", "target_host": "127.0.0.1",
+        "target_port": 8080,
+    }
+    (tmp_path / "reverse-hub.json").write_text(json.dumps(hub))
+    (tmp_path / "reverse-agent.json").write_text(json.dumps(agent))
+    lines = []
+    roles = menu.show_status(tmp_path, lines.append)
+    assert roles == ("reverse-hub", "reverse-agent")
+    assert any("public TCP 127.0.0.1:8080" in line for line in lines)
+
+    started = []
+
+    async def fake_agent(config):
+        started.append(config.route)
+
+    monkeypatch.setattr(menu, "serve_reverse_agent", fake_agent)
+    assert menu.run_role("reverse-agent", tmp_path, lines.append) == 0
+    assert started == ["web"]
+
+
 def test_menu_requires_config_before_running_and_can_exit(tmp_path):
     answers = iter(["2", "8"])
     lines = []

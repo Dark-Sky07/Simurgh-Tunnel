@@ -51,6 +51,37 @@ def test_entry_wizard_accepts_monthly_transfer_quota():
     assert config["monthly_quota_mib"] == 256
 
 
+def test_reverse_agent_wizard_sets_a_fixed_private_target(tmp_path):
+    config = setup.build_config("reverse-agent", scripted([
+        "web", "s" * 40, "hub.example.net", "9443", "hub.example.net", "",
+        "127.0.0.1", "8080",
+    ]), lambda _message: None, config_dir=tmp_path)
+    assert config["role"] == "reverse-agent"
+    assert config["hub_port"] == 9443
+    assert config["server_name"] == "hub.example.net"
+    assert config["target_host"] == "127.0.0.1"
+    assert config["target_port"] == 8080
+    setup.save_config(tmp_path / "reverse-agent.json", config)
+    supervisor = NodeSupervisor(tmp_path)
+    supervisor.set_autostart("reverse-agent", True)
+    assert supervisor.autostart_roles == {"reverse-agent"}
+    setup.save_config(tmp_path / "reverse-agent.json", dict(config, target_port=8081))
+    backup = setup.list_config_backups(tmp_path, "reverse-agent")[0]
+    setup.restore_config(tmp_path, "reverse-agent", backup.name)
+    assert json.loads((tmp_path / "reverse-agent.json").read_text())["target_port"] == 8080
+
+
+def test_reverse_hub_wizard_defaults_to_loopback_public_service(tmp_path):
+    config = setup.build_config("reverse-hub", scripted([
+        "web", "s" * 40, "", "", "", "", "", "",
+    ]), lambda _message: None, config_dir=tmp_path)
+    assert config["role"] == "reverse-hub"
+    assert config["control_host"] == "0.0.0.0"
+    assert config["public_host"] == "127.0.0.1"
+    assert config["control_port"] == 9443
+    assert config["public_port"] == 8080
+
+
 def test_exit_wizard_creates_fixed_destination_route(tmp_path):
     config = setup.build_config("exit", scripted([
         "1", "", "", "web", "x" * 40, "", "", "127.0.0.1", "8080",

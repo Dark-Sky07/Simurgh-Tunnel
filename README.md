@@ -10,16 +10,17 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.10. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.11. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
-Simurgh Tunnel connects an **entry** node to an **exit** node. The entry accepts local TCP or UDP traffic and forwards it through a verified TLS stream, WebSocket-over-TLS (WSS), or an HTTP/2 stream over verified TLS. The exit maps a named route to a fixed destination; the entry cannot ask the exit to connect to arbitrary hosts or ports.
+Forward mode connects an **entry** node to an **exit** node. Reverse mode instead has a private-side agent initiate an outbound TLS session to a public hub, which exposes a separate TCP listener and forwards only to that agent's fixed local target. Both are independent, non-interoperable tunnel modes.
 
 - TCP forwarding with bidirectional flow and half-close handling.
 - UDP forwarding with datagram boundaries, bounded sessions and idle expiry.
-- TLS certificate and server-name verification at the entry for all carriers.
-- Per-role carrier selection: direct TLS, WSS with strict HTTP upgrade and bounded WebSocket frames, or HTTP/2 (H2) with one bounded request stream per tunnel connection. The installer privately stages H2's runtime dependency for each release.
+- Reverse TCP forwarding: a private-side agent dials a verified TLS hub and forwards public hub connections only to its configured fixed local target. Direct TLS only; one route/agent per hub; sessions are bounded.
+- TLS certificate and server-name verification at the entry for forward carriers and at the reverse agent for hub connections.
+- Per-role carrier selection: direct TLS, WSS with strict HTTP upgrade and bounded WebSocket frames, or HTTP/2 (H2) with one bounded request stream per tunnel connection. The installer privately stages H2 and Sigstore runtime dependencies for each release.
 - Shared-secret authentication and fixed named routes.
 - Role setup in the panel or terminal menu—never during installation.
 - Loopback-only web panel; panel-started nodes can opt into auto-start and bounded crash recovery (up to five restart attempts per five-minute window with exponential backoff). Manual stops are never retried.
@@ -31,11 +32,11 @@ Simurgh Tunnel connects an **entry** node to an **exit** node. The entry accepts
 - A bounded synthetic download speed test is available for TCP entries from the CLI (`--speed-test-mib 4`), terminal menu, and local panel. It measures tunnel capacity, not end-to-end application throughput; UDP is intentionally unsupported.
 - Entry traffic is counted by direction and shown in the panel/menu. An optional `monthly_quota_mib` setting applies a UTC-month payload limit; TCP flows stop at the boundary and UDP datagrams are never partially forwarded. State is private (`0600`) and periodically persisted.
 
-This is a deliberately small development release. Detached signatures or build attestations for updates, real-host deployment testing and further production hardening remain. WSS and H2 are interoperability options, not promises of concealment or availability. Do not deploy this as a production replacement yet.
+This remains a development release, not feature parity or production readiness. Reverse forwarding currently supports TCP over direct TLS with one configured hub route and one agent; it is not a general private mesh and still needs real-host deployment validation. WSS and H2 are interoperability carriers, not promises of concealment or availability. Do not deploy this as a production replacement yet.
 
 ## Install
 
-Use the same installer on both servers. Choose a role later in the panel or terminal menu. Both installer modes privately stage the H2 dependency per release and need access to the configured Python package index.
+Use the same installer on both servers. Choose a role later in the panel or terminal menu. Both installer modes privately stage the H2 and Sigstore dependencies per release and need access to the configured Python package index.
 
 ### Per-user development install
 

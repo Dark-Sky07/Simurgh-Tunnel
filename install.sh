@@ -121,7 +121,7 @@ done
 mkdir -p "$PREFIX/releases" "$PREFIX/bin"
 RELEASE=$(mktemp -d "$PREFIX/releases/$VERSION-XXXXXXXX")
 mkdir -p "$RELEASE/rebuild" "$RELEASE/bin"
-for module in __init__.py h2stream.py menu.py notifications.py panel.py paths.py supervisor.py tunnel.py updates.py usage.py wizard.py; do
+for module in __init__.py h2stream.py menu.py notifications.py panel.py paths.py reverse.py supervisor.py tunnel.py updates.py usage.py wizard.py; do
     cp "$SOURCE_DIR/$module" "$RELEASE/rebuild/$module"
 done
 "$PYTHON" -m pip install --quiet --disable-pip-version-check --no-warn-script-location \

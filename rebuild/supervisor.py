@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .notifications import WebhookNotifier
-from .tunnel import ConfigError, EntryConfig, ExitConfig, load_config
+from .tunnel import NODE_CONFIG_TYPES, NODE_ROLES, ConfigError, load_config
 from .wizard import save_config
 
 LOG = logging.getLogger("simurgh.rebuild.supervisor")
@@ -66,20 +66,20 @@ class NodeSupervisor:
             raise ConfigError(f"cannot read auto-start state {self.autostart_path}: {exc}") from exc
         roles = raw.get("roles") if isinstance(raw, dict) else None
         if (not isinstance(roles, list)
-                or any(role not in ("entry", "exit") for role in roles)
+                or any(not isinstance(role, str) or role not in NODE_ROLES for role in roles)
                 or len(set(roles)) != len(roles)):
-            raise ConfigError("auto-start state must contain a unique list of entry/exit roles")
+            raise ConfigError("auto-start state must contain a unique list of supported node roles")
         return set(roles)
 
     def _validate(self, role: str) -> Path:
-        if role not in ("entry", "exit"):
-            raise ValueError("role must be entry or exit")
+        if role not in NODE_ROLES:
+            raise ValueError("unsupported node role")
         candidate = self.config_dir / f"{role}.json"
         if candidate.is_symlink():
             raise ConfigError(f"refusing symlinked node configuration: {candidate}")
         path = candidate.resolve()
         config = load_config(path)
-        expected = EntryConfig if role == "entry" else ExitConfig
+        expected = NODE_CONFIG_TYPES[role]
         if not isinstance(config, expected):
             raise ConfigError(f"{path} does not contain an {role} config")
         return path
@@ -139,8 +139,8 @@ class NodeSupervisor:
         self.notifier.set_url(url)
 
     def set_autostart(self, role: str, enabled: bool) -> None:
-        if role not in ("entry", "exit"):
-            raise ValueError("role must be entry or exit")
+        if role not in NODE_ROLES:
+            raise ValueError("unsupported node role")
         with self._lock:
             if self.autostart_error:
                 raise ConfigError(self.autostart_error)
@@ -266,7 +266,7 @@ class NodeSupervisor:
     def status(self) -> dict[str, dict]:
         with self._lock:
             result = {}
-            for role in ("entry", "exit"):
+            for role in NODE_ROLES:
                 node = self.nodes.get(role)
                 if node is None:
                     result[role] = {
@@ -292,8 +292,8 @@ class NodeSupervisor:
             return result
 
     def stop(self, role: str, timeout: float = 5.0) -> bool:
-        if role not in ("entry", "exit"):
-            raise ValueError("role must be entry or exit")
+        if role not in NODE_ROLES:
+            raise ValueError("unsupported node role")
         with self._lock:
             node = self.nodes.get(role)
             if node is None:
