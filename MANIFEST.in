@@ -1,0 +1,4 @@
+include LICENSE README.md README.fa.md install.sh setup.py setup.cfg pyproject.toml
+include assets/logo.png
+recursive-include rebuild *.py *.md *.json
+recursive-exclude rebuild/tests *
