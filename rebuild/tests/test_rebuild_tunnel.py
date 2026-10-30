@@ -527,6 +527,29 @@ def test_config_defaults_carrier_and_rejects_unknown_carrier(tmp_path):
         tunnel.load_config(path)
 
 
+@pytest.mark.parametrize("role,base", [
+    ("reverse-hub", {
+        "control_host": "127.0.0.1", "control_port": 9443,
+        "public_host": "127.0.0.1", "public_port": 8080,
+        "cert_file": "/tmp/hub.crt", "key_file": "/tmp/hub.key",
+    }),
+    ("reverse-agent", {
+        "hub_host": "hub.example.net", "hub_port": 9443,
+        "server_name": "hub.example.net", "ca_file": "/tmp/hub.crt",
+        "target_host": "127.0.0.1", "target_port": 8080,
+    }),
+])
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_config_loads_supported_carriers(tmp_path, role, base, carrier):
+    path = tmp_path / f"{role}.json"
+    config = {
+        **base, "role": role, "carrier": carrier, "secret": "s" * 32,
+        "route": "web",
+    }
+    path.write_text(json.dumps(config))
+    assert tunnel.load_config(path).carrier == carrier
+
+
 def test_config_validates_optional_monthly_quota(tmp_path):
     path = tmp_path / "entry.json"
     config = {

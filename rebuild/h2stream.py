@@ -284,6 +284,9 @@ class H2TunnelStream:
     def get_extra_info(self, name: str, default=None):
         return self._raw_writer.get_extra_info(name, default)
 
+    def is_closing(self) -> bool:
+        return self._closed or self._raw_writer.is_closing()
+
     def close(self) -> None:
         if self._closed:
             return

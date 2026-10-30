@@ -102,6 +102,11 @@ def _reverse_transport(input_fn: Input, output: Output) -> str:
                     {"1": "tcp", "2": "udp"}, input_fn, output)
 
 
+def _reverse_carrier(input_fn: Input, output: Output) -> str:
+    return _choice("Reverse carrier: 1) TLS  2) WSS  3) HTTP/2 (H2): ",
+                    {"1": "tls", "2": "wss", "3": "h2"}, input_fn, output)
+
+
 def _secret(input_fn: Input, output: Output) -> str:
     value = input_fn("Shared secret (leave blank to generate a new one): ").strip()
     if not value:
@@ -123,6 +128,7 @@ def build_config(
     tls_dir = (config_dir or default_config_dir()) / "tls"
     if role == "reverse-hub":
         transport = _reverse_transport(input_fn, output)
+        carrier = _reverse_carrier(input_fn, output)
         route = _value("Reverse route name", "web", input_fn)
         client_session_limit = _client_session_limit(input_fn, output)
         udp_rate_limit_pps = (_udp_rate_limit_pps(input_fn, output)
@@ -131,9 +137,10 @@ def build_config(
         config = {
             "role": role,
             "transport": transport,
+            "carrier": carrier,
             "control_host": _value("Control bind address (0.0.0.0 accepts remote agents)",
                                     "0.0.0.0", input_fn),  # nosec B104
-            "control_port": _port("TLS control port", 9443, input_fn),
+            "control_port": _port("Carrier control port", 9443, input_fn),
             "public_host": _value(f"Public {transport.upper()} service bind address",
                                    "127.0.0.1", input_fn),
             "public_port": _port(f"Public {transport.upper()} service port", 8080, input_fn),
@@ -148,13 +155,15 @@ def build_config(
         return config
     if role == "reverse-agent":
         transport = _reverse_transport(input_fn, output)
+        carrier = _reverse_carrier(input_fn, output)
         route = _value("Reverse route name (must match the hub)", "web", input_fn)
         secret = _secret(input_fn, output)
         return {
             "role": role,
             "transport": transport,
+            "carrier": carrier,
             "hub_host": _value("Public reverse hub address", "hub.example.net", input_fn),
-            "hub_port": _port("Hub TLS control port", 9443, input_fn),
+            "hub_port": _port("Hub carrier control port", 9443, input_fn),
             "server_name": _value("Expected hub TLS DNS name", "hub.example.net", input_fn),
             "ca_file": _value("Trusted CA certificate path", str(tls_dir / "ca.crt"), input_fn),
             "secret": secret,

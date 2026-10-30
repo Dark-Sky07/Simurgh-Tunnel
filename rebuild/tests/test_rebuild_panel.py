@@ -140,7 +140,8 @@ def test_panel_rejects_wrong_loopback_port_and_cross_origin_posts(tmp_path):
         panel.close()
 
 
-def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch, carrier):
     panel, url = started_panel(tmp_path)
     try:
         csrf = _csrf(url)
@@ -149,7 +150,7 @@ def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch):
             "control_host": "0.0.0.0", "control_port": "9443",
             "public_host": "127.0.0.1", "public_port": "18080",
             "client_session_limit": "24", "transport": "udp",
-            "udp_rate_limit_pps": "2200",
+            "carrier": carrier, "udp_rate_limit_pps": "2200",
             "cert_file": "/etc/simurgh-next/tls/hub.crt",
             "key_file": "/etc/simurgh-next/tls/hub.key", "csrf": csrf,
         }
@@ -160,6 +161,7 @@ def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch):
         assert saved_hub["public_port"] == 18080
         assert saved_hub["client_session_limit"] == 24
         assert saved_hub["transport"] == "udp"
+        assert saved_hub["carrier"] == carrier
         assert saved_hub["udp_rate_limit_pps"] == 2200
 
         agent = {
@@ -168,7 +170,7 @@ def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch):
             "reverse_server_name": "hub.example.net",
             "reverse_ca_file": "/etc/simurgh-next/tls/ca.crt",
             "reverse_target_host": "127.0.0.1", "reverse_target_port": "8080",
-            "transport": "udp", "csrf": csrf,
+            "transport": "udp", "carrier": carrier, "csrf": csrf,
         }
         with _post(url, "/setup", agent) as response:
             assert response.status == 201
@@ -177,6 +179,7 @@ def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch):
         assert saved_agent["target_host"] == "127.0.0.1"
         assert saved_agent["target_port"] == 8080
         assert saved_agent["transport"] == "udp"
+        assert saved_agent["carrier"] == carrier
 
         with urllib.request.urlopen(url + "/") as response:
             assert "Check hub and target" in response.read().decode()

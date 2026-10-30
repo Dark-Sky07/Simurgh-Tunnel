@@ -25,6 +25,7 @@ from .tunnel import (
     ReverseAgentConfig,
     ReverseHubConfig,
     _client_ssl,
+    _client_websocket,
     _copy_from_tunnel,
     _copy_to_tunnel,
     _enable_tcp_keepalive,
@@ -34,6 +35,7 @@ from .tunnel import (
     _read_json,
     _send_json,
     _server_ssl,
+    _server_websocket,
     _stop_when_either_finishes,
     _UdpRateBucket,
     _write_frame,
@@ -44,6 +46,93 @@ _HEARTBEAT_INTERVAL = 25.0
 _HEARTBEAT_TIMEOUT = 75.0
 _CHANNEL_OPEN_TIMEOUT = 30.0
 _CHANNEL_LENGTH = 48
+
+
+def _h2_authority(server_name: str, port: int) -> str:
+    host = f"[{server_name}]" if ":" in server_name else server_name
+    return f"{host}:{port}"
+
+
+async def _open_agent_hub_connection(config: ReverseAgentConfig):
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(
+            config.hub_host, config.hub_port, ssl=_client_ssl(config),
+            server_hostname=config.server_name, limit=MAX_HANDSHAKE,
+        ),
+        timeout=CONNECT_TIMEOUT,
+    )
+    if config.carrier == "tls":
+        return reader, writer
+    stream = None
+    try:
+        if config.carrier == "wss":
+            stream = await _client_websocket(
+                reader, writer, config.server_name, config.hub_port)
+        elif config.carrier == "h2":
+            ssl_object = writer.get_extra_info("ssl_object")
+            if ssl_object is None or ssl_object.selected_alpn_protocol() != "h2":
+                raise ConnectionError("reverse hub did not negotiate HTTP/2")
+            from .h2stream import H2TunnelStream
+
+            stream = H2TunnelStream(reader, writer, client=True)
+            await stream.start_client(_h2_authority(config.server_name, config.hub_port))
+        else:
+            raise ConnectionError(f"unsupported reverse carrier: {config.carrier}")
+    except BaseException:
+        if stream is not None:
+            stream.close()
+            try:
+                await stream.wait_closed()
+            except OSError:
+                pass
+        else:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+        raise
+    return stream, stream
+
+
+async def _hub_connection_stream(state: _HubState, reader: asyncio.StreamReader,
+                                 writer: asyncio.StreamWriter) -> None:
+    config = state.config
+    if config.carrier == "tls":
+        await _hub_connection(state, reader, writer)
+        return
+    stream = None
+    try:
+        if config.carrier == "wss":
+            stream = await _server_websocket(reader, writer)
+        elif config.carrier == "h2":
+            ssl_object = writer.get_extra_info("ssl_object")
+            if ssl_object is None or ssl_object.selected_alpn_protocol() != "h2":
+                raise ConnectionError("reverse peer did not negotiate HTTP/2")
+            from .h2stream import H2TunnelStream
+
+            stream = H2TunnelStream(reader, writer, client=False)
+            await stream.start_server()
+        else:
+            raise ConnectionError(f"unsupported reverse carrier: {config.carrier}")
+    except BaseException as exc:
+        if stream is not None:
+            stream.close()
+            try:
+                await stream.wait_closed()
+            except OSError:
+                pass
+        else:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        LOG.debug("reverse %s carrier setup failed: %s", config.carrier.upper(), exc)
+        return
+    await _hub_connection(state, stream, stream)
 
 
 @dataclass
@@ -240,7 +329,8 @@ async def _hub_udp_data(state: _HubState, reader: asyncio.StreamReader,
                     pending.transport.sendto(payload, pending.client)
 
         await _stop_when_either_finishes(public_to_agent(), agent_to_public())
-    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError,
+            EOFError) as exc:
         LOG.debug("reverse UDP data channel ended: %s", exc)
     finally:
         if pending is not None:
@@ -460,16 +550,7 @@ async def _agent_channel(config: ReverseAgentConfig, channel: str,
             async with control_lock:
                 await _send_json(control_writer, {"op": "failed", "channel": channel})
             return
-        data_reader, data_writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                config.hub_host,
-                config.hub_port,
-                ssl=_client_ssl(config),
-                server_hostname=config.server_name,
-                limit=MAX_HANDSHAKE,
-            ),
-            timeout=CONNECT_TIMEOUT,
-        )
+        data_reader, data_writer = await _open_agent_hub_connection(config)
         await _send_json(data_writer, {
             "version": 1, "op": "data", "route": config.route,
             "secret": config.secret, "channel": channel,
@@ -520,13 +601,7 @@ async def _agent_udp_channel(config: ReverseAgentConfig, channel: str,
                 lambda: protocol, remote_addr=(config.target_host, config.target_port)),
             timeout=CONNECT_TIMEOUT,
         )
-        data_reader, data_writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                config.hub_host, config.hub_port, ssl=_client_ssl(config),
-                server_hostname=config.server_name, limit=MAX_HANDSHAKE,
-            ),
-            timeout=CONNECT_TIMEOUT,
-        )
+        data_reader, data_writer = await _open_agent_hub_connection(config)
         await _send_json(data_writer, {
             "version": 1, "op": "data", "transport": "udp",
             "route": config.route, "secret": config.secret, "channel": channel,
@@ -551,7 +626,8 @@ async def _agent_udp_channel(config: ReverseAgentConfig, channel: str,
                 await _write_frame(data_writer, _UDP_DATA, payload)
 
         await _stop_when_either_finishes(tunnel_to_udp(), udp_to_tunnel())
-    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError,
+            EOFError) as exc:
         if not established:
             try:
                 async with control_lock:
@@ -579,16 +655,7 @@ async def _agent_heartbeat(writer: asyncio.StreamWriter,
 
 
 async def _agent_session(config: ReverseAgentConfig) -> None:
-    control_reader, control_writer = await asyncio.wait_for(
-        asyncio.open_connection(
-            config.hub_host,
-            config.hub_port,
-            ssl=_client_ssl(config),
-            server_hostname=config.server_name,
-            limit=MAX_HANDSHAKE,
-        ),
-        timeout=CONNECT_TIMEOUT,
-    )
+    control_reader, control_writer = await _open_agent_hub_connection(config)
     lock = asyncio.Lock()
     tasks: set[asyncio.Task] = set()
     heartbeat = None
@@ -667,7 +734,7 @@ async def _start_reverse_hub(config: ReverseHubConfig):
     public_active = [0]
     control = await asyncio.start_server(
         _limited_handler(_tracked_handler(state,
-                                          lambda reader, writer: _hub_connection(state, reader, writer)),
+                                          lambda reader, writer: _hub_connection_stream(state, reader, writer)),
                          control_active, MAX_TCP_SESSIONS),
         config.control_host, config.control_port,
         ssl=_server_ssl(config),

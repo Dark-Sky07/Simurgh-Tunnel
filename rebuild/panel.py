@@ -93,16 +93,16 @@ def _form(csrf: str, config_dir: Path) -> str:
 </div><p class="hint">The connecting entry can request only the route name above. It cannot send a host or port.</p></section>
 <section class="card"><h2>Reverse TCP/UDP settings · used by reverse roles</h2><div class="grid">
 <div class="field"><label for="control_host">Hub TLS bind address</label><input id="control_host" name="control_host" value="0.0.0.0"></div>
-<div class="field"><label for="control_port">Hub TLS control port</label><input id="control_port" name="control_port" type="number" min="1" max="65535" value="9443"></div>
+<div class="field"><label for="control_port">Hub carrier control port</label><input id="control_port" name="control_port" type="number" min="1" max="65535" value="9443"></div>
 <div class="field"><label for="public_host">Hub public service bind address</label><input id="public_host" name="public_host" value="127.0.0.1"></div>
 <div class="field"><label for="public_port">Hub public service port</label><input id="public_port" name="public_port" type="number" min="1" max="65535" value="8080"></div>
 <div class="field"><label for="hub_host">Reverse hub address</label><input id="hub_host" name="hub_host" value="hub.example.net"></div>
-<div class="field"><label for="hub_port">Reverse hub TLS port</label><input id="hub_port" name="hub_port" type="number" min="1" max="65535" value="9443"></div>
+<div class="field"><label for="hub_port">Reverse hub carrier port</label><input id="hub_port" name="hub_port" type="number" min="1" max="65535" value="9443"></div>
 <div class="field"><label for="reverse_server_name">Expected hub TLS DNS name</label><input id="reverse_server_name" name="reverse_server_name" value="hub.example.net"></div>
 <div class="field wide"><label for="reverse_ca_file">Trusted CA certificate path</label><input id="reverse_ca_file" name="reverse_ca_file" value="{tls_dir}/ca.crt"></div>
 <div class="field"><label for="reverse_target_host">Fixed private service address</label><input id="reverse_target_host" name="reverse_target_host" value="127.0.0.1"></div>
 <div class="field"><label for="reverse_target_port">Fixed private service port</label><input id="reverse_target_port" name="reverse_target_port" type="number" min="1" max="65535" value="8080"></div>
-</div><p class="hint">Reverse mode uses direct TLS with matching TCP or UDP settings on hub and agent. The agent initiates outbound connections; the hub exposes a separate public listener and forwards only to the agent's fixed local target.</p></section>
+</div><p class="hint">Reverse hub and agent must use the same TLS, WSS, or H2 carrier and matching TCP/UDP mode. The agent initiates outbound connections; the hub exposes a separate public listener and forwards only to the agent's fixed local target.</p></section>
 <section class="notice">The panel can start or stop its own node processes. It does not install services, change firewall rules, or replace existing files without making a private backup.</section>
 <div class="action"><button class="button" type="submit">Save node configuration</button><label class="replace"><input type="checkbox" name="replace" value="yes">I understand that an existing rebuild config will be backed up before replacement.</label></div>
 </form>"""
@@ -306,6 +306,13 @@ def _reverse_transport(form: dict[str, list[str]]) -> str:
     return value
 
 
+def _reverse_carrier(form: dict[str, list[str]]) -> str:
+    value = _one(form, "carrier", "tls")
+    if value not in ("tls", "wss", "h2"):
+        raise ValueError("reverse carrier must be TLS, WSS, or H2")
+    return value
+
+
 def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
     role = _one(form, "role")
     if role not in NODE_ROLES:
@@ -329,6 +336,7 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
             "route": route,
             "client_session_limit": _client_session_limit(form),
             "transport": _reverse_transport(form),
+            "carrier": _reverse_carrier(form),
         }
         if not all(config[key] for key in ("control_host", "public_host", "cert_file", "key_file")):
             raise ValueError("reverse hub bind addresses, certificate and key are required")
@@ -347,6 +355,7 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
             "target_host": _one(form, "reverse_target_host"),
             "target_port": _number(form, "reverse_target_port"),
             "transport": _reverse_transport(form),
+            "carrier": _reverse_carrier(form),
         }
         if not all(config[key] for key in ("hub_host", "server_name", "ca_file", "target_host")):
             raise ValueError("hub address, TLS identity, CA path and fixed target are required")
