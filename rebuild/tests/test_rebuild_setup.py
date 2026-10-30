@@ -62,10 +62,11 @@ def test_entry_wizard_accepts_monthly_transfer_quota():
 
 def test_reverse_agent_wizard_sets_a_fixed_private_target(tmp_path):
     config = setup.build_config("reverse-agent", scripted([
-        "web", "s" * 40, "hub.example.net", "9443", "hub.example.net", "",
+        "1", "web", "s" * 40, "hub.example.net", "9443", "hub.example.net", "",
         "127.0.0.1", "8080",
     ]), lambda _message: None, config_dir=tmp_path)
     assert config["role"] == "reverse-agent"
+    assert config["transport"] == "tcp"
     assert config["hub_port"] == 9443
     assert config["server_name"] == "hub.example.net"
     assert config["target_host"] == "127.0.0.1"
@@ -80,11 +81,25 @@ def test_reverse_agent_wizard_sets_a_fixed_private_target(tmp_path):
     assert json.loads((tmp_path / "reverse-agent.json").read_text())["target_port"] == 8080
 
 
+def test_reverse_udp_wizards_select_matching_datagram_mode(tmp_path):
+    hub = setup.build_config("reverse-hub", scripted([
+        "2", "dns", "64", "2500", "s" * 40, "", "", "", "", "", "",
+    ]), lambda _message: None, config_dir=tmp_path)
+    agent = setup.build_config("reverse-agent", scripted([
+        "2", "dns", "s" * 40, "hub.example.net", "9443", "hub.example.net", "",
+        "127.0.0.1", "5353",
+    ]), lambda _message: None, config_dir=tmp_path)
+    assert hub["transport"] == agent["transport"] == "udp"
+    assert hub["udp_rate_limit_pps"] == 2500
+    assert agent["target_port"] == 5353
+
+
 def test_reverse_hub_wizard_defaults_to_loopback_public_service(tmp_path):
     config = setup.build_config("reverse-hub", scripted([
-        "web", "128", "s" * 40, "", "", "", "", "", "",
+        "1", "web", "128", "s" * 40, "", "", "", "", "", "",
     ]), lambda _message: None, config_dir=tmp_path)
     assert config["role"] == "reverse-hub"
+    assert config["transport"] == "tcp"
     assert config["control_host"] == "0.0.0.0"
     assert config["public_host"] == "127.0.0.1"
     assert config["control_port"] == 9443

@@ -89,6 +89,69 @@ def test_reverse_agent_forwards_concurrent_tcp_clients_to_its_fixed_target(tls_i
     run(scenario())
 
 
+def test_reverse_agent_forwards_udp_clients_to_its_fixed_target(tls_identity):
+    cert, key = tls_identity
+    secret = "reverse-udp-shared-secret-0123456789"
+
+    async def scenario():
+        class Echo(asyncio.DatagramProtocol):
+            transport = None
+
+            def connection_made(self, transport):
+                self.transport = transport
+
+            def datagram_received(self, data, addr):
+                self.transport.sendto(data[::-1], addr)
+
+        class Client(asyncio.DatagramProtocol):
+            def __init__(self):
+                self.responses = asyncio.Queue()
+
+            def datagram_received(self, data, addr):
+                self.responses.put_nowait(data)
+
+        loop = asyncio.get_running_loop()
+        target_transport, _ = await loop.create_datagram_endpoint(
+            Echo, local_addr=("127.0.0.1", 0))
+        target_port = target_transport.get_extra_info("sockname")[1]
+        hub_config = tunnel.ReverseHubConfig(
+            "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "dns",
+            transport="udp",
+        )
+        control, public, state = await reverse._start_reverse_hub(hub_config)
+        hub_port = control.sockets[0].getsockname()[1]
+        public_port = public.get_extra_info("sockname")[1]
+        agent_config = tunnel.ReverseAgentConfig(
+            "127.0.0.1", hub_port, "localhost", cert, secret, "dns", "127.0.0.1",
+            target_port, transport="udp",
+        )
+        agent = asyncio.create_task(reverse.serve_reverse_agent(agent_config))
+        client_transport, client = await loop.create_datagram_endpoint(
+            Client, local_addr=("127.0.0.1", 0))
+        try:
+            await asyncio.wait_for(state.agent_ready.wait(), timeout=3)
+            client_transport.sendto(b"reverse-udp", ("127.0.0.1", public_port))
+            response = await asyncio.wait_for(client.responses.get(), timeout=5)
+            assert response == b"pdu-esrever"
+            assert state.public_udp is not None
+            assert len(state.pending_udp) == 1
+        finally:
+            client_transport.close()
+            agent.cancel()
+            await asyncio.gather(agent, return_exceptions=True)
+            public.close()
+            await state.public_udp.close()
+            control.close()
+            target_transport.close()
+            await asyncio.gather(control.wait_closed())
+            handlers = tuple(state.handler_tasks)
+            for task in handlers:
+                task.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
+
+    run(scenario())
+
+
 def test_reverse_public_listener_closes_when_no_agent_is_registered(tls_identity, monkeypatch):
     cert, key = tls_identity
     monkeypatch.setattr(reverse, "CONNECT_TIMEOUT", 0.05)
@@ -109,6 +172,43 @@ def test_reverse_public_listener_closes_when_no_agent_is_registered(tls_identity
             control.close()
             public.close()
             await asyncio.gather(control.wait_closed(), public.wait_closed())
+
+    run(scenario())
+
+
+def test_reverse_udp_listener_rate_limits_and_expires_without_agent(tls_identity, monkeypatch):
+    cert, key = tls_identity
+    monkeypatch.setattr(reverse, "CONNECT_TIMEOUT", 0.05)
+    config = tunnel.ReverseHubConfig(
+        "127.0.0.1", 0, "127.0.0.1", 0, cert, key,
+        "reverse-hub-shared-secret-0123456789", "dns", transport="udp",
+        udp_rate_limit_pps=1,
+    )
+
+    async def scenario():
+        control, public, state = await reverse._start_reverse_hub(config)
+        client_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            asyncio.DatagramProtocol, remote_addr=public.get_extra_info("sockname"))
+        try:
+            client_transport.sendto(b"first")
+            client_transport.sendto(b"second")
+            client_transport.sendto(b"third")
+            for _ in range(100):
+                if state.public_udp.sessions:
+                    break
+                await asyncio.sleep(0.005)
+            assert len(state.public_udp.sessions) == 1
+            session = next(iter(state.public_udp.sessions.values()))
+            assert session.queue.qsize() == 2
+            await asyncio.wait_for(session.task, timeout=1)
+            assert not state.public_udp.sessions
+            assert not state.pending_udp
+        finally:
+            client_transport.close()
+            public.close()
+            await state.public_udp.close()
+            control.close()
+            await control.wait_closed()
 
     run(scenario())
 
@@ -230,6 +330,34 @@ def test_reverse_agent_check_verifies_hub_without_registering_and_checks_target(
             target_server.close()
             await asyncio.gather(control.wait_closed(), public.wait_closed(),
                                  target_server.wait_closed())
+
+    run(scenario())
+
+
+def test_reverse_agent_udp_target_check_sends_no_payload():
+    async def scenario():
+        received = []
+
+        class Observer(asyncio.DatagramProtocol):
+            def datagram_received(self, data, addr):
+                received.append(data)
+
+        transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            Observer, local_addr=("127.0.0.1", 0))
+        port = transport.get_extra_info("sockname")[1]
+        config = tunnel.ReverseAgentConfig(
+            "unreachable-hub.invalid", 1, "unreachable-hub.invalid",
+            Path("/unused-ca.crt"), "reverse-agent-udp-secret-0123456789",
+            "dns", "127.0.0.1", port, transport="udp",
+        )
+        try:
+            result = await tunnel.check_reverse_agent_target(config)
+            assert "no datagram was sent" in result
+            assert "reachability is unverified" in result
+            await asyncio.sleep(0.05)
+            assert received == []
+        finally:
+            transport.close()
 
     run(scenario())
 
@@ -424,7 +552,23 @@ def test_reverse_configs_load_and_reject_invalid_ports(tmp_path):
     loaded_hub = tunnel.load_config(hub_path)
     assert isinstance(loaded_hub, tunnel.ReverseHubConfig)
     assert loaded_hub.client_session_limit == 73
-    assert isinstance(tunnel.load_config(agent_path), tunnel.ReverseAgentConfig)
+    loaded_agent = tunnel.load_config(agent_path)
+    assert isinstance(loaded_agent, tunnel.ReverseAgentConfig)
+    assert loaded_hub.transport == loaded_agent.transport == "tcp"
+    hub["transport"] = "udp"
+    hub["udp_rate_limit_pps"] = 2400
+    agent["transport"] = "udp"
+    hub_path.write_text(json.dumps(hub))
+    agent_path.write_text(json.dumps(agent))
+    loaded_hub = tunnel.load_config(hub_path)
+    loaded_agent = tunnel.load_config(agent_path)
+    assert loaded_hub.transport == loaded_agent.transport == "udp"
+    assert loaded_hub.udp_rate_limit_pps == 2400
+    hub["transport"] = "icmp"
+    hub_path.write_text(json.dumps(hub))
+    with pytest.raises(tunnel.ConfigError, match="reverse transport"):
+        tunnel.load_config(hub_path)
+    hub["transport"] = "udp"
     hub["control_port"] = 0
     hub_path.write_text(json.dumps(hub))
     with pytest.raises(tunnel.ConfigError, match="control_port"):

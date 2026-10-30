@@ -97,6 +97,11 @@ def _udp_rate_limit_pps(input_fn: Input, output: Output) -> int:
         output(f"Enter a whole number from 1 to {MAX_UDP_RATE_LIMIT_PPS}.")
 
 
+def _reverse_transport(input_fn: Input, output: Output) -> str:
+    return _choice("Reverse transport: 1) TCP stream  2) UDP datagrams: ",
+                    {"1": "tcp", "2": "udp"}, input_fn, output)
+
+
 def _secret(input_fn: Input, output: Output) -> str:
     value = input_fn("Shared secret (leave blank to generate a new one): ").strip()
     if not value:
@@ -117,35 +122,46 @@ def build_config(
     """Prompt for one node config without reading or altering other files."""
     tls_dir = (config_dir or default_config_dir()) / "tls"
     if role == "reverse-hub":
+        transport = _reverse_transport(input_fn, output)
         route = _value("Reverse route name", "web", input_fn)
         client_session_limit = _client_session_limit(input_fn, output)
+        udp_rate_limit_pps = (_udp_rate_limit_pps(input_fn, output)
+                              if transport == "udp" else DEFAULT_UDP_RATE_LIMIT_PPS)
         secret = _secret(input_fn, output)
-        return {
+        config = {
             "role": role,
+            "transport": transport,
             "control_host": _value("Control bind address (0.0.0.0 accepts remote agents)",
                                     "0.0.0.0", input_fn),  # nosec B104
             "control_port": _port("TLS control port", 9443, input_fn),
-            "public_host": _value("Public TCP service bind address", "127.0.0.1", input_fn),
-            "public_port": _port("Public TCP service port", 8080, input_fn),
+            "public_host": _value(f"Public {transport.upper()} service bind address",
+                                   "127.0.0.1", input_fn),
+            "public_port": _port(f"Public {transport.upper()} service port", 8080, input_fn),
             "cert_file": _value("TLS certificate path", str(tls_dir / "server.crt"), input_fn),
             "key_file": _value("TLS private-key path", str(tls_dir / "server.key"), input_fn),
             "secret": secret,
             "route": route,
             "client_session_limit": client_session_limit,
         }
+        if transport == "udp":
+            config["udp_rate_limit_pps"] = udp_rate_limit_pps
+        return config
     if role == "reverse-agent":
+        transport = _reverse_transport(input_fn, output)
         route = _value("Reverse route name (must match the hub)", "web", input_fn)
         secret = _secret(input_fn, output)
         return {
             "role": role,
+            "transport": transport,
             "hub_host": _value("Public reverse hub address", "hub.example.net", input_fn),
             "hub_port": _port("Hub TLS control port", 9443, input_fn),
             "server_name": _value("Expected hub TLS DNS name", "hub.example.net", input_fn),
             "ca_file": _value("Trusted CA certificate path", str(tls_dir / "ca.crt"), input_fn),
             "secret": secret,
             "route": route,
-            "target_host": _value("Fixed service address on this private host", "127.0.0.1", input_fn),
-            "target_port": _port("Fixed service port", 8080, input_fn),
+            "target_host": _value(f"Fixed {transport.upper()} service address on this private host",
+                                   "127.0.0.1", input_fn),
+            "target_port": _port(f"Fixed {transport.upper()} service port", 8080, input_fn),
         }
     if role not in ("entry", "exit"):
         raise ValueError("unsupported node role")
