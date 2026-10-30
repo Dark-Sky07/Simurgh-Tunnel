@@ -51,10 +51,12 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
             output(f"{role}: invalid config ({exc})")
             continue
         if role == "entry" and isinstance(config, EntryConfig):
+            udp_rate = (f"; UDP cap={config.udp_rate_limit_pps} datagrams/s/source IP"
+                        if config.transport == "udp" else "")
             output(f"entry: configured, {config.transport.upper()} listener "
                    f"{config.host}:{config.port} -> {config.exit_host}:{config.exit_port} "
                    f"carrier={config.carrier.upper()} route={config.route}; "
-                   f"client cap={config.client_session_limit}/source IP")
+                   f"client cap={config.client_session_limit}/source IP{udp_rate}")
         elif role == "exit" and isinstance(config, ExitConfig):
             output(f"exit: configured, {config.carrier.upper()} listener "
                    f"{config.host}:{config.port}; {len(config.routes)} fixed route(s)")

@@ -16,7 +16,9 @@ from pathlib import Path
 from .paths import default_config_dir
 from .tunnel import (
     DEFAULT_CLIENT_SESSION_LIMIT,
+    DEFAULT_UDP_RATE_LIMIT_PPS,
     MAX_CLIENT_SESSION_LIMIT,
+    MAX_UDP_RATE_LIMIT_PPS,
     NODE_CONFIG_TYPES,
     NODE_ROLES,
     load_config,
@@ -78,6 +80,21 @@ def _client_session_limit(input_fn: Input, output: Output) -> int:
         if 1 <= value <= MAX_CLIENT_SESSION_LIMIT:
             return value
         output(f"Enter a whole number from 1 to {MAX_CLIENT_SESSION_LIMIT}.")
+
+
+def _udp_rate_limit_pps(input_fn: Input, output: Output) -> int:
+    while True:
+        answer = _value(
+            "Maximum UDP datagrams per second per source IP (1–100000)",
+            str(DEFAULT_UDP_RATE_LIMIT_PPS), input_fn)
+        try:
+            value = int(answer)
+        except ValueError:
+            output("Enter a whole number from 1 to 100000.")
+            continue
+        if 1 <= value <= MAX_UDP_RATE_LIMIT_PPS:
+            return value
+        output(f"Enter a whole number from 1 to {MAX_UDP_RATE_LIMIT_PPS}.")
 
 
 def _secret(input_fn: Input, output: Output) -> str:
@@ -168,6 +185,8 @@ def build_config(
     if role != "entry":
         raise ValueError("role must be entry or exit")
     client_session_limit = _client_session_limit(input_fn, output)
+    udp_rate_limit_pps = (_udp_rate_limit_pps(input_fn, output)
+                          if transport == "udp" else None)
     config = {
         "role": "entry",
         "transport": transport,
@@ -182,6 +201,8 @@ def build_config(
         "route": route,
         "client_session_limit": client_session_limit,
     }
+    if udp_rate_limit_pps is not None:
+        config["udp_rate_limit_pps"] = udp_rate_limit_pps
     monthly_quota_mib = _quota_mib(input_fn, output)
     if monthly_quota_mib is not None:
         config["monthly_quota_mib"] = monthly_quota_mib

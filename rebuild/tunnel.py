@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.16"
+VERSION = "0.2.17"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -40,6 +40,8 @@ MAX_TCP_SESSIONS_PER_PEER = 128
 MAX_UDP_ASSOCIATIONS = 1024
 DEFAULT_CLIENT_SESSION_LIMIT = 128
 MAX_CLIENT_SESSION_LIMIT = 512
+DEFAULT_UDP_RATE_LIMIT_PPS = 5000
+MAX_UDP_RATE_LIMIT_PPS = 100000
 MAX_SPEED_TEST_BYTES = 16 * 1024 * 1024
 DEFAULT_SPEED_TEST_MIB = 4
 _FRAME_HEADER = struct.Struct("!BI")
@@ -81,6 +83,7 @@ class EntryConfig:
     carrier: str = "tls"
     monthly_quota_mib: int | None = None
     client_session_limit: int = DEFAULT_CLIENT_SESSION_LIMIT
+    udp_rate_limit_pps: int = DEFAULT_UDP_RATE_LIMIT_PPS
 
 
 @dataclass(frozen=True)
@@ -160,6 +163,15 @@ def _client_session_limit(obj: dict[str, Any]) -> int:
             or not 1 <= value <= MAX_CLIENT_SESSION_LIMIT):
         raise ConfigError(
             f"client_session_limit must be an integer from 1 to {MAX_CLIENT_SESSION_LIMIT}")
+    return value
+
+
+def _udp_rate_limit_pps(obj: dict[str, Any]) -> int:
+    value = obj.get("udp_rate_limit_pps", DEFAULT_UDP_RATE_LIMIT_PPS)
+    if (isinstance(value, bool) or not isinstance(value, int)
+            or not 1 <= value <= MAX_UDP_RATE_LIMIT_PPS):
+        raise ConfigError(
+            f"udp_rate_limit_pps must be an integer from 1 to {MAX_UDP_RATE_LIMIT_PPS}")
     return value
 
 
@@ -262,6 +274,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
         carrier=carrier,
         monthly_quota_mib=monthly_quota_mib,
         client_session_limit=_client_session_limit(raw),
+        udp_rate_limit_pps=_udp_rate_limit_pps(raw),
     )
 
 
@@ -1172,6 +1185,11 @@ class _EntryUdpSession:
                     meter = self.owner.meter
                     if meter and not meter.allow_datagram("download", len(payload)):
                         raise QuotaReached("monthly transfer quota reached")
+                    peer = self.owner.peer_key(self.client)
+                    if not self.owner._allow_rate(peer, "download"):
+                        LOG.debug("dropping UDP response for %r: per-address rate limit reached",
+                                  self.client)
+                        continue
                     transport = self.owner.transport
                     if transport is not None:
                         transport.sendto(payload, self.client)
@@ -1189,6 +1207,26 @@ class _EntryUdpSession:
             self.owner.remove_session(self.client, self)
 
 
+class _UdpRateBucket:
+    """Monotonic token bucket with a two-second burst allowance."""
+
+    def __init__(self, rate_pps: int):
+        self.rate_pps = rate_pps
+        self.capacity = float(rate_pps * 2)
+        self.tokens = self.capacity
+        self.updated = time.monotonic()
+
+    def allow(self, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else max(now, self.updated)
+        elapsed = now - self.updated
+        self.updated = now
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.rate_pps)
+        if self.tokens < 1.0 - 1e-9:
+            return False
+        self.tokens = max(0.0, self.tokens - 1)
+        return True
+
+
 class _EntryUdpProtocol(asyncio.DatagramProtocol):
     def __init__(self, config: EntryConfig, meter: UsageMeter | None = None):
         self.config = config
@@ -1196,6 +1234,15 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
         self.transport: asyncio.DatagramTransport | None = None
         self.sessions: dict[tuple, _EntryUdpSession] = {}
         self.peer_sessions: dict[str, int] = {}
+        self.rate_buckets: dict[tuple[str, str], _UdpRateBucket] = {}
+
+    def _allow_rate(self, peer: str, direction: str, now: float | None = None) -> bool:
+        key = (peer, direction)
+        bucket = self.rate_buckets.get(key)
+        if bucket is None:
+            bucket = _UdpRateBucket(self.config.udp_rate_limit_pps)
+            self.rate_buckets[key] = bucket
+        return bucket.allow(now)
 
     @staticmethod
     def peer_key(addr) -> str:
@@ -1211,6 +1258,8 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
             self.peer_sessions[peer] = remaining
         else:
             del self.peer_sessions[peer]
+            self.rate_buckets.pop((peer, "upload"), None)
+            self.rate_buckets.pop((peer, "download"), None)
 
     def connection_made(self, transport) -> None:
         self.transport = transport
@@ -1220,17 +1269,23 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
             LOG.debug("dropping UDP client %r: monthly transfer quota reached", addr)
             return
         session = self.sessions.get(addr)
+        peer = self.peer_key(addr)
         if session is None:
             if len(self.sessions) >= MAX_UDP_ASSOCIATIONS:
                 LOG.warning("dropping UDP client %r: association limit reached", addr)
                 return
-            peer = self.peer_key(addr)
             if self.peer_sessions.get(peer, 0) >= self.config.client_session_limit:
                 LOG.debug("dropping UDP client %r: per-address session limit reached", addr)
+                return
+            if not self._allow_rate(peer, "upload"):
+                LOG.debug("dropping UDP client %r: per-address rate limit reached", addr)
                 return
             session = _EntryUdpSession(self, addr)
             self.sessions[addr] = session
             self.peer_sessions[peer] = self.peer_sessions.get(peer, 0) + 1
+        elif not self._allow_rate(peer, "upload"):
+            LOG.debug("dropping UDP client %r: per-address rate limit reached", addr)
+            return
         session.enqueue(data)
 
     def error_received(self, exc: OSError) -> None:
@@ -1245,6 +1300,7 @@ class _EntryUdpProtocol(asyncio.DatagramProtocol):
                                  return_exceptions=True)
         self.sessions.clear()
         self.peer_sessions.clear()
+        self.rate_buckets.clear()
 
 
 def _limited_handler(handler, active: list[int], limit: int,
