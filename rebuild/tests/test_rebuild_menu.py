@@ -63,7 +63,7 @@ def test_menu_status_and_runner_support_reverse_roles(tmp_path, monkeypatch):
     assert started == ["web"]
 
 
-def test_menu_check_reverse_agent_target_uses_its_fixed_config(tmp_path, monkeypatch):
+def test_menu_check_reverse_agent_uses_its_fixed_config(tmp_path, monkeypatch):
     (tmp_path / "reverse-agent.json").write_text(json.dumps({
         "role": "reverse-agent", "hub_host": "hub.example.net", "hub_port": 9443,
         "server_name": "hub.example.net", "ca_file": "/tmp/ca.crt",
@@ -76,9 +76,9 @@ def test_menu_check_reverse_agent_target_uses_its_fixed_config(tmp_path, monkeyp
         checked.append((config.target_host, config.target_port))
         return "fixed target reachable"
 
-    monkeypatch.setattr(menu, "check_reverse_agent_target", check)
+    monkeypatch.setattr(menu, "check_reverse_agent", check)
     lines = []
-    assert menu.check_reverse_agent_target_role(tmp_path, lines.append) == 0
+    assert menu.check_reverse_agent_role(tmp_path, lines.append) == 0
     assert checked == [("127.0.0.1", 8080)]
     assert lines == ["fixed target reachable"]
 

@@ -123,7 +123,7 @@ def test_cli_check_dispatches_reverse_agent_target_check(tmp_path, monkeypatch, 
         called.append(config.target_port)
         return "fixed target check result"
 
-    monkeypatch.setattr(tunnel, "check_reverse_agent_target", fake_check)
+    monkeypatch.setattr(tunnel, "check_reverse_agent", fake_check)
     assert tunnel.main(["--config", str(config_path), "--check"]) == 0
     assert called == [8080]
     assert "fixed target check result" in capsys.readouterr().out

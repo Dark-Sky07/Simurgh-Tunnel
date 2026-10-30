@@ -44,7 +44,7 @@ Example reverse agent config:
 
 The agent reconnects with bounded exponential backoff after control-channel failure. Public clients are rejected if no agent is registered or if the agent cannot open its fixed target. Start the nodes from the terminal menu or with `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-hub.json"` and `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-agent.json"`. Existing configuration backups and auto-start controls also apply to the reverse roles.
 
-To check that the agent's configured local service accepts TCP connections, run `simurgh-next-node --check --config "$HOME/.config/simurgh-next/reverse-agent.json"`, use terminal-menu option 11, or select **Check fixed target** in the loopback panel. The check connects only to the fixed target already in the agent config and immediately closes without sending application data. It does not verify hub reachability, TLS registration, or application-level health.
+To diagnose both sides of the reverse agent, run `simurgh-next-node --check --config "$HOME/.config/simurgh-next/reverse-agent.json"`, use terminal-menu option 11, or select **Check hub and target** in the loopback panel. The hub probe verifies TLS and the configured route credentials without registering or replacing the agent; the local probe connects only to the fixed target already in the config and immediately closes. Neither sends application payload. The check does not establish application-level health.
 
 ## 1. Prepare an exit certificate
 

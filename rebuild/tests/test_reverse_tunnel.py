@@ -176,11 +176,60 @@ def test_reverse_agent_target_check_only_connects_to_the_fixed_local_target():
         )
         try:
             result = await tunnel.check_reverse_agent_target(config)
-            assert "application-protocol and hub reachability are unverified" in result
+            assert "accepted TCP" in result
             assert connections == [True]
         finally:
             server.close()
             await server.wait_closed()
+
+    run(scenario())
+
+
+def test_reverse_agent_check_verifies_hub_without_registering_and_checks_target(tls_identity):
+    cert, key = tls_identity
+    secret = "reverse-agent-check-secret-0123456789"
+
+    async def scenario():
+        target_connections = []
+
+        async def target(reader, writer):
+            target_connections.append(True)
+            assert await reader.read() == b""
+            writer.close()
+            await writer.wait_closed()
+
+        target_server = await asyncio.start_server(target, "127.0.0.1", 0)
+        hub_config = tunnel.ReverseHubConfig(
+            "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "web",
+        )
+        control, public, state = await reverse._start_reverse_hub(hub_config)
+        config = tunnel.ReverseAgentConfig(
+            "127.0.0.1", control.sockets[0].getsockname()[1], "localhost", cert,
+            secret, "web", "127.0.0.1", target_server.sockets[0].getsockname()[1],
+        )
+        try:
+            result = await tunnel.check_reverse_agent(config)
+            assert "Hub TLS and route authentication succeeded" in result
+            assert "accepted TCP" in result
+            assert "no application payload was sent" in result
+            assert not state.agent_ready.is_set()
+            assert target_connections == [True]
+
+            wrong_secret = tunnel.ReverseAgentConfig(
+                config.hub_host, config.hub_port, config.server_name, config.ca_file,
+                "incorrect-reverse-agent-secret-012345", config.route,
+                config.target_host, config.target_port,
+            )
+            with pytest.raises(ConnectionError, match="hub check failed"):
+                await tunnel.check_reverse_agent(wrong_secret)
+            assert not state.agent_ready.is_set()
+            assert target_connections == [True]
+        finally:
+            control.close()
+            public.close()
+            target_server.close()
+            await asyncio.gather(control.wait_closed(), public.wait_closed(),
+                                 target_server.wait_closed())
 
     run(scenario())
 

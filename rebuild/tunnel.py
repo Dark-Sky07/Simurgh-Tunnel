@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.15"
+VERSION = "0.2.16"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -956,14 +956,13 @@ async def check_entry_path(config: EntryConfig) -> str:
 
 
 async def check_reverse_agent_target(config: ReverseAgentConfig) -> str:
-    """Check only the agent's configured fixed TCP target, without sending payload."""
+    """Check the agent's fixed TCP target without sending application payload."""
     writer = None
     try:
         _reader, writer = await asyncio.wait_for(
             asyncio.open_connection(config.target_host, config.target_port,
                                     limit=MAX_HANDSHAKE), timeout=CONNECT_TIMEOUT)
-        return (f"Configured fixed target {config.target_host}:{config.target_port} accepted a "
-                "TCP connection; application-protocol and hub reachability are unverified.")
+        return f"Configured fixed target {config.target_host}:{config.target_port} accepted TCP."
     except (TimeoutError, OSError) as exc:
         raise ConnectionError(f"reverse-agent fixed-target check failed: {exc}") from exc
     finally:
@@ -973,6 +972,44 @@ async def check_reverse_agent_target(config: ReverseAgentConfig) -> str:
                 await asyncio.wait_for(writer.wait_closed(), timeout=2)
             except (TimeoutError, OSError):
                 pass
+
+
+async def check_reverse_agent_hub(config: ReverseAgentConfig) -> str:
+    """Verify TLS and route credentials through the hub's non-registering probe."""
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(config.ca_file))
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    writer = None
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(config.hub_host, config.hub_port, ssl=context,
+                                    server_hostname=config.server_name, limit=MAX_HANDSHAKE),
+            timeout=CONNECT_TIMEOUT,
+        )
+        await _send_json(writer, {"version": 1, "op": "probe", "route": config.route,
+                                  "secret": config.secret})
+        response = await _read_json(reader)
+        if response.get("ok") is not True:
+            raise ConnectionError("hub rejected the configured route credentials")
+    except (TimeoutError, OSError, ProtocolError, EOFError) as exc:
+        raise ConnectionError(f"reverse-agent hub check failed: {exc}") from exc
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=2)
+            except (TimeoutError, OSError):
+                pass
+    return "Hub TLS and route authentication succeeded."
+
+
+async def check_reverse_agent(config: ReverseAgentConfig) -> str:
+    """Check the hub credentials and fixed target without registering or sending payload."""
+    hub_result = await check_reverse_agent_hub(config)
+    target_result = await check_reverse_agent_target(config)
+    return (f"{hub_result} {target_result} Application-protocol health remains unverified; "
+            "the agent was not registered and no application payload was sent.")
 
 
 async def speed_test_entry(config: EntryConfig,
@@ -1338,7 +1375,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, required=True, help="path to a JSON node config")
     diagnostics = parser.add_mutually_exclusive_group()
     diagnostics.add_argument("--check", action="store_true",
-                             help="check an entry route or a reverse agent's fixed local target")
+                             help="check an entry route or a reverse agent's hub and fixed target")
     diagnostics.add_argument("--speed-test-mib", type=int, metavar="MIB",
                              help="measure tunnel download speed (1–16 MiB, TCP entry only)")
     parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info")
@@ -1363,7 +1400,7 @@ def main(argv: list[str] | None = None) -> int:
                 if isinstance(config, EntryConfig):
                     result = asyncio.run(check_entry_path(config))
                 elif isinstance(config, ReverseAgentConfig):
-                    result = asyncio.run(check_reverse_agent_target(config))
+                    result = asyncio.run(check_reverse_agent(config))
                 else:
                     LOG.error("--check requires an entry or reverse-agent config")
                     return 2
