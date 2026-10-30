@@ -26,7 +26,7 @@ from .tunnel import (
     EntryConfig,
     ReverseAgentConfig,
     check_entry_path,
-    check_reverse_agent_target,
+    check_reverse_agent,
     load_config,
     speed_test_entry,
 )
@@ -223,7 +223,7 @@ def _dashboard(panel) -> str:
             if role == "entry":
                 check_action = _node_form(panel, "/node/check", role, "Check route")
             elif role == "reverse-agent":
-                check_action = _node_form(panel, "/node/check", role, "Check fixed target")
+                check_action = _node_form(panel, "/node/check", role, "Check hub and target")
             else:
                 check_action = ""
             speed_action = ""
@@ -483,7 +483,7 @@ class SetupPanel:
                 if self.path in ("/node/check", "/node/speed"):
                     role = _one(form, "role")
                     label = ("Speed test" if self.path == "/node/speed" else
-                             "Fixed-target check" if role == "reverse-agent" else "Route check")
+                             "Hub and target check" if role == "reverse-agent" else "Route check")
                     try:
                         if self.path == "/node/speed":
                             if role != "entry":
@@ -501,7 +501,7 @@ class SetupPanel:
                             config = load_config(panel.config_dir / "reverse-agent.json")
                             if not isinstance(config, ReverseAgentConfig):
                                 raise TypeError("reverse-agent.json does not contain an agent config")
-                            result = asyncio.run(check_reverse_agent_target(config))
+                            result = asyncio.run(check_reverse_agent(config))
                         else:
                             raise ValueError("checks are available for entry and reverse-agent roles")
                         self._send(200, _page(

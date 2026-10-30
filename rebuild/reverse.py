@@ -169,6 +169,24 @@ async def _hub_data(state: _HubState, reader: asyncio.StreamReader,
             pass
 
 
+async def _hub_probe(state: _HubState, writer: asyncio.StreamWriter,
+                     message: dict) -> None:
+    config = state.config
+    try:
+        if not _authenticated(message, secret=config.secret, route=config.route):
+            await _send_json(writer, {"ok": False, "error": "denied"})
+            return
+        await _send_json(writer, {"ok": True})
+    except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+        LOG.debug("reverse hub health probe failed: %s", exc)
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+
 async def _hub_connection(state: _HubState, reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter) -> None:
     try:
@@ -181,7 +199,9 @@ async def _hub_connection(state: _HubState, reader: asyncio.StreamReader,
         except OSError:
             pass
         return
-    if first.get("op") == "register":
+    if first.get("op") == "probe":
+        await _hub_probe(state, writer, first)
+    elif first.get("op") == "register":
         await _hub_control(state, reader, writer, first)
     elif first.get("op") == "data":
         await _hub_data(state, reader, writer, first)

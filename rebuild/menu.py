@@ -19,7 +19,7 @@ from .tunnel import (
     ReverseAgentConfig,
     ReverseHubConfig,
     check_entry_path,
-    check_reverse_agent_target,
+    check_reverse_agent,
     load_config,
     serve_entry,
     serve_exit,
@@ -137,7 +137,7 @@ def check_entry(config_dir: Path, output: Output = print) -> int:
     return 0
 
 
-def check_reverse_agent_target_role(config_dir: Path, output: Output = print) -> int:
+def check_reverse_agent_role(config_dir: Path, output: Output = print) -> int:
     path = config_dir / "reverse-agent.json"
     try:
         config = load_config(path)
@@ -145,12 +145,12 @@ def check_reverse_agent_target_role(config_dir: Path, output: Output = print) ->
         output(f"Cannot check reverse-agent target: {exc}")
         return 2
     if not isinstance(config, ReverseAgentConfig):
-        output("Target checks require a configured reverse-agent node.")
+        output("Reverse-agent checks require a configured reverse-agent node.")
         return 2
     try:
-        result = asyncio.run(check_reverse_agent_target(config))
+        result = asyncio.run(check_reverse_agent(config))
     except (ConnectionError, OSError, TimeoutError) as exc:
-        output(f"Reverse-agent target check failed: {exc}")
+        output(f"Reverse-agent check failed: {exc}")
         return 1
     output(result)
     return 0
@@ -188,7 +188,7 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
         output("8) Quit")
         output("9) Run reverse hub in foreground")
         output("10) Run reverse agent in foreground")
-        output("11) Check reverse-agent fixed target")
+        output("11) Check reverse-agent hub and target")
         choice = input_fn("Choose: ").strip()
         if choice == "1":
             setup_menu(config_dir, input_fn, output)
@@ -223,7 +223,7 @@ def menu(config_dir: Path, input_fn: Input = input, output: Output = print) -> i
             else:
                 run_role("reverse-agent", config_dir, output)
         elif choice == "11":
-            check_reverse_agent_target_role(config_dir, output)
+            check_reverse_agent_role(config_dir, output)
         else:
             output("Choose a number from 1 to 11.")
 

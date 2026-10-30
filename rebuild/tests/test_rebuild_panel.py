@@ -164,13 +164,13 @@ def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch):
         assert saved_agent["target_port"] == 8080
 
         with urllib.request.urlopen(url + "/") as response:
-            assert "Check fixed target" in response.read().decode()
+            assert "Check hub and target" in response.read().decode()
 
         async def target_check(config):
             assert config.target_port == 8080
             return "fixed local target accepted a TCP connection"
 
-        monkeypatch.setattr(panel_module, "check_reverse_agent_target", target_check)
+        monkeypatch.setattr(panel_module, "check_reverse_agent", target_check)
         with _post(url, "/node/check", {"csrf": csrf, "role": "reverse-agent"}) as response:
             assert response.status == 200
             assert "fixed local target accepted" in response.read().decode()
