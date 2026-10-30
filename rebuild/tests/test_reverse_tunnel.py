@@ -35,7 +35,9 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_reverse_agent_forwards_concurrent_tcp_clients_to_its_fixed_target(tls_identity):
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_agent_forwards_concurrent_tcp_clients_to_its_fixed_target(
+        tls_identity, carrier):
     cert, key = tls_identity
     secret = "reverse-mode-shared-secret-0123456789"
 
@@ -50,13 +52,14 @@ def test_reverse_agent_forwards_concurrent_tcp_clients_to_its_fixed_target(tls_i
         target = await asyncio.start_server(echo, "127.0.0.1", 0)
         hub_config = tunnel.ReverseHubConfig(
             "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "echo",
+            carrier=carrier,
         )
         control, public, state = await reverse._start_reverse_hub(hub_config)
         hub_port = control.sockets[0].getsockname()[1]
         public_port = public.sockets[0].getsockname()[1]
         agent_config = tunnel.ReverseAgentConfig(
             "127.0.0.1", hub_port, "localhost", cert, secret, "echo",
-            "127.0.0.1", target.sockets[0].getsockname()[1],
+            "127.0.0.1", target.sockets[0].getsockname()[1], carrier=carrier,
         )
         agent = asyncio.create_task(reverse.serve_reverse_agent(agent_config))
         try:
@@ -89,7 +92,8 @@ def test_reverse_agent_forwards_concurrent_tcp_clients_to_its_fixed_target(tls_i
     run(scenario())
 
 
-def test_reverse_agent_forwards_udp_clients_to_its_fixed_target(tls_identity):
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_agent_forwards_udp_clients_to_its_fixed_target(tls_identity, carrier):
     cert, key = tls_identity
     secret = "reverse-udp-shared-secret-0123456789"
 
@@ -116,14 +120,14 @@ def test_reverse_agent_forwards_udp_clients_to_its_fixed_target(tls_identity):
         target_port = target_transport.get_extra_info("sockname")[1]
         hub_config = tunnel.ReverseHubConfig(
             "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "dns",
-            transport="udp",
+            transport="udp", carrier=carrier,
         )
         control, public, state = await reverse._start_reverse_hub(hub_config)
         hub_port = control.sockets[0].getsockname()[1]
         public_port = public.get_extra_info("sockname")[1]
         agent_config = tunnel.ReverseAgentConfig(
             "127.0.0.1", hub_port, "localhost", cert, secret, "dns", "127.0.0.1",
-            target_port, transport="udp",
+            target_port, transport="udp", carrier=carrier,
         )
         agent = asyncio.create_task(reverse.serve_reverse_agent(agent_config))
         client_transport, client = await loop.create_datagram_endpoint(
@@ -285,7 +289,9 @@ def test_reverse_agent_target_check_only_connects_to_the_fixed_local_target():
     run(scenario())
 
 
-def test_reverse_agent_check_verifies_hub_without_registering_and_checks_target(tls_identity):
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_agent_check_verifies_hub_without_registering_and_checks_target(
+        tls_identity, carrier):
     cert, key = tls_identity
     secret = "reverse-agent-check-secret-0123456789"
 
@@ -301,11 +307,13 @@ def test_reverse_agent_check_verifies_hub_without_registering_and_checks_target(
         target_server = await asyncio.start_server(target, "127.0.0.1", 0)
         hub_config = tunnel.ReverseHubConfig(
             "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "web",
+            carrier=carrier,
         )
         control, public, state = await reverse._start_reverse_hub(hub_config)
         config = tunnel.ReverseAgentConfig(
             "127.0.0.1", control.sockets[0].getsockname()[1], "localhost", cert,
             secret, "web", "127.0.0.1", target_server.sockets[0].getsockname()[1],
+            carrier=carrier,
         )
         try:
             result = await tunnel.check_reverse_agent(config)
@@ -318,7 +326,7 @@ def test_reverse_agent_check_verifies_hub_without_registering_and_checks_target(
             wrong_secret = tunnel.ReverseAgentConfig(
                 config.hub_host, config.hub_port, config.server_name, config.ca_file,
                 "incorrect-reverse-agent-secret-012345", config.route,
-                config.target_host, config.target_port,
+                config.target_host, config.target_port, carrier=carrier,
             )
             with pytest.raises(ConnectionError, match="hub check failed"):
                 await tunnel.check_reverse_agent(wrong_secret)

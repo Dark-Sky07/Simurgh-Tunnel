@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.19"
+VERSION = "0.2.20"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -185,6 +185,13 @@ def _reverse_transport(obj: dict[str, Any]) -> str:
     return transport
 
 
+def _reverse_carrier(obj: dict[str, Any]) -> str:
+    carrier = obj.get("carrier", "tls")
+    if carrier not in ("tls", "wss", "h2"):
+        raise ConfigError("reverse carrier must be 'tls', 'wss' or 'h2'")
+    return carrier
+
+
 def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | ReverseAgentConfig:
     """Read a JSON config. It is read-only; this function never edits it."""
     try:
@@ -217,6 +224,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
             key_file=Path(_text(raw, "key_file")),
             secret=secret,
             route=route,
+            carrier=_reverse_carrier(raw),
             client_session_limit=_client_session_limit(raw),
             transport=_reverse_transport(raw),
             udp_rate_limit_pps=_udp_rate_limit_pps(raw),
@@ -235,6 +243,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
             route=route,
             target_host=_text(raw, "target_host"),
             target_port=_port(raw, "target_port"),
+            carrier=_reverse_carrier(raw),
             transport=_reverse_transport(raw),
         )
 
@@ -570,6 +579,9 @@ class _WebSocketStream:
 
     def get_extra_info(self, name: str, default=None):
         return self._base_writer.get_extra_info(name, default)
+
+    def is_closing(self) -> bool:
+        return self._closed or self._base_writer.is_closing()
 
     def close(self) -> None:
         if self._closed:
@@ -1039,18 +1051,12 @@ async def check_reverse_agent_target(config: ReverseAgentConfig) -> str:
 
 
 async def check_reverse_agent_hub(config: ReverseAgentConfig) -> str:
-    """Verify TLS and route credentials through the hub's non-registering probe."""
-    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(config.ca_file))
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.check_hostname = True
-    context.verify_mode = ssl.CERT_REQUIRED
+    """Verify hub TLS/carrier and route credentials through its non-registering probe."""
+    from .reverse import _open_agent_hub_connection
+
     writer = None
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(config.hub_host, config.hub_port, ssl=context,
-                                    server_hostname=config.server_name, limit=MAX_HANDSHAKE),
-            timeout=CONNECT_TIMEOUT,
-        )
+        reader, writer = await _open_agent_hub_connection(config)
         await _send_json(writer, {"version": 1, "op": "probe", "route": config.route,
                                   "secret": config.secret, "transport": config.transport})
         response = await _read_json(reader)
@@ -1065,7 +1071,8 @@ async def check_reverse_agent_hub(config: ReverseAgentConfig) -> str:
                 await asyncio.wait_for(writer.wait_closed(), timeout=2)
             except (TimeoutError, asyncio.TimeoutError, OSError):
                 pass
-    return "Hub TLS and route authentication succeeded."
+    return (f"Hub TLS and route authentication succeeded using the "
+            f"{config.carrier.upper()} carrier.")
 
 
 async def check_reverse_agent(config: ReverseAgentConfig) -> str:
