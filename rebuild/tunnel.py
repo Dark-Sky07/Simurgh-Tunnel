@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.14"
+VERSION = "0.2.15"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -955,6 +955,26 @@ async def check_entry_path(config: EntryConfig) -> str:
                 pass
 
 
+async def check_reverse_agent_target(config: ReverseAgentConfig) -> str:
+    """Check only the agent's configured fixed TCP target, without sending payload."""
+    writer = None
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(config.target_host, config.target_port,
+                                    limit=MAX_HANDSHAKE), timeout=CONNECT_TIMEOUT)
+        return (f"Configured fixed target {config.target_host}:{config.target_port} accepted a "
+                "TCP connection; application-protocol and hub reachability are unverified.")
+    except (TimeoutError, OSError) as exc:
+        raise ConnectionError(f"reverse-agent fixed-target check failed: {exc}") from exc
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=2)
+            except (TimeoutError, OSError):
+                pass
+
+
 async def speed_test_entry(config: EntryConfig,
                             mebibytes: int = DEFAULT_SPEED_TEST_MIB) -> str:
     """Measure authenticated tunnel download throughput with a bounded synthetic payload."""
@@ -1318,7 +1338,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, required=True, help="path to a JSON node config")
     diagnostics = parser.add_mutually_exclusive_group()
     diagnostics.add_argument("--check", action="store_true",
-                             help="test an entry's authenticated path and configured destination")
+                             help="check an entry route or a reverse agent's fixed local target")
     diagnostics.add_argument("--speed-test-mib", type=int, metavar="MIB",
                              help="measure tunnel download speed (1–16 MiB, TCP entry only)")
     parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info")
@@ -1328,15 +1348,26 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         _check_permissions(args.config)
-        if args.check or args.speed_test_mib is not None:
+        if args.speed_test_mib is not None:
             if not isinstance(config, EntryConfig):
-                LOG.error("diagnostics require an entry config; run them from the entry server")
+                LOG.error("speed tests require an entry config; run them from the entry server")
                 return 2
             try:
-                if args.check:
-                    print(asyncio.run(check_entry_path(config)))
+                print(asyncio.run(speed_test_entry(config, args.speed_test_mib)))
+            except (ConnectionError, OSError, TimeoutError, ValueError) as exc:
+                LOG.error("%s", exc)
+                return 1
+            return 0
+        if args.check:
+            try:
+                if isinstance(config, EntryConfig):
+                    result = asyncio.run(check_entry_path(config))
+                elif isinstance(config, ReverseAgentConfig):
+                    result = asyncio.run(check_reverse_agent_target(config))
                 else:
-                    print(asyncio.run(speed_test_entry(config, args.speed_test_mib)))
+                    LOG.error("--check requires an entry or reverse-agent config")
+                    return 2
+                print(result)
             except (ConnectionError, OSError, TimeoutError, ValueError) as exc:
                 LOG.error("%s", exc)
                 return 1

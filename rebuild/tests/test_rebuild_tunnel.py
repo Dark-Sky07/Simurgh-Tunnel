@@ -109,6 +109,26 @@ def test_entry_speed_test_measures_bounded_synthetic_download(server_certificate
     run(scenario())
 
 
+def test_cli_check_dispatches_reverse_agent_target_check(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "reverse-agent.json"
+    config_path.write_text(json.dumps({
+        "role": "reverse-agent", "hub_host": "hub.example.net", "hub_port": 9443,
+        "server_name": "hub.example.net", "ca_file": "/tmp/not-used.crt",
+        "secret": "reverse-agent-check-secret-0123456789", "route": "web",
+        "target_host": "127.0.0.1", "target_port": 8080,
+    }))
+    called = []
+
+    async def fake_check(config):
+        called.append(config.target_port)
+        return "fixed target check result"
+
+    monkeypatch.setattr(tunnel, "check_reverse_agent_target", fake_check)
+    assert tunnel.main(["--config", str(config_path), "--check"]) == 0
+    assert called == [8080]
+    assert "fixed target check result" in capsys.readouterr().out
+
+
 def test_speed_test_rejects_udp_and_out_of_range_sizes():
     config = tunnel.EntryConfig(
         "127.0.0.1", 0, "localhost", 443, "localhost", Path("/unused"),

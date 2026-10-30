@@ -157,6 +157,34 @@ def test_reverse_hub_shutdown_closes_pending_public_connections(tls_identity, mo
     run(scenario())
 
 
+def test_reverse_agent_target_check_only_connects_to_the_fixed_local_target():
+    async def scenario():
+        connections = []
+
+        async def target(reader, writer):
+            connections.append(True)
+            assert await reader.read() == b""
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_server(target, "127.0.0.1", 0)
+        config = tunnel.ReverseAgentConfig(
+            "unreachable-hub.invalid", 1, "unreachable-hub.invalid",
+            Path("/not-used-by-local-target-check.pem"),
+            "reverse-agent-check-secret-0123456789", "web", "127.0.0.1",
+            server.sockets[0].getsockname()[1],
+        )
+        try:
+            result = await tunnel.check_reverse_agent_target(config)
+            assert "application-protocol and hub reachability are unverified" in result
+            assert connections == [True]
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    run(scenario())
+
+
 def test_reverse_public_listener_applies_configured_source_ip_cap(tls_identity):
     cert, key = tls_identity
     config = tunnel.ReverseHubConfig(

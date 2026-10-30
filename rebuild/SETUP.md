@@ -44,6 +44,8 @@ Example reverse agent config:
 
 The agent reconnects with bounded exponential backoff after control-channel failure. Public clients are rejected if no agent is registered or if the agent cannot open its fixed target. Start the nodes from the terminal menu or with `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-hub.json"` and `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-agent.json"`. Existing configuration backups and auto-start controls also apply to the reverse roles.
 
+To check that the agent's configured local service accepts TCP connections, run `simurgh-next-node --check --config "$HOME/.config/simurgh-next/reverse-agent.json"`, use terminal-menu option 11, or select **Check fixed target** in the loopback panel. The check connects only to the fixed target already in the agent config and immediately closes without sending application data. It does not verify hub reachability, TLS registration, or application-level health.
+
 ## 1. Prepare an exit certificate
 
 Choose the same `carrier` (`tls`, `wss`, or `h2`) in both node configurations. WSS uses an HTTP/1.1 WebSocket upgrade at `/simurgh-tunnel`; H2 negotiates ALPN `h2` and uses one `POST /simurgh-tunnel` byte stream per TLS connection. Any reverse proxy must preserve the selected protocol and stream body. Do not terminate TLS at an untrusted proxy, because the tunnel secret and data are visible after TLS termination.
