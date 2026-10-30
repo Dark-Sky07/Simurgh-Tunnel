@@ -9,8 +9,9 @@ The current core provides authenticated direct-TLS, WSS, and HTTP/2 forwarding f
 - **entry** binds a local TCP or UDP listener and reaches the configured exit through TLS;
 - **exit** validates the shared secret and maps a configured route name to a fixed destination; peers cannot choose arbitrary hosts or ports;
 - TCP flows use a framed bidirectional stream and preserve half-close behavior; a half-closed flow with no further data progress is closed after two minutes, and forwarded sockets request best-effort OS keepalive;
-- UDP datagrams retain message boundaries and use bounded per-client sessions with an idle timeout;
+- UDP datagrams retain message boundaries and use bounded per-client sessions with an idle timeout; entry datagrams have configurable per-source-IP, per-direction rate limits (5,000 packets/s by default, with a two-second burst allowance);
 - entry payload bytes are counted by direction, with an optional UTC-month MiB quota enforced for TCP/UDP and visible in the local panel/menu;
+- the entry route diagnostic sends one synthetic 16-byte UDP frame through the authenticated tunnel and verifies the echo without contacting the configured UDP destination;
 - carriers are direct TLS, WebSocket binary streams over verified TLS, or one HTTP/2 request stream per TLS connection; the entry verifies the exit certificate and DNS name for every carrier;
 - the HTTP/2 carrier uses the `h2` runtime package, and the updater uses `sigstore` to verify GitHub build provenance; both are installed privately alongside the application by either installer;
 - reverse TCP forwarding adds a direct-TLS hub and an outbound agent behind NAT. The hub exposes one public TCP listener and one named route; the agent forwards only to its fixed local target. Concurrent client sessions are bounded; a configurable per-source-IP cap is available on entry and reverse public listeners (1–512, default 128). One agent per hub is currently supported. Reverse UDP and WSS/H2 carriers are not implemented.

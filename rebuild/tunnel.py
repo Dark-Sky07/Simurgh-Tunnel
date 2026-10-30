@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.17"
+VERSION = "0.2.18"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -823,6 +823,16 @@ async def _remote_udp_session(reader: asyncio.StreamReader,
             transport.close()
 
 
+async def _serve_udp_probe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Echo one bounded synthetic UDP frame without opening the configured destination."""
+    await _send_json(writer, {"ok": True})
+    kind, payload = await asyncio.wait_for(_read_frame(reader), timeout=HANDSHAKE_TIMEOUT)
+    if kind != _UDP_DATA or len(payload) > 256:
+        raise ProtocolError("UDP diagnostic expected a datagram frame of at most 256 bytes")
+    await _write_frame(writer, _UDP_DATA, payload)
+    await _write_frame(writer, _FIN)
+
+
 async def _serve_speed_test(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                            byte_count: int) -> None:
     await _send_json(writer, {"ok": True, "bytes": byte_count})
@@ -847,7 +857,7 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
         peer_secret = hello.get("secret")
         operation = hello.get("op")
         valid = (type(hello.get("version")) is int and hello.get("version") == 1
-                 and operation in ("open", "udp", "speed") and isinstance(peer_secret, str)
+                 and operation in ("open", "udp", "udp_probe", "speed") and isinstance(peer_secret, str)
                  and hmac.compare_digest(peer_secret.encode("utf-8"),
                                          config.secret.encode("utf-8"))
                  and isinstance(route_name, str) and route_name in config.routes)
@@ -861,6 +871,9 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
                 await _send_json(writer, {"ok": False, "error": "invalid_test_size"})
                 return
             await _serve_speed_test(reader, writer, byte_count)
+            return
+        if operation == "udp_probe":
+            await _serve_udp_probe(reader, writer)
             return
         target_host, target_port = config.routes[route_name]
         if operation == "udp":
@@ -938,7 +951,7 @@ async def _open_entry_connection(config: EntryConfig):
 async def check_entry_path(config: EntryConfig) -> str:
     """Verify the authenticated tunnel and destination setup without forwarding user data."""
     reader = writer = None
-    operation = "udp" if config.transport == "udp" else "open"
+    operation = "udp_probe" if config.transport == "udp" else "open"
     try:
         reader, writer = await _open_entry_connection(config)
         await _send_json(writer, {
@@ -952,9 +965,17 @@ async def check_entry_path(config: EntryConfig) -> str:
             reason = response.get("error", "route was rejected")
             raise ConnectionError(f"exit declined the route ({reason})")
         if config.transport == "udp":
-            return (f"{config.carrier.upper()} path and UDP association are available; the UDP "
-                    "destination did not receive a test datagram, so application reachability "
-                    "is unverified.")
+            probe = secrets.token_bytes(16)
+            await _write_frame(writer, _UDP_DATA, probe)
+            kind, echoed = await asyncio.wait_for(_read_frame(reader), timeout=HANDSHAKE_TIMEOUT)
+            if kind != _UDP_DATA or not hmac.compare_digest(echoed, probe):
+                raise ProtocolError("UDP diagnostic datagram was not echoed correctly")
+            kind, payload = await asyncio.wait_for(_read_frame(reader), timeout=HANDSHAKE_TIMEOUT)
+            if kind != _FIN or payload:
+                raise ProtocolError("UDP diagnostic did not close cleanly")
+            return (f"{config.carrier.upper()} authenticated path and synthetic UDP frame "
+                    "round-trip succeeded; the configured UDP destination received no test "
+                    "datagram, so application reachability remains unverified.")
         return (f"{config.carrier.upper()} path authenticated and the fixed TCP destination "
                 "accepted a connection.")
     except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:

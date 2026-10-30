@@ -40,6 +40,8 @@ After a successful handshake, each frame has a five-byte header: one type byte a
 
 For TCP, DATA frames carry stream chunks and FIN propagates a half-close to the destination socket. For UDP, each UDP DATA frame represents exactly one non-empty datagram; the exit returns each received datagram as its own UDP DATA frame. The UDP entry bounds each per-client queue to 128 datagrams and expires idle associations after 45 seconds.
 
+The entry `--check` for UDP uses the authenticated `udp_probe` operation: the exit validates the route and shared secret, echoes one synthetic 16-byte UDP DATA frame (the responder rejects frames over 256 bytes), and closes the tunnel stream. This verifies framing and carrier round-trip but never opens the configured UDP destination or sends it a datagram.
+
 ## Security and current limits
 
 - TLS handshakes time out after ten seconds; the application handshake is capped at 8 KiB and has a five-second deadline.

@@ -355,6 +355,50 @@ def test_udp_entry_keeps_datagram_boundaries_and_returns_responses(server_certif
     run(scenario())
 
 
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_udp_route_check_roundtrips_a_synthetic_frame_without_target_datagrams(
+        server_certificate, carrier):
+    cert, key = server_certificate
+
+    async def scenario():
+        class Observer(asyncio.DatagramProtocol):
+            def __init__(self):
+                self.received = []
+
+            def datagram_received(self, data, addr):
+                self.received.append((data, addr))
+
+        loop = asyncio.get_running_loop()
+        target_transport, target = await loop.create_datagram_endpoint(
+            Observer, local_addr=("127.0.0.1", 0))
+        target_port = target_transport.get_extra_info("sockname")[1]
+        secret = "udp-diagnostic-secret-0123456789abcdef"
+        exit_config = tunnel.ExitConfig(
+            "127.0.0.1", 0, cert, key, secret,
+            {"dns": ("127.0.0.1", target_port)}, carrier,
+        )
+        exit_server = await asyncio.start_server(
+            tunnel._exit_connection_handler(exit_config), "127.0.0.1", 0,
+            ssl=tunnel._server_ssl(exit_config), limit=tunnel.MAX_HANDSHAKE,
+        )
+        entry_config = tunnel.EntryConfig(
+            "127.0.0.1", 0, "localhost", exit_server.sockets[0].getsockname()[1],
+            "localhost", cert, secret, "dns", "udp", carrier,
+        )
+        try:
+            result = await tunnel.check_entry_path(entry_config)
+            assert "synthetic UDP frame round-trip succeeded" in result
+            assert "application reachability remains unverified" in result
+            await asyncio.sleep(0.05)
+            assert target.received == []
+        finally:
+            exit_server.close()
+            target_transport.close()
+            await exit_server.wait_closed()
+
+    run(scenario())
+
+
 def test_exit_rejects_bad_secret_before_opening_a_target(server_certificate):
     cert, key = server_certificate
     secret = "test-secret-" + "x" * 32
