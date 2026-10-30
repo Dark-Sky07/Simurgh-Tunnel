@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.18"
+VERSION = "0.2.19"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -98,6 +98,8 @@ class ReverseHubConfig:
     route: str
     carrier: str = "tls"
     client_session_limit: int = DEFAULT_CLIENT_SESSION_LIMIT
+    transport: str = "tcp"
+    udp_rate_limit_pps: int = DEFAULT_UDP_RATE_LIMIT_PPS
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,7 @@ class ReverseAgentConfig:
     target_host: str
     target_port: int
     carrier: str = "tls"
+    transport: str = "tcp"
 
 
 NODE_CONFIG_TYPES = {
@@ -175,6 +178,13 @@ def _udp_rate_limit_pps(obj: dict[str, Any]) -> int:
     return value
 
 
+def _reverse_transport(obj: dict[str, Any]) -> str:
+    transport = obj.get("transport", "tcp")
+    if transport not in ("tcp", "udp"):
+        raise ConfigError("reverse transport must be 'tcp' or 'udp'")
+    return transport
+
+
 def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | ReverseAgentConfig:
     """Read a JSON config. It is read-only; this function never edits it."""
     try:
@@ -208,6 +218,8 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
             secret=secret,
             route=route,
             client_session_limit=_client_session_limit(raw),
+            transport=_reverse_transport(raw),
+            udp_rate_limit_pps=_udp_rate_limit_pps(raw),
         )
 
     if role == "reverse-agent":
@@ -223,6 +235,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
             route=route,
             target_host=_text(raw, "target_host"),
             target_port=_port(raw, "target_port"),
+            transport=_reverse_transport(raw),
         )
 
     host = _text(raw, "listen_host")
@@ -990,7 +1003,24 @@ async def check_entry_path(config: EntryConfig) -> str:
 
 
 async def check_reverse_agent_target(config: ReverseAgentConfig) -> str:
-    """Check the agent's fixed TCP target without sending application payload."""
+    """Check TCP target acceptance or UDP target socket setup without sending payload."""
+    if config.transport == "udp":
+        transport = None
+        try:
+            transport, _ = await asyncio.wait_for(
+                asyncio.get_running_loop().create_datagram_endpoint(
+                    asyncio.DatagramProtocol,
+                    remote_addr=(config.target_host, config.target_port)),
+                timeout=CONNECT_TIMEOUT,
+            )
+            return (f"Configured fixed UDP target address {config.target_host}:"
+                    f"{config.target_port} resolved and socket setup succeeded; no datagram "
+                    "was sent, so target/application reachability is unverified.")
+        except (TimeoutError, OSError) as exc:
+            raise ConnectionError(f"reverse-agent fixed UDP target check failed: {exc}") from exc
+        finally:
+            if transport is not None:
+                transport.close()
     writer = None
     try:
         _reader, writer = await asyncio.wait_for(
@@ -1022,7 +1052,7 @@ async def check_reverse_agent_hub(config: ReverseAgentConfig) -> str:
             timeout=CONNECT_TIMEOUT,
         )
         await _send_json(writer, {"version": 1, "op": "probe", "route": config.route,
-                                  "secret": config.secret})
+                                  "secret": config.secret, "transport": config.transport})
         response = await _read_json(reader)
         if response.get("ok") is not True:
             raise ConnectionError("hub rejected the configured route credentials")

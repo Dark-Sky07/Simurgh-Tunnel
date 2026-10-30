@@ -61,12 +61,16 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
             output(f"exit: configured, {config.carrier.upper()} listener "
                    f"{config.host}:{config.port}; {len(config.routes)} fixed route(s)")
         elif role == "reverse-hub" and isinstance(config, ReverseHubConfig):
+            udp_rate = (f"; rate cap={config.udp_rate_limit_pps} datagrams/s/source IP"
+                        if config.transport == "udp" else "")
             output(f"reverse hub: control {config.control_host}:{config.control_port}; "
-                   f"public TCP {config.public_host}:{config.public_port} route={config.route}; "
-                   f"client cap={config.client_session_limit}/source IP")
+                   f"public {config.transport.upper()} {config.public_host}:{config.public_port} "
+                   f"route={config.route}; client cap={config.client_session_limit}/source IP"
+                   f"{udp_rate}")
         elif role == "reverse-agent" and isinstance(config, ReverseAgentConfig):
             output(f"reverse agent: outbound TLS to {config.hub_host}:{config.hub_port}; "
-                   f"fixed target {config.target_host}:{config.target_port} route={config.route}")
+                   f"fixed {config.transport.upper()} target {config.target_host}:"
+                   f"{config.target_port} route={config.route}")
         else:
             output(f"{role}: config role does not match its filename")
     try:

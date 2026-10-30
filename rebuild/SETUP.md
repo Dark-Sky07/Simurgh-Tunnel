@@ -2,19 +2,20 @@
 
 This is a development milestone, not a production release. The same role-agnostic installer has a user mode (`sh install.sh`) and a system mode (`sudo sh install.sh --system`). In system mode, a dedicated unprivileged account runs a loopback-only web panel from a systemd service; existing `/etc/simurgh-next` files are archived before ownership changes, and `/etc/simurgh` is never touched. On either mode, roles are selected after installation, and roles marked for panel auto-start start when the panel does and receive bounded crash recovery: up to five restart attempts per five-minute window with exponential backoff. Manual stops are not retried; disabling auto-start cancels a pending restart. The user-level service option (`--enable-service`) may need systemd lingering for operation before login. The installer does not open firewall ports or upgrade Simurgh v3. It stages the `h2` package and its dependencies privately in each release, so installation and updates need access to the configured Python package index. Do not use it on a production server yet.
 
-## Reverse TCP forwarding (development feature)
+## Reverse TCP/UDP forwarding (development feature)
 
 Reverse mode lets a private-side agent initiate the connection to a public hub, so the hub does not need inbound reachability to the private host. Use the setup panel or terminal menu to configure **Reverse hub** on the public server and **Reverse agent** on the private server; installation remains role-agnostic. Copy the hub certificate's public CA/certificate to the agent through a trusted channel. Use the same route and a 32-byte-minimum secret on both nodes.
 
-The hub has two ports: a TLS control port (default 9443) for the agent's outbound connection, and a public raw TCP service port (default loopback:8080). To make the service reachable to outside clients, explicitly bind the public listener to the intended interface and allow that port through the firewall. The control listener should be reachable from the agent. The service-side TCP stream is not TLS-wrapped by the tunnel; rely on the application protocol's own TLS if its data needs encryption. The reverse agent only connects to its configured fixed target; the hub cannot supply a destination host or port.
+The hub has two ports: a TLS control port (default 9443) for the agent's outbound connection, and a public service port (default loopback:8080) using the selected transport. Set `transport` to the same `tcp` or `udp` value in both hub and agent configs; old configs default to TCP. To make the service reachable to outside clients, explicitly bind the public listener to the intended interface and allow that port/protocol through the firewall. The control listener should be reachable from the agent. The public service is not TLS-wrapped by the tunnel; rely on application-layer TLS where confidentiality is required. The reverse agent only connects to its configured fixed target; the hub cannot supply a destination host or port. UDP associations expire after 45 seconds idle, use bounded queues, and are rate-limited per public source IP.
 
-This increment supports direct TLS and TCP only, one configured route and one connected agent per hub. It supports multiple concurrent clients within the global and per-peer limits. Reverse UDP, WSS/H2, multi-agent routing, and real-host validation remain outstanding; do not treat this as a general private network or production-ready service.
+This increment supports direct TLS with TCP or UDP, one configured route and one connected agent per hub. It supports multiple concurrent clients within global, per-peer, and (for UDP) rate limits. Reverse WSS/H2, multi-agent routing, and real-host validation remain outstanding; do not treat this as a general private network or production-ready service.
 
 Example reverse hub config:
 
 ```json
 {
   "role": "reverse-hub",
+  "transport": "tcp",
   "control_host": "0.0.0.0",
   "control_port": 9443,
   "public_host": "127.0.0.1",
@@ -31,6 +32,7 @@ Example reverse agent config:
 ```json
 {
   "role": "reverse-agent",
+  "transport": "tcp",
   "hub_host": "hub.example.net",
   "hub_port": 9443,
   "server_name": "hub.example.net",
@@ -42,9 +44,9 @@ Example reverse agent config:
 }
 ```
 
-The agent reconnects with bounded exponential backoff after control-channel failure. Public clients are rejected if no agent is registered or if the agent cannot open its fixed target. Start the nodes from the terminal menu or with `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-hub.json"` and `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-agent.json"`. Existing configuration backups and auto-start controls also apply to the reverse roles.
+To use UDP, set `transport` to `udp` in both configs; the hub may also set `udp_rate_limit_pps` (1–100,000, default 5,000). UDP associations are created per public client address and expire after 45 idle seconds. The public UDP listener is a raw datagram service; it does not encrypt client-to-hub traffic. The agent reconnects with bounded exponential backoff after control-channel failure. Public clients are rejected if no agent is registered or if the agent cannot prepare its fixed target. Start the nodes from the terminal menu or with `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-hub.json"` and `simurgh-next-node --config "$HOME/.config/simurgh-next/reverse-agent.json"`. Existing configuration backups and auto-start controls also apply to the reverse roles.
 
-To diagnose both sides of the reverse agent, run `simurgh-next-node --check --config "$HOME/.config/simurgh-next/reverse-agent.json"`, use terminal-menu option 11, or select **Check hub and target** in the loopback panel. The hub probe verifies TLS and the configured route credentials without registering or replacing the agent; the local probe connects only to the fixed target already in the config and immediately closes. Neither sends application payload. The check does not establish application-level health.
+To diagnose the reverse agent, run `simurgh-next-node --check --config "$HOME/.config/simurgh-next/reverse-agent.json"`, use terminal-menu option 11, or select **Check hub and target** in the loopback panel. The hub probe verifies TLS, route credentials, and transport without registering or replacing the agent. For TCP, the local probe connects to the fixed target and immediately closes; for UDP it only resolves the target and prepares a UDP socket without sending a datagram. Application-level health remains unverified.
 
 ## 1. Prepare an exit certificate
 

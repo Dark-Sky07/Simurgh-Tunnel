@@ -69,13 +69,13 @@ def _form(csrf: str, config_dir: Path) -> str:
 <input type="hidden" name="csrf" value="{token}">
 <section class="card"><h2>Role and local listener</h2><div class="grid">
 <div class="field"><label for="role">This server is</label><select id="role" name="role"><option value="entry">Entry · accepts user traffic</option><option value="exit">Exit · connects to a fixed destination</option><option value="reverse-hub">Reverse hub · public listener</option><option value="reverse-agent">Reverse agent · private target</option></select></div>
-<div class="field"><label for="transport">Local entry transport</label><select id="transport" name="transport"><option value="tcp">TCP stream</option><option value="udp">UDP datagrams</option></select></div>
+<div class="field"><label for="transport">Forwarding transport · reverse hub and agent must match</label><select id="transport" name="transport"><option value="tcp">TCP stream</option><option value="udp">UDP datagrams</option></select></div>
 <div class="field"><label for="carrier">Tunnel carrier · must match both nodes</label><select id="carrier" name="carrier"><option value="tls">TLS stream</option><option value="wss">WebSocket over TLS (WSS)</option><option value="h2">HTTP/2 stream over TLS (H2)</option></select></div>
 <div class="field"><label for="listen_host">Listen address</label><input id="listen_host" name="listen_host" value="127.0.0.1" required></div>
 <div class="field"><label for="listen_port">Listen port</label><input id="listen_port" name="listen_port" type="number" min="1" max="65535" value="18080" required></div>
 <div class="field wide"><label for="route">Route name (must match at both ends)</label><input id="route" name="route" value="web" maxlength="64" required></div>
 <div class="field"><label for="client_session_limit">Concurrent client sessions per source IP · entry/reverse hub</label><input id="client_session_limit" name="client_session_limit" type="number" min="1" max="512" value="128"></div>
-<div class="field"><label for="udp_rate_limit_pps">UDP datagrams per second per source IP · entry only</label><input id="udp_rate_limit_pps" name="udp_rate_limit_pps" type="number" min="1" max="100000" value="5000"></div>
+<div class="field"><label for="udp_rate_limit_pps">UDP datagrams per second per source IP · entry/reverse hub</label><input id="udp_rate_limit_pps" name="udp_rate_limit_pps" type="number" min="1" max="100000" value="5000"></div>
 <div class="field"><label for="monthly_quota_mib">Entry monthly quota in MiB · blank means unlimited</label><input id="monthly_quota_mib" name="monthly_quota_mib" type="number" min="1" max="1048576" placeholder="Unlimited"></div>
 </div><p class="hint">Quota changes apply after restarting the entry node. The quota counts payload in both directions and resets on the UTC month.</p></section>
 <section class="card"><h2>Secure link</h2><div class="grid">
@@ -91,7 +91,7 @@ def _form(csrf: str, config_dir: Path) -> str:
 <div class="field"><label for="cert_file">Exit TLS certificate path</label><input id="cert_file" name="cert_file" value="{tls_dir}/server.crt"></div>
 <div class="field"><label for="key_file">Exit TLS private key path</label><input id="key_file" name="key_file" value="{tls_dir}/server.key"></div>
 </div><p class="hint">The connecting entry can request only the route name above. It cannot send a host or port.</p></section>
-<section class="card"><h2>Reverse TCP settings · used by reverse roles</h2><div class="grid">
+<section class="card"><h2>Reverse TCP/UDP settings · used by reverse roles</h2><div class="grid">
 <div class="field"><label for="control_host">Hub TLS bind address</label><input id="control_host" name="control_host" value="0.0.0.0"></div>
 <div class="field"><label for="control_port">Hub TLS control port</label><input id="control_port" name="control_port" type="number" min="1" max="65535" value="9443"></div>
 <div class="field"><label for="public_host">Hub public service bind address</label><input id="public_host" name="public_host" value="127.0.0.1"></div>
@@ -102,7 +102,7 @@ def _form(csrf: str, config_dir: Path) -> str:
 <div class="field wide"><label for="reverse_ca_file">Trusted CA certificate path</label><input id="reverse_ca_file" name="reverse_ca_file" value="{tls_dir}/ca.crt"></div>
 <div class="field"><label for="reverse_target_host">Fixed private service address</label><input id="reverse_target_host" name="reverse_target_host" value="127.0.0.1"></div>
 <div class="field"><label for="reverse_target_port">Fixed private service port</label><input id="reverse_target_port" name="reverse_target_port" type="number" min="1" max="65535" value="8080"></div>
-</div><p class="hint">Reverse mode is direct TLS and TCP-only. The agent initiates outbound connections; the hub exposes a public TCP listener to callers and forwards to the agent's fixed local target.</p></section>
+</div><p class="hint">Reverse mode uses direct TLS with matching TCP or UDP settings on hub and agent. The agent initiates outbound connections; the hub exposes a separate public listener and forwards only to the agent's fixed local target.</p></section>
 <section class="notice">The panel can start or stop its own node processes. It does not install services, change firewall rules, or replace existing files without making a private backup.</section>
 <div class="action"><button class="button" type="submit">Save node configuration</button><label class="replace"><input type="checkbox" name="replace" value="yes">I understand that an existing rebuild config will be backed up before replacement.</label></div>
 </form>"""
@@ -299,6 +299,13 @@ def _udp_rate_limit_pps(form: dict[str, list[str]]) -> int:
     return value
 
 
+def _reverse_transport(form: dict[str, list[str]]) -> str:
+    value = _one(form, "transport", "tcp")
+    if value not in ("tcp", "udp"):
+        raise ValueError("reverse transport must be TCP or UDP")
+    return value
+
+
 def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
     role = _one(form, "role")
     if role not in NODE_ROLES:
@@ -321,9 +328,12 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
             "secret": secret,
             "route": route,
             "client_session_limit": _client_session_limit(form),
+            "transport": _reverse_transport(form),
         }
         if not all(config[key] for key in ("control_host", "public_host", "cert_file", "key_file")):
             raise ValueError("reverse hub bind addresses, certificate and key are required")
+        if config["transport"] == "udp":
+            config["udp_rate_limit_pps"] = _udp_rate_limit_pps(form)
         return role, config
     if role == "reverse-agent":
         config = {
@@ -336,6 +346,7 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
             "route": route,
             "target_host": _one(form, "reverse_target_host"),
             "target_port": _number(form, "reverse_target_port"),
+            "transport": _reverse_transport(form),
         }
         if not all(config[key] for key in ("hub_host", "server_name", "ca_file", "target_host")):
             raise ValueError("hub address, TLS identity, CA path and fixed target are required")
