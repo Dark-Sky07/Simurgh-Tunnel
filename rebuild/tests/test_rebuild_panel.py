@@ -129,7 +129,7 @@ def test_panel_rejects_wrong_loopback_port_and_cross_origin_posts(tmp_path):
         panel.close()
 
 
-def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path):
+def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch):
     panel, url = started_panel(tmp_path)
     try:
         csrf = _csrf(url)
@@ -162,6 +162,18 @@ def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path):
         assert saved_agent["hub_port"] == 9443
         assert saved_agent["target_host"] == "127.0.0.1"
         assert saved_agent["target_port"] == 8080
+
+        with urllib.request.urlopen(url + "/") as response:
+            assert "Check fixed target" in response.read().decode()
+
+        async def target_check(config):
+            assert config.target_port == 8080
+            return "fixed local target accepted a TCP connection"
+
+        monkeypatch.setattr(panel_module, "check_reverse_agent_target", target_check)
+        with _post(url, "/node/check", {"csrf": csrf, "role": "reverse-agent"}) as response:
+            assert response.status == 200
+            assert "fixed local target accepted" in response.read().decode()
     finally:
         panel.close()
 

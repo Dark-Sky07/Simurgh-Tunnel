@@ -10,7 +10,7 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.14. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.15. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
@@ -30,6 +30,7 @@ Forward mode connects an **entry** node to an **exit** node. Reverse mode instea
 - One installer entry point for both per-user and systemd-managed installation.
 - Namespaced release checks in the panel, plus terminal update installation with SHA-256 asset verification.
 - An entry-side route check (`simurgh-next-node --check --config ...`) verifies TLS/WSS/H2 authentication and whether the configured TCP destination accepts a connection. For UDP it confirms tunnel association setup only; it does not send a probe datagram to the destination.
+- A reverse-agent target check (`simurgh-next-node --check --config reverse-agent.json`) probes only the fixed local TCP target in that config; it sends no payload and does not claim hub or application-protocol health.
 - A bounded synthetic download speed test is available for TCP entries from the CLI (`--speed-test-mib 4`), terminal menu, and local panel. It measures tunnel capacity, not end-to-end application throughput; UDP is intentionally unsupported.
 - Entry traffic is counted by direction and shown in the panel/menu. An optional `monthly_quota_mib` setting applies a UTC-month payload limit; TCP flows stop at the boundary and UDP datagrams are never partially forwarded. State is private (`0600`) and periodically persisted.
 

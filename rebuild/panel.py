@@ -24,7 +24,9 @@ from .tunnel import (
     NODE_ROLES,
     VERSION,
     EntryConfig,
+    ReverseAgentConfig,
     check_entry_path,
+    check_reverse_agent_target,
     load_config,
     speed_test_entry,
 )
@@ -218,8 +220,12 @@ def _dashboard(panel) -> str:
                 "Disable auto-start" if auto else "Enable auto-start",
                 enabled="no" if auto else "yes",
             )
-            check_action = (_node_form(panel, "/node/check", role, "Check route")
-                            if role == "entry" else "")
+            if role == "entry":
+                check_action = _node_form(panel, "/node/check", role, "Check route")
+            elif role == "reverse-agent":
+                check_action = _node_form(panel, "/node/check", role, "Check fixed target")
+            else:
+                check_action = ""
             speed_action = ""
             if role == "entry":
                 try:
@@ -475,17 +481,29 @@ class SetupPanel:
                             status=f"Notification setting rejected: {exc}"))
                     return
                 if self.path in ("/node/check", "/node/speed"):
-                    label = "Route check" if self.path == "/node/check" else "Speed test"
+                    role = _one(form, "role")
+                    label = ("Speed test" if self.path == "/node/speed" else
+                             "Fixed-target check" if role == "reverse-agent" else "Route check")
                     try:
-                        if _one(form, "role") != "entry":
-                            raise ValueError("diagnostics are available only for the entry role")
-                        config = load_config(panel.config_dir / "entry.json")
-                        if not isinstance(config, EntryConfig):
-                            raise TypeError("entry.json does not contain an entry config")
-                        if self.path == "/node/check":
-                            result = asyncio.run(check_entry_path(config))
-                        else:
+                        if self.path == "/node/speed":
+                            if role != "entry":
+                                raise ValueError("speed tests are available only for the entry role")
+                            config = load_config(panel.config_dir / "entry.json")
+                            if not isinstance(config, EntryConfig):
+                                raise TypeError("entry.json does not contain an entry config")
                             result = asyncio.run(speed_test_entry(config))
+                        elif role == "entry":
+                            config = load_config(panel.config_dir / "entry.json")
+                            if not isinstance(config, EntryConfig):
+                                raise TypeError("entry.json does not contain an entry config")
+                            result = asyncio.run(check_entry_path(config))
+                        elif role == "reverse-agent":
+                            config = load_config(panel.config_dir / "reverse-agent.json")
+                            if not isinstance(config, ReverseAgentConfig):
+                                raise TypeError("reverse-agent.json does not contain an agent config")
+                            result = asyncio.run(check_reverse_agent_target(config))
+                        else:
+                            raise ValueError("checks are available for entry and reverse-agent roles")
                         self._send(200, _page(
                             _dashboard(panel) + _form(panel.csrf, panel.config_dir),
                             status=f"{label}: {result}"))
