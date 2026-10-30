@@ -141,7 +141,7 @@ async def _hub_control(state: _HubState, reader: asyncio.StreamReader,
                         pending_udp.completed.set()
             else:
                 raise ConnectionError("unsupported reverse-control operation")
-    except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("reverse agent control session ended: %s", exc)
     finally:
         if registered and state.agent_writer is writer:
@@ -186,11 +186,11 @@ async def _hub_data(state: _HubState, reader: asyncio.StreamReader,
                 _copy_to_tunnel(pending.reader, writer, activity=activity),
                 activity=activity,
             )
-        except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+        except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
             LOG.debug("reverse data channel ended: %s", exc)
         finally:
             pending.completed.set()
-    except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("invalid reverse data connection: %s", exc)
     finally:
         writer.close()
@@ -223,7 +223,7 @@ async def _hub_udp_data(state: _HubState, reader: asyncio.StreamReader,
             while True:
                 try:
                     payload = await asyncio.wait_for(pending.queue.get(), UDP_IDLE_TIMEOUT)
-                except TimeoutError:
+                except (TimeoutError, asyncio.TimeoutError):
                     await _write_frame(writer, _FIN)
                     return
                 await _write_frame(writer, _UDP_DATA, payload)
@@ -240,7 +240,7 @@ async def _hub_udp_data(state: _HubState, reader: asyncio.StreamReader,
                     pending.transport.sendto(payload, pending.client)
 
         await _stop_when_either_finishes(public_to_agent(), agent_to_public())
-    except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("reverse UDP data channel ended: %s", exc)
     finally:
         if pending is not None:
@@ -262,7 +262,7 @@ async def _hub_probe(state: _HubState, writer: asyncio.StreamWriter,
             await _send_json(writer, {"ok": False, "error": "denied"})
             return
         await _send_json(writer, {"ok": True})
-    except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("reverse hub health probe failed: %s", exc)
     finally:
         writer.close()
@@ -276,7 +276,7 @@ async def _hub_connection(state: _HubState, reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter) -> None:
     try:
         first = await _read_json(reader)
-    except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("invalid reverse control connection: %s", exc)
         writer.close()
         try:
@@ -318,12 +318,12 @@ async def _public_connection(state: _HubState, reader: asyncio.StreamReader,
                 raise ConnectionError("reverse agent is not connected")
             async with state.agent_write_lock:
                 await _send_json(control, {"op": "open", "channel": channel})
-        except (TimeoutError, ConnectionError, OSError) as exc:
+        except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError) as exc:
             LOG.info("closing public reverse connection; no agent available: %s", exc)
             return
         try:
             await asyncio.wait_for(pending.completed.wait(), timeout=_CHANNEL_OPEN_TIMEOUT)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             LOG.info("reverse agent did not open channel before timeout")
             return
         if pending.error:
@@ -366,7 +366,7 @@ class _HubUdpSession:
                 })
             await asyncio.wait_for(pending.opened.wait(), _CHANNEL_OPEN_TIMEOUT)
             await pending.completed.wait()
-        except (TimeoutError, ConnectionError, OSError) as exc:
+        except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError) as exc:
             LOG.debug("reverse UDP channel to %r ended: %s", self.client, exc)
         finally:
             state.pending_udp.pop(channel, None)
@@ -456,7 +456,7 @@ async def _agent_channel(config: ReverseAgentConfig, channel: str,
             target_reader, target_writer = await asyncio.wait_for(
                 asyncio.open_connection(config.target_host, config.target_port,
                                         limit=MAX_HANDSHAKE), timeout=CONNECT_TIMEOUT)
-        except (TimeoutError, OSError):
+        except (TimeoutError, asyncio.TimeoutError, OSError):
             async with control_lock:
                 await _send_json(control_writer, {"op": "failed", "channel": channel})
             return
@@ -485,7 +485,7 @@ async def _agent_channel(config: ReverseAgentConfig, channel: str,
             _copy_to_tunnel(target_reader, data_writer, activity=activity),
             activity=activity,
         )
-    except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("reverse data channel %s ended: %s", channel, exc)
     finally:
         for stream_writer in (target_writer, data_writer):
@@ -551,7 +551,7 @@ async def _agent_udp_channel(config: ReverseAgentConfig, channel: str,
                 await _write_frame(data_writer, _UDP_DATA, payload)
 
         await _stop_when_either_finishes(tunnel_to_udp(), udp_to_tunnel())
-    except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         if not established:
             try:
                 async with control_lock:
@@ -642,7 +642,7 @@ async def serve_reverse_agent(config: ReverseAgentConfig) -> None:
             delay = 1.0
         except asyncio.CancelledError:
             raise
-        except (TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
+        except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
             LOG.warning("reverse hub connection failed: %s; retrying in %.0f s", exc, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30.0)

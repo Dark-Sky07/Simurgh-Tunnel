@@ -325,7 +325,7 @@ def _ws_accept(key: str) -> str:
 async def _read_http_headers(reader: asyncio.StreamReader) -> tuple[str, dict[str, str]]:
     try:
         raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=HANDSHAKE_TIMEOUT)
-    except (TimeoutError, asyncio.LimitOverrunError, asyncio.IncompleteReadError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, asyncio.LimitOverrunError, asyncio.IncompleteReadError) as exc:
         raise ProtocolError("WebSocket HTTP handshake timed out or exceeded its header limit") from exc
     if len(raw) > _WS_HEADER_LIMIT:
         raise ProtocolError("WebSocket HTTP headers are oversized")
@@ -597,7 +597,7 @@ async def _send_json(writer: asyncio.StreamWriter, value: dict[str, Any]) -> Non
 async def _read_json(reader: asyncio.StreamReader) -> dict[str, Any]:
     try:
         line = await asyncio.wait_for(reader.readline(), timeout=HANDSHAKE_TIMEOUT)
-    except (TimeoutError, asyncio.LimitOverrunError, ValueError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, asyncio.LimitOverrunError, ValueError) as exc:
         raise ProtocolError("handshake timed out or exceeded the stream limit") from exc
     if not line or len(line) > MAX_HANDSHAKE or not line.endswith(b"\n"):
         raise ProtocolError("missing or oversized handshake")
@@ -895,7 +895,7 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
         try:
             remote_reader, remote_writer = await asyncio.wait_for(
                 asyncio.open_connection(target_host, target_port), timeout=CONNECT_TIMEOUT)
-        except (TimeoutError, OSError):
+        except (TimeoutError, asyncio.TimeoutError, OSError):
             await _send_json(writer, {"ok": False, "error": "target_unavailable"})
             return
         _enable_tcp_keepalive(writer)
@@ -907,7 +907,7 @@ async def _open_exit_route(config: ExitConfig, reader: asyncio.StreamReader,
             _copy_to_tunnel(remote_reader, writer, activity=activity),
             activity=activity,
         )
-    except (TimeoutError, ProtocolError, EOFError, OSError, ssl.SSLError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, ProtocolError, EOFError, OSError, ssl.SSLError) as exc:
         LOG.debug("closing invalid or interrupted tunnel session: %s", exc)
     finally:
         if remote_writer is not None:
@@ -991,14 +991,14 @@ async def check_entry_path(config: EntryConfig) -> str:
                     "datagram, so application reachability remains unverified.")
         return (f"{config.carrier.upper()} path authenticated and the fixed TCP destination "
                 "accepted a connection.")
-    except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
         raise ConnectionError(f"path check failed: {exc}") from exc
     finally:
         if writer is not None:
             writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), timeout=2)
-            except (TimeoutError, OSError):
+            except (TimeoutError, asyncio.TimeoutError, OSError):
                 pass
 
 
@@ -1016,7 +1016,7 @@ async def check_reverse_agent_target(config: ReverseAgentConfig) -> str:
             return (f"Configured fixed UDP target address {config.target_host}:"
                     f"{config.target_port} resolved and socket setup succeeded; no datagram "
                     "was sent, so target/application reachability is unverified.")
-        except (TimeoutError, OSError) as exc:
+        except (TimeoutError, asyncio.TimeoutError, OSError) as exc:
             raise ConnectionError(f"reverse-agent fixed UDP target check failed: {exc}") from exc
         finally:
             if transport is not None:
@@ -1027,14 +1027,14 @@ async def check_reverse_agent_target(config: ReverseAgentConfig) -> str:
             asyncio.open_connection(config.target_host, config.target_port,
                                     limit=MAX_HANDSHAKE), timeout=CONNECT_TIMEOUT)
         return f"Configured fixed target {config.target_host}:{config.target_port} accepted TCP."
-    except (TimeoutError, OSError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, OSError) as exc:
         raise ConnectionError(f"reverse-agent fixed-target check failed: {exc}") from exc
     finally:
         if writer is not None:
             writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), timeout=2)
-            except (TimeoutError, OSError):
+            except (TimeoutError, asyncio.TimeoutError, OSError):
                 pass
 
 
@@ -1056,14 +1056,14 @@ async def check_reverse_agent_hub(config: ReverseAgentConfig) -> str:
         response = await _read_json(reader)
         if response.get("ok") is not True:
             raise ConnectionError("hub rejected the configured route credentials")
-    except (TimeoutError, OSError, ProtocolError, EOFError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, OSError, ProtocolError, EOFError) as exc:
         raise ConnectionError(f"reverse-agent hub check failed: {exc}") from exc
     finally:
         if writer is not None:
             writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), timeout=2)
-            except (TimeoutError, OSError):
+            except (TimeoutError, asyncio.TimeoutError, OSError):
                 pass
     return "Hub TLS and route authentication succeeded."
 
@@ -1114,14 +1114,14 @@ async def speed_test_entry(config: EntryConfig,
         return (f"Received {mebibytes} MiB over {config.carrier.upper()} in {elapsed:.2f} s "
                 f"({rate_mbps:.2f} Mbit/s). This measures tunnel download capacity, "
                 "not end-to-end application performance.")
-    except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
         raise ConnectionError(f"speed test failed: {exc}") from exc
     finally:
         if writer is not None:
             writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), timeout=2)
-            except (TimeoutError, OSError):
+            except (TimeoutError, asyncio.TimeoutError, OSError):
                 pass
 
 
@@ -1155,7 +1155,7 @@ async def _forward_entry(config: EntryConfig, local_reader: asyncio.StreamReader
         )
     except QuotaReached as exc:
         LOG.info("closing entry flow: %s", exc)
-    except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
+    except (TimeoutError, asyncio.TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
         LOG.warning("tunnel flow to %s:%s failed: %s", config.exit_host,
                     config.exit_port, exc)
     finally:
@@ -1221,7 +1221,7 @@ class _EntryUdpSession:
                     try:
                         payload = await asyncio.wait_for(
                             self.queue.get(), timeout=UDP_IDLE_TIMEOUT)
-                    except TimeoutError:
+                    except (TimeoutError, asyncio.TimeoutError):
                         await _write_frame(remote_writer, _FIN)
                         return
                     await _write_frame(remote_writer, _UDP_DATA, payload)
@@ -1246,7 +1246,7 @@ class _EntryUdpSession:
                         transport.sendto(payload, self.client)
 
             await _stop_when_either_finishes(send_datagrams(), receive_datagrams())
-        except (TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
+        except (TimeoutError, asyncio.TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
             LOG.debug("UDP tunnel for %r ended: %s", self.client, exc)
         finally:
             if remote_writer is not None:
@@ -1400,7 +1400,7 @@ def _exit_connection_handler(config: ExitConfig):
                 stream = await H2TunnelStream(reader, writer, client=False).start_server()
             else:
                 raise ConfigError(f"unsupported carrier: {config.carrier}")
-        except (TimeoutError, ProtocolError, OSError) as exc:
+        except (TimeoutError, asyncio.TimeoutError, ProtocolError, OSError) as exc:
             LOG.debug("closing invalid %s tunnel upgrade: %s", config.carrier, exc)
             writer.close()
             try:
