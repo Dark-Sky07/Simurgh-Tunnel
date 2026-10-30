@@ -54,7 +54,7 @@ def entry_fields(secret="s" * 40):
     return {
         "role": "entry", "transport": "tcp", "listen_host": "127.0.0.1",
         "listen_port": "18080", "route": "web", "secret": secret,
-        "client_session_limit": "128",
+        "client_session_limit": "128", "udp_rate_limit_pps": "5000",
         "exit_host": "exit.example.net", "exit_port": "8443",
         "server_name": "exit.example.net", "ca_file": "/etc/simurgh-next/tls/ca.crt",
         "target_host": "127.0.0.1", "target_port": "8080",
@@ -85,6 +85,7 @@ def test_setup_panel_is_loopback_only_and_offers_role_selection(tmp_path):
         assert 'value="entry"' in body and 'value="exit"' in body
         assert 'value="reverse-hub"' in body and 'value="reverse-agent"' in body
         assert 'name="client_session_limit"' in body
+        assert 'name="udp_rate_limit_pps"' in body
         assert panel.address[0] == "127.0.0.1"
 
         request = urllib.request.Request(url + "/", headers={"Host": "attacker.invalid"})
@@ -102,6 +103,16 @@ def test_panel_validates_client_session_limit_bounds():
     for invalid in ("0", "513", "1.5", "not-a-number"):
         fields["client_session_limit"] = [invalid]
         with pytest.raises(ValueError, match="client session limit"):
+            panel_module._build_form_config(fields)
+
+
+def test_panel_validates_udp_rate_limit(tmp_path):
+    fields = {key: [value] for key, value in entry_fields().items()}
+    fields["transport"] = ["udp"]
+    assert panel_module._build_form_config(fields)[1]["udp_rate_limit_pps"] == 5000
+    for invalid in ("0", "100001", "1.5", "not-a-number"):
+        fields["udp_rate_limit_pps"] = [invalid]
+        with pytest.raises(ValueError, match="UDP datagram rate limit"):
             panel_module._build_form_config(fields)
 
 

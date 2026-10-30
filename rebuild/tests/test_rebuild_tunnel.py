@@ -7,6 +7,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -497,6 +498,68 @@ def test_config_validates_optional_monthly_quota(tmp_path):
         path.write_text(json.dumps(config))
         with pytest.raises(tunnel.ConfigError, match="monthly_quota_mib"):
             tunnel.load_config(path)
+
+
+def test_config_defaults_and_validates_udp_rate_limit(tmp_path):
+    path = tmp_path / "entry.json"
+    config = {
+        "role": "entry", "listen_host": "127.0.0.1", "listen_port": 1,
+        "exit_host": "localhost", "exit_port": 2, "server_name": "localhost",
+        "ca_file": "/tmp/ca.crt", "secret": "s" * 32, "route": "web",
+        "transport": "udp",
+    }
+    path.write_text(json.dumps(config))
+    assert tunnel.load_config(path).udp_rate_limit_pps == 5000
+    config["udp_rate_limit_pps"] = 1200
+    path.write_text(json.dumps(config))
+    assert tunnel.load_config(path).udp_rate_limit_pps == 1200
+    for invalid in (0, -1, True, "1200", 100001):
+        config["udp_rate_limit_pps"] = invalid
+        path.write_text(json.dumps(config))
+        with pytest.raises(tunnel.ConfigError, match="udp_rate_limit_pps"):
+            tunnel.load_config(path)
+
+
+def test_udp_listener_drops_over_limit_across_source_ports(monkeypatch):
+    class FakeSession:
+        def __init__(self, owner, addr):
+            self.items = []
+
+        def enqueue(self, payload):
+            self.items.append(payload)
+
+    monkeypatch.setattr(tunnel, "_EntryUdpSession", FakeSession)
+    config = tunnel.EntryConfig(
+        "127.0.0.1", 1, "localhost", 2, "localhost", Path("/unused"),
+        "s" * 32, "web", "udp", "tls", udp_rate_limit_pps=1,
+    )
+    protocol = tunnel._EntryUdpProtocol(config)
+    protocol.datagram_received(b"one", ("192.0.2.1", 12000))
+    protocol.datagram_received(b"two", ("192.0.2.1", 12000))
+    protocol.datagram_received(b"three", ("192.0.2.1", 12001))
+
+    assert len(protocol.sessions) == 1
+    assert protocol.peer_sessions == {"192.0.2.1": 1}
+    assert next(iter(protocol.sessions.values())).items == [b"one", b"two"]
+
+
+def test_udp_rate_limit_is_per_ip_directional_and_burst_tolerant():
+    config = tunnel.EntryConfig(
+        "127.0.0.1", 1, "localhost", 2, "localhost", Path("/unused"),
+        "s" * 32, "web", "udp", "tls", udp_rate_limit_pps=2,
+    )
+    protocol = tunnel._EntryUdpProtocol(config)
+    peer = protocol.peer_key(("192.0.2.1", 12000))
+    same_peer_other_port = protocol.peer_key(("192.0.2.1", 12001))
+    other_peer = protocol.peer_key(("192.0.2.2", 12000))
+    now = time.monotonic() + 1
+
+    assert peer == same_peer_other_port
+    assert all(protocol._allow_rate(peer, "upload", now) for _ in range(4))
+    assert not protocol._allow_rate(same_peer_other_port, "upload", now)
+    assert protocol._allow_rate(peer, "download", now)
+    assert protocol._allow_rate(other_peer, "upload", now)
+    assert protocol._allow_rate(peer, "upload", now + 0.5)
 
 
 def test_config_normalizes_idn_and_rejects_websocket_host_injection(tmp_path):

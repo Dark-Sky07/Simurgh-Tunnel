@@ -31,7 +31,7 @@ def test_client_session_limit_prompt_retries_out_of_range_values():
 
 def test_entry_wizard_supports_udp_and_requires_the_shared_route():
     config = setup.build_config("entry", scripted([
-        "2", "1", "", "", "dns", "s" * 40, "64", "203.0.113.8", "", "", "", "",
+        "2", "1", "", "", "dns", "s" * 40, "64", "5000", "203.0.113.8", "", "", "", "",
     ]), lambda _message: None)
 
     assert config["role"] == "entry"
@@ -42,6 +42,7 @@ def test_entry_wizard_supports_udp_and_requires_the_shared_route():
     assert config["exit_host"] == "203.0.113.8"
     assert config["secret"] == "s" * 40
     assert config["client_session_limit"] == 64
+    assert config["udp_rate_limit_pps"] == 5000
 
 
 def test_entry_wizard_can_select_wss_carrier():
