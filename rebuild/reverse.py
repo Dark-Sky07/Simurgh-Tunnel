@@ -46,6 +46,7 @@ _HEARTBEAT_INTERVAL = 25.0
 _HEARTBEAT_TIMEOUT = 75.0
 _CHANNEL_OPEN_TIMEOUT = 30.0
 _CHANNEL_LENGTH = 48
+MAX_REVERSE_AGENTS = 32
 
 
 def _h2_authority(server_name: str, port: int) -> str:
@@ -136,9 +137,17 @@ async def _hub_connection_stream(state: _HubState, reader: asyncio.StreamReader,
 
 
 @dataclass
+class _HubAgent:
+    agent_id: str
+    writer: asyncio.StreamWriter
+    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+@dataclass
 class _PendingChannel:
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
+    agent_id: str | None = None
     completed: asyncio.Event = field(default_factory=asyncio.Event)
     error: str | None = None
 
@@ -148,6 +157,7 @@ class _PendingUdpChannel:
     transport: asyncio.DatagramTransport
     client: tuple
     listener: _ReverseUdpListener
+    agent_id: str | None = None
     queue: asyncio.Queue[bytes] = field(default_factory=lambda: asyncio.Queue(UDP_QUEUE_LIMIT))
     opened: asyncio.Event = field(default_factory=asyncio.Event)
     completed: asyncio.Event = field(default_factory=asyncio.Event)
@@ -156,13 +166,34 @@ class _PendingUdpChannel:
 @dataclass
 class _HubState:
     config: ReverseHubConfig
-    agent_writer: asyncio.StreamWriter | None = None
+    agents: dict[str, _HubAgent] = field(default_factory=dict)
     agent_ready: asyncio.Event = field(default_factory=asyncio.Event)
-    agent_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    next_agent: int = 0
     pending: dict[str, _PendingChannel] = field(default_factory=dict)
     pending_udp: dict[str, _PendingUdpChannel] = field(default_factory=dict)
     public_udp: _ReverseUdpListener | None = None
     handler_tasks: set[asyncio.Task] = field(default_factory=set)
+
+
+def _select_agent(state: _HubState) -> _HubAgent | None:
+    active = [agent for agent in state.agents.values() if not agent.writer.is_closing()]
+    if not active:
+        state.agent_ready.clear()
+        return None
+    state.agent_ready.set()
+    agent = active[state.next_agent % len(active)]
+    state.next_agent = (state.next_agent + 1) % max(len(active), 1)
+    return agent
+
+
+def _callback_agent_matches(state: _HubState, assigned_id: str | None,
+                            message: dict) -> bool:
+    if "agent_id" in message:
+        claimed_id = message.get("agent_id")
+        return (isinstance(claimed_id, str) and claimed_id == assigned_id
+                and claimed_id in state.agents)
+    # Older agents omit agent_id; retain compatibility only when the route is unambiguous.
+    return len(state.agents) == 1 and assigned_id in state.agents
 
 
 def _decode_line(line: bytes) -> dict:
@@ -198,34 +229,38 @@ def _authenticated(message: dict, *, secret: str, route: str) -> bool:
 async def _hub_control(state: _HubState, reader: asyncio.StreamReader,
                        writer: asyncio.StreamWriter, message: dict) -> None:
     config = state.config
-    registered = False
+    agent = None
     try:
         if (message.get("op") != "register"
                 or message.get("transport", "tcp") != config.transport
                 or not _authenticated(message, secret=config.secret, route=config.route)):
             await _send_json(writer, {"ok": False, "error": "denied"})
             return
-        if state.agent_writer is not None and not state.agent_writer.is_closing():
-            await _send_json(writer, {"ok": False, "error": "route_busy"})
+        if len(state.agents) >= MAX_REVERSE_AGENTS:
+            await _send_json(writer, {"ok": False, "error": "agent_limit"})
             return
-        state.agent_writer = writer
+        agent_id = secrets.token_urlsafe(32)
+        agent = _HubAgent(agent_id, writer)
+        state.agents[agent_id] = agent
         state.agent_ready.set()
-        registered = True
-        await _send_json(writer, {"ok": True})
+        async with agent.write_lock:
+            await _send_json(writer, {"ok": True, "agent_id": agent_id})
         while True:
             message = await asyncio.wait_for(_read_idle_json(reader), _HEARTBEAT_TIMEOUT)
             operation = message.get("op")
             if operation == "ping":
-                await _send_json(writer, {"op": "pong"})
+                async with agent.write_lock:
+                    await _send_json(writer, {"op": "pong"})
             elif operation == "failed":
                 channel = message.get("channel")
                 if isinstance(channel, str) and len(channel) == _CHANNEL_LENGTH:
                     pending = state.pending.get(channel)
-                    if pending is not None and not pending.completed.is_set():
+                    if (pending is not None and pending.agent_id == agent_id
+                            and not pending.completed.is_set()):
                         pending.error = "target_unavailable"
                         pending.completed.set()
                     pending_udp = state.pending_udp.get(channel)
-                    if pending_udp is not None:
+                    if pending_udp is not None and pending_udp.agent_id == agent_id:
                         pending_udp.opened.set()
                         pending_udp.completed.set()
             else:
@@ -233,16 +268,20 @@ async def _hub_control(state: _HubState, reader: asyncio.StreamReader,
     except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("reverse agent control session ended: %s", exc)
     finally:
-        if registered and state.agent_writer is writer:
-            state.agent_writer = None
-            state.agent_ready.clear()
+        if agent is not None and state.agents.get(agent.agent_id) is agent:
+            del state.agents[agent.agent_id]
+            if state.agents:
+                state.agent_ready.set()
+            else:
+                state.agent_ready.clear()
             for pending in tuple(state.pending.values()):
-                if not pending.completed.is_set():
+                if pending.agent_id == agent.agent_id and not pending.completed.is_set():
                     pending.error = "agent_disconnected"
                     pending.completed.set()
             for pending in tuple(state.pending_udp.values()):
-                pending.opened.set()
-                pending.completed.set()
+                if pending.agent_id == agent.agent_id:
+                    pending.opened.set()
+                    pending.completed.set()
         writer.close()
         try:
             await writer.wait_closed()
@@ -264,6 +303,9 @@ async def _hub_data(state: _HubState, reader: asyncio.StreamReader,
         pending = state.pending.get(channel)
         if pending is None or pending.completed.is_set():
             await _send_json(writer, {"ok": False, "error": "expired"})
+            return
+        if not _callback_agent_matches(state, pending.agent_id, message):
+            await _send_json(writer, {"ok": False, "error": "denied"})
             return
         _enable_tcp_keepalive(writer)
         _enable_tcp_keepalive(pending.writer)
@@ -304,6 +346,9 @@ async def _hub_udp_data(state: _HubState, reader: asyncio.StreamReader,
         pending = state.pending_udp.get(channel)
         if pending is None or pending.completed.is_set():
             await _send_json(writer, {"ok": False, "error": "expired"})
+            return
+        if not _callback_agent_matches(state, pending.agent_id, message):
+            await _send_json(writer, {"ok": False, "error": "denied"})
             return
         await _send_json(writer, {"ok": True})
         pending.opened.set()
@@ -403,11 +448,12 @@ async def _public_connection(state: _HubState, reader: asyncio.StreamReader,
     try:
         try:
             await asyncio.wait_for(state.agent_ready.wait(), timeout=CONNECT_TIMEOUT)
-            control = state.agent_writer
-            if control is None or control.is_closing():
-                raise ConnectionError("reverse agent is not connected")
-            async with state.agent_write_lock:
-                await _send_json(control, {"op": "open", "channel": channel})
+            agent = _select_agent(state)
+            if agent is None:
+                raise ConnectionError("no reverse agent is connected")
+            pending.agent_id = agent.agent_id
+            async with agent.write_lock:
+                await _send_json(agent.writer, {"op": "open", "channel": channel})
         except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError) as exc:
             LOG.info("closing public reverse connection; no agent available: %s", exc)
             return
@@ -442,16 +488,18 @@ class _HubUdpSession:
 
     async def run(self) -> None:
         channel = secrets.token_urlsafe(36)
-        pending = _PendingUdpChannel(self.owner.transport, self.client, self.owner, self.queue)
+        pending = _PendingUdpChannel(
+            self.owner.transport, self.client, self.owner, queue=self.queue)
         state = self.owner.state
         state.pending_udp[channel] = pending
         try:
             await asyncio.wait_for(state.agent_ready.wait(), CONNECT_TIMEOUT)
-            control = state.agent_writer
-            if control is None or control.is_closing():
-                raise ConnectionError("reverse agent is not connected")
-            async with state.agent_write_lock:
-                await _send_json(control, {
+            agent = _select_agent(state)
+            if agent is None:
+                raise ConnectionError("no reverse agent is connected")
+            pending.agent_id = agent.agent_id
+            async with agent.write_lock:
+                await _send_json(agent.writer, {
                     "op": "open", "channel": channel, "transport": "udp",
                 })
             await asyncio.wait_for(pending.opened.wait(), _CHANNEL_OPEN_TIMEOUT)
@@ -538,7 +586,7 @@ class _ReverseUdpListener(asyncio.DatagramProtocol):
 
 async def _agent_channel(config: ReverseAgentConfig, channel: str,
                          control_writer: asyncio.StreamWriter,
-                         control_lock: asyncio.Lock) -> None:
+                         control_lock: asyncio.Lock, agent_id: str | None = None) -> None:
     target_writer = None
     data_writer = None
     try:
@@ -551,10 +599,13 @@ async def _agent_channel(config: ReverseAgentConfig, channel: str,
                 await _send_json(control_writer, {"op": "failed", "channel": channel})
             return
         data_reader, data_writer = await _open_agent_hub_connection(config)
-        await _send_json(data_writer, {
+        data_message = {
             "version": 1, "op": "data", "route": config.route,
             "secret": config.secret, "channel": channel,
-        })
+        }
+        if agent_id is not None:
+            data_message["agent_id"] = agent_id
+        await _send_json(data_writer, data_message)
         response = await asyncio.wait_for(_read_json(data_reader), timeout=HANDSHAKE_TIMEOUT)
         if response.get("ok") is not True:
             raise ConnectionError("reverse hub rejected the data channel")
@@ -590,7 +641,7 @@ class _AgentUdpProtocol(asyncio.DatagramProtocol):
 
 async def _agent_udp_channel(config: ReverseAgentConfig, channel: str,
                              control_writer: asyncio.StreamWriter,
-                             control_lock: asyncio.Lock) -> None:
+                             control_lock: asyncio.Lock, agent_id: str | None = None) -> None:
     udp_transport = None
     data_writer = None
     established = False
@@ -602,10 +653,13 @@ async def _agent_udp_channel(config: ReverseAgentConfig, channel: str,
             timeout=CONNECT_TIMEOUT,
         )
         data_reader, data_writer = await _open_agent_hub_connection(config)
-        await _send_json(data_writer, {
+        data_message = {
             "version": 1, "op": "data", "transport": "udp",
             "route": config.route, "secret": config.secret, "channel": channel,
-        })
+        }
+        if agent_id is not None:
+            data_message["agent_id"] = agent_id
+        await _send_json(data_writer, data_message)
         response = await asyncio.wait_for(_read_json(data_reader), timeout=HANDSHAKE_TIMEOUT)
         if response.get("ok") is not True:
             raise ConnectionError("reverse hub rejected the UDP data channel")
@@ -667,6 +721,9 @@ async def _agent_session(config: ReverseAgentConfig) -> None:
         response = await asyncio.wait_for(_read_json(control_reader), timeout=HANDSHAKE_TIMEOUT)
         if response.get("ok") is not True:
             raise ConnectionError(f"reverse hub rejected registration ({response.get('error', 'denied')})")
+        agent_id = response.get("agent_id")
+        if agent_id is not None and (not isinstance(agent_id, str) or not agent_id or len(agent_id) > 64):
+            raise ConnectionError("reverse hub returned an invalid agent identity")
         heartbeat = asyncio.create_task(_agent_heartbeat(control_writer, lock))
         while True:
             message = await asyncio.wait_for(_read_idle_json(control_reader), _HEARTBEAT_TIMEOUT)
@@ -678,7 +735,8 @@ async def _agent_session(config: ReverseAgentConfig) -> None:
                         or transport != config.transport):
                     raise ConnectionError("reverse hub sent an invalid channel request")
                 handler = _agent_udp_channel if transport == "udp" else _agent_channel
-                task = asyncio.create_task(handler(config, channel, control_writer, lock))
+                task = asyncio.create_task(
+                    handler(config, channel, control_writer, lock, agent_id))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
             elif operation == "pong":
@@ -764,7 +822,7 @@ async def _start_reverse_hub(config: ReverseHubConfig):
 
 
 async def serve_reverse_hub(config: ReverseHubConfig) -> None:
-    """Accept one authenticated reverse agent and expose its fixed TCP or UDP target."""
+    """Accept bounded agents for one authenticated route and expose their fixed targets."""
     control = public = None
     state = None
     try:
