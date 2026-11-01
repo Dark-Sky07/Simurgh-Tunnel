@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.23"
+VERSION = "0.2.24"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
