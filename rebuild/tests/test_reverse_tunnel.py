@@ -93,6 +93,94 @@ def test_reverse_agent_forwards_concurrent_tcp_clients_to_its_fixed_target(
 
 
 @pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_hub_round_robins_tcp_clients_across_agents(tls_identity, carrier):
+    cert, key = tls_identity
+    secret = "reverse-multi-agent-secret-0123456789"
+
+    async def scenario():
+        async def echo(label, reader, writer):
+            data = await reader.read()
+            writer.write(label + b":" + data)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        targets = [
+            await asyncio.start_server(
+                lambda r, w, label=label: echo(label, r, w), "127.0.0.1", 0)
+            for label in (b"agent-a", b"agent-b")
+        ]
+        hub_config = tunnel.ReverseHubConfig(
+            "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "web",
+            carrier=carrier,
+        )
+        control, public, state = await reverse._start_reverse_hub(hub_config)
+        hub_port = control.sockets[0].getsockname()[1]
+        agents = [
+            asyncio.create_task(reverse.serve_reverse_agent(
+                tunnel.ReverseAgentConfig(
+                    "127.0.0.1", hub_port, "localhost", cert, secret, "web",
+                    "127.0.0.1", target.sockets[0].getsockname()[1], carrier=carrier,
+                )))
+            for target in targets
+        ]
+        try:
+            for _ in range(300):
+                if len(state.agents) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(state.agents) == 2
+            public_port = public.sockets[0].getsockname()[1]
+
+            async def exchange(index):
+                reader, writer = await asyncio.open_connection("127.0.0.1", public_port)
+                payload = f"request-{index}".encode()
+                writer.write(payload)
+                await writer.drain()
+                writer.write_eof()
+                response = await asyncio.wait_for(reader.read(), timeout=5)
+                writer.close()
+                await writer.wait_closed()
+                return response
+
+            responses = [await exchange(index) for index in range(6)]
+            assert {response.rsplit(b":", 1)[1] for response in responses} == {
+                f"request-{index}".encode() for index in range(6)
+            }
+            assert {response.split(b":", 1)[0] for response in responses} == {
+                b"agent-a", b"agent-b",
+            }
+            assert sum(response.startswith(b"agent-a:") for response in responses) == 3
+            assert sum(response.startswith(b"agent-b:") for response in responses) == 3
+            agents[0].cancel()
+            await asyncio.gather(agents[0], return_exceptions=True)
+            for _ in range(100):
+                if len(state.agents) == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(state.agents) == 1
+            assert await exchange(6) in {
+                b"agent-a:request-6", b"agent-b:request-6",
+            }
+        finally:
+            for agent in agents:
+                agent.cancel()
+            await asyncio.gather(*agents, return_exceptions=True)
+            control.close()
+            public.close()
+            await asyncio.gather(control.wait_closed(), public.wait_closed())
+            for target in targets:
+                target.close()
+            await asyncio.gather(*(target.wait_closed() for target in targets))
+            handlers = tuple(state.handler_tasks)
+            for task in handlers:
+                task.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_reverse_agent_forwards_udp_clients_to_its_fixed_target(tls_identity, carrier):
     cert, key = tls_identity
     secret = "reverse-udp-shared-secret-0123456789"
@@ -154,6 +242,147 @@ def test_reverse_agent_forwards_udp_clients_to_its_fixed_target(tls_identity, ca
             await asyncio.gather(*handlers, return_exceptions=True)
 
     run(scenario())
+
+
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_hub_round_robins_udp_associations_across_agents(tls_identity, carrier):
+    cert, key = tls_identity
+    secret = "reverse-multi-agent-udp-secret-012345"
+
+    async def scenario():
+        class Echo(asyncio.DatagramProtocol):
+            def __init__(self, label):
+                self.label = label
+
+            def connection_made(self, transport):
+                self.transport = transport
+
+            def datagram_received(self, data, addr):
+                self.transport.sendto(self.label + b":" + data, addr)
+
+        class Client(asyncio.DatagramProtocol):
+            def __init__(self):
+                self.responses = asyncio.Queue()
+
+            def datagram_received(self, data, addr):
+                self.responses.put_nowait(data)
+
+        loop = asyncio.get_running_loop()
+        target_transports = []
+        target_ports = []
+        for label in (b"agent-a", b"agent-b"):
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda label=label: Echo(label), local_addr=("127.0.0.1", 0))
+            target_transports.append(transport)
+            target_ports.append(transport.get_extra_info("sockname")[1])
+        hub_config = tunnel.ReverseHubConfig(
+            "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "dns",
+            transport="udp", carrier=carrier,
+        )
+        control, public, state = await reverse._start_reverse_hub(hub_config)
+        hub_port = control.sockets[0].getsockname()[1]
+        agents = [
+            asyncio.create_task(reverse.serve_reverse_agent(
+                tunnel.ReverseAgentConfig(
+                    "127.0.0.1", hub_port, "localhost", cert, secret, "dns",
+                    "127.0.0.1", target_port, transport="udp", carrier=carrier,
+                )))
+            for target_port in target_ports
+        ]
+        clients = []
+        try:
+            for _ in range(300):
+                if len(state.agents) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(state.agents) == 2
+            public_port = public.get_extra_info("sockname")[1]
+            responses = []
+            for payload in (b"one", b"two"):
+                transport, client = await loop.create_datagram_endpoint(
+                    Client, local_addr=("127.0.0.1", 0))
+                clients.append(transport)
+                transport.sendto(payload, ("127.0.0.1", public_port))
+                responses.append(await asyncio.wait_for(client.responses.get(), timeout=5))
+            assert {item.split(b":", 1)[0] for item in responses} == {
+                b"agent-a", b"agent-b",
+            }
+            assert {item.split(b":", 1)[1] for item in responses} == {b"one", b"two"}
+        finally:
+            for client_transport in clients:
+                client_transport.close()
+            for agent in agents:
+                agent.cancel()
+            await asyncio.gather(*agents, return_exceptions=True)
+            public.close()
+            await state.public_udp.close()
+            control.close()
+            await asyncio.gather(control.wait_closed())
+            for target_transport in target_transports:
+                target_transport.close()
+            handlers = tuple(state.handler_tasks)
+            for task in handlers:
+                task.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
+
+    run(scenario())
+
+
+def test_reverse_hub_bounds_registered_agents_at_configured_ceiling():
+    class Writer:
+        def __init__(self):
+            self.data = bytearray()
+            self.closed = False
+
+        def write(self, data):
+            self.data.extend(data)
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+        async def wait_closed(self):
+            pass
+
+    config = tunnel.ReverseHubConfig(
+        "127.0.0.1", 1, "127.0.0.1", 2, Path("/unused.crt"),
+        Path("/unused.key"), "reverse-agent-identity-secret-012345", "web",
+    )
+    state = reverse._HubState(config)
+    state.agents = {
+        f"agent-{index}": reverse._HubAgent(f"agent-{index}", Writer())
+        for index in range(reverse.MAX_REVERSE_AGENTS)
+    }
+    writer = Writer()
+
+    async def scenario():
+        await reverse._hub_control(state, None, writer, {
+            "op": "register", "version": 1, "route": "web",
+            "secret": config.secret, "transport": "tcp",
+        })
+        assert json.loads(writer.data) == {"ok": False, "error": "agent_limit"}
+        assert writer.closed
+        assert len(state.agents) == reverse.MAX_REVERSE_AGENTS
+
+    run(scenario())
+
+
+def test_reverse_callbacks_require_agent_identity_when_route_has_multiple_agents():
+    config = tunnel.ReverseHubConfig(
+        "127.0.0.1", 1, "127.0.0.1", 2, Path("/unused.crt"),
+        Path("/unused.key"), "reverse-agent-identity-secret-012345", "web",
+    )
+    state = reverse._HubState(config)
+    state.agents["agent-a"] = reverse._HubAgent("agent-a", object())
+    assert reverse._callback_agent_matches(state, "agent-a", {})
+    assert reverse._callback_agent_matches(state, "agent-a", {"agent_id": "agent-a"})
+    assert not reverse._callback_agent_matches(state, "agent-a", {"agent_id": None})
+    state.agents["agent-b"] = reverse._HubAgent("agent-b", object())
+    assert not reverse._callback_agent_matches(state, "agent-a", {})
+    assert reverse._callback_agent_matches(state, "agent-a", {"agent_id": "agent-a"})
+    assert not reverse._callback_agent_matches(state, "agent-a", {"agent_id": "agent-b"})
 
 
 def test_reverse_public_listener_closes_when_no_agent_is_registered(tls_identity, monkeypatch):
