@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.21"
+VERSION = "0.2.22"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -1181,6 +1181,9 @@ async def _forward_entry(config: EntryConfig, local_reader: asyncio.StreamReader
 
 UDP_IDLE_TIMEOUT = 45.0
 UDP_QUEUE_LIMIT = 128
+UDP_RECONNECT_ATTEMPTS = 5
+UDP_RECONNECT_BASE_DELAY = 0.25
+UDP_RECONNECT_MAX_DELAY = 2.0
 MAX_UDP_DATAGRAM = 65507
 
 
@@ -1189,6 +1192,8 @@ class _EntryUdpSession:
         self.owner = owner
         self.client = client
         self.queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=UDP_QUEUE_LIMIT)
+        self.last_activity = time.monotonic()
+        self.activity = asyncio.Event()
         self.task = asyncio.create_task(self.run())
 
     def enqueue(self, payload: bytes) -> None:
@@ -1207,8 +1212,24 @@ class _EntryUdpSession:
             LOG.debug("dropping UDP datagram from %r: monthly quota reached", self.client)
             return
         self.queue.put_nowait(payload)
+        self.last_activity = time.monotonic()
+        self.activity.set()
 
-    async def run(self) -> None:
+    async def _wait_for_client_data(self) -> bool:
+        while self.queue.empty():
+            remaining = UDP_IDLE_TIMEOUT - (time.monotonic() - self.last_activity)
+            if remaining <= 0:
+                return False
+            self.activity.clear()
+            if not self.queue.empty():
+                continue
+            try:
+                await asyncio.wait_for(self.activity.wait(), timeout=remaining)
+            except (TimeoutError, asyncio.TimeoutError):
+                return False
+        return True
+
+    async def _run_association(self) -> None:
         remote_writer = None
         try:
             config = self.owner.config
@@ -1219,9 +1240,9 @@ class _EntryUdpSession:
             })
             response = await _read_json(remote_reader)
             if response.get("ok") is not True:
-                LOG.warning("exit declined UDP route %r (%s)", config.route,
-                            response.get("error", "unknown error"))
-                return
+                raise ConnectionError(
+                    f"exit declined UDP route {config.route!r} "
+                    f"({response.get('error', 'unknown error')})")
 
             async def send_datagrams() -> None:
                 while True:
@@ -1253,8 +1274,6 @@ class _EntryUdpSession:
                         transport.sendto(payload, self.client)
 
             await _stop_when_either_finishes(send_datagrams(), receive_datagrams())
-        except (TimeoutError, asyncio.TimeoutError, OSError, ssl.SSLError, ProtocolError, EOFError) as exc:
-            LOG.debug("UDP tunnel for %r ended: %s", self.client, exc)
         finally:
             if remote_writer is not None:
                 remote_writer.close()
@@ -1262,6 +1281,33 @@ class _EntryUdpSession:
                     await remote_writer.wait_closed()
                 except OSError:
                     pass
+
+    async def run(self) -> None:
+        failures = 0
+        try:
+            while await self._wait_for_client_data():
+                try:
+                    await self._run_association()
+                    failures = 0
+                except QuotaReached as exc:
+                    LOG.info("UDP tunnel for %r stopped: %s", self.client, exc)
+                    return
+                except (TimeoutError, asyncio.TimeoutError, OSError, ssl.SSLError,
+                        ConnectionError, EOFError) as exc:
+                    failures += 1
+                    if failures >= UDP_RECONNECT_ATTEMPTS:
+                        LOG.warning("UDP association for %r failed after %d attempts: %s",
+                                    self.client, failures, exc)
+                        return
+                    delay = min(UDP_RECONNECT_BASE_DELAY * (2 ** (failures - 1)),
+                                UDP_RECONNECT_MAX_DELAY)
+                    remaining = UDP_IDLE_TIMEOUT - (time.monotonic() - self.last_activity)
+                    if remaining <= 0:
+                        return
+                    LOG.debug("UDP association for %r reconnecting after %.2f s: %s",
+                              self.client, delay, exc)
+                    await asyncio.sleep(min(delay, remaining))
+        finally:
             self.owner.remove_session(self.client, self)
 
 

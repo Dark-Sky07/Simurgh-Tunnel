@@ -356,6 +356,104 @@ def test_udp_entry_keeps_datagram_boundaries_and_returns_responses(server_certif
 
 
 @pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_udp_entry_reconnects_after_a_transient_dial_failure(
+        server_certificate, carrier, monkeypatch):
+    cert, key = server_certificate
+    secret = "udp-reconnect-secret-0123456789abcdef"
+
+    async def scenario():
+        class Echo(asyncio.DatagramProtocol):
+            def connection_made(self, transport):
+                self.transport = transport
+
+            def datagram_received(self, data, addr):
+                self.transport.sendto(data[::-1], addr)
+
+        class Client(asyncio.DatagramProtocol):
+            def __init__(self):
+                self.responses = asyncio.Queue()
+
+            def datagram_received(self, data, addr):
+                self.responses.put_nowait(data)
+
+        loop = asyncio.get_running_loop()
+        echo_transport, _ = await loop.create_datagram_endpoint(
+            Echo, local_addr=("127.0.0.1", 0))
+        echo_port = echo_transport.get_extra_info("sockname")[1]
+        exit_config = tunnel.ExitConfig(
+            "127.0.0.1", 0, cert, key, secret,
+            {"dns": ("127.0.0.1", echo_port)}, carrier,
+        )
+        exit_server = await asyncio.start_server(
+            tunnel._exit_connection_handler(exit_config), "127.0.0.1", 0,
+            ssl=tunnel._server_ssl(exit_config), limit=tunnel.MAX_HANDSHAKE,
+        )
+        entry_config = tunnel.EntryConfig(
+            "127.0.0.1", 0, "localhost", exit_server.sockets[0].getsockname()[1],
+            "localhost", cert, secret, "dns", "udp", carrier,
+        )
+        original_open = tunnel._open_entry_connection
+        calls = 0
+
+        async def fail_once_then_connect(config):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ConnectionRefusedError("simulated transient dial failure")
+            return await original_open(config)
+
+        monkeypatch.setattr(tunnel, "_open_entry_connection", fail_once_then_connect)
+        entry_protocol = tunnel._EntryUdpProtocol(entry_config)
+        entry_transport, _ = await loop.create_datagram_endpoint(
+            lambda: entry_protocol, local_addr=("127.0.0.1", 0))
+        client_transport, client = await loop.create_datagram_endpoint(
+            Client, local_addr=("127.0.0.1", 0))
+        try:
+            client_transport.sendto(b"recover-me", entry_transport.get_extra_info("sockname"))
+            response = await asyncio.wait_for(client.responses.get(), timeout=5)
+            assert response == b"em-revocer"
+            assert calls >= 2
+            assert len(entry_protocol.sessions) == 1
+        finally:
+            client_transport.close()
+            entry_transport.close()
+            await entry_protocol.close()
+            exit_server.close()
+            echo_transport.close()
+            await asyncio.gather(exit_server.wait_closed())
+
+    run(scenario())
+
+
+def test_udp_entry_stops_after_bounded_consecutive_reconnect_failures(monkeypatch):
+    config = tunnel.EntryConfig(
+        "127.0.0.1", 0, "exit.example.net", 8443, "exit.example.net",
+        Path("/tmp/unused-ca.crt"), "udp-retry-bound-secret-0123456789", "dns", "udp",
+    )
+    monkeypatch.setattr(tunnel, "UDP_RECONNECT_ATTEMPTS", 3)
+    monkeypatch.setattr(tunnel, "UDP_RECONNECT_BASE_DELAY", 0)
+    calls = []
+
+    async def fail_connection(_config):
+        calls.append(True)
+        raise ConnectionRefusedError("simulated unavailable exit")
+
+    monkeypatch.setattr(tunnel, "_open_entry_connection", fail_connection)
+    protocol = tunnel._EntryUdpProtocol(config)
+
+    async def scenario():
+        addr = ("192.0.2.77", 53000)
+        protocol.datagram_received(b"query", addr)
+        session = protocol.sessions[addr]
+        await asyncio.wait_for(session.task, timeout=1)
+        assert len(calls) == 3
+        assert addr not in protocol.sessions
+        assert not protocol.peer_sessions
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_udp_route_check_roundtrips_a_synthetic_frame_without_target_datagrams(
         server_certificate, carrier):
     cert, key = server_certificate
