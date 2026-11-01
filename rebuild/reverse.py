@@ -51,6 +51,7 @@ _HEARTBEAT_TIMEOUT = 75.0
 _CHANNEL_OPEN_TIMEOUT = 30.0
 _CHANNEL_LENGTH = 48
 MAX_REVERSE_AGENTS = 32
+MAX_TCP_AGENT_ATTEMPTS = 5
 
 
 def _h2_authority(server_name: str, port: int) -> str:
@@ -152,6 +153,7 @@ class _PendingChannel:
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
     agent_id: str | None = None
+    opened: asyncio.Event = field(default_factory=asyncio.Event)
     completed: asyncio.Event = field(default_factory=asyncio.Event)
     error: str | None = None
 
@@ -298,6 +300,8 @@ async def _hub_control(state: _HubState, reader: asyncio.StreamReader,
 
 async def _hub_data(state: _HubState, reader: asyncio.StreamReader,
                     writer: asyncio.StreamWriter, message: dict) -> None:
+    pending = None
+    accepted = False
     try:
         channel = message.get("channel")
         config = state.config
@@ -312,10 +316,14 @@ async def _hub_data(state: _HubState, reader: asyncio.StreamReader,
             await _send_json(writer, {"ok": False, "error": "expired"})
             return
         if not _callback_agent_matches(state, pending.agent_id, message):
+            pending.error = "callback_agent_mismatch"
+            pending.completed.set()
             await _send_json(writer, {"ok": False, "error": "denied"})
             return
         _enable_tcp_keepalive(writer)
         _enable_tcp_keepalive(pending.writer)
+        pending.opened.set()
+        accepted = True
         await _send_json(writer, {"ok": True})
         activity = asyncio.Event()
         try:
@@ -326,11 +334,11 @@ async def _hub_data(state: _HubState, reader: asyncio.StreamReader,
             )
         except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
             LOG.debug("reverse data channel ended: %s", exc)
-        finally:
-            pending.completed.set()
     except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError) as exc:
         LOG.debug("invalid reverse data connection: %s", exc)
     finally:
+        if pending is not None and accepted:
+            pending.completed.set()
         writer.close()
         try:
             await writer.wait_closed()
@@ -449,32 +457,56 @@ async def _hub_connection(state: _HubState, reader: asyncio.StreamReader,
                 pass
 
 
+async def _wait_for_tcp_channel_open(pending: _PendingChannel) -> bool:
+    opened = asyncio.create_task(pending.opened.wait())
+    completed = asyncio.create_task(pending.completed.wait())
+    try:
+        await asyncio.wait(
+            (opened, completed), timeout=_CHANNEL_OPEN_TIMEOUT,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        return pending.opened.is_set()
+    finally:
+        for task in (opened, completed):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(opened, completed, return_exceptions=True)
+
+
 async def _public_connection(state: _HubState, reader: asyncio.StreamReader,
                              writer: asyncio.StreamWriter) -> None:
-    channel = secrets.token_urlsafe(36)
-    pending = _PendingChannel(reader, writer)
-    state.pending[channel] = pending
+    attempted_agents: set[str] = set()
     try:
-        try:
-            await asyncio.wait_for(state.agent_ready.wait(), timeout=CONNECT_TIMEOUT)
-            agent = _select_agent(state)
-            if agent is None:
-                raise ConnectionError("no reverse agent is connected")
-            pending.agent_id = agent.agent_id
-            async with agent.write_lock:
-                await _send_json(agent.writer, {"op": "open", "channel": channel})
-        except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError) as exc:
-            LOG.info("closing public reverse connection; no agent available: %s", exc)
-            return
-        try:
-            await asyncio.wait_for(pending.completed.wait(), timeout=_CHANNEL_OPEN_TIMEOUT)
-        except (TimeoutError, asyncio.TimeoutError):
-            LOG.info("reverse agent did not open channel before timeout")
-            return
-        if pending.error:
-            LOG.info("reverse agent could not open the configured target: %s", pending.error)
+        for _attempt in range(MAX_TCP_AGENT_ATTEMPTS):
+            channel = secrets.token_urlsafe(36)
+            pending = _PendingChannel(reader, writer)
+            state.pending[channel] = pending
+            try:
+                await asyncio.wait_for(state.agent_ready.wait(), timeout=CONNECT_TIMEOUT)
+                agent = _select_agent(state)
+                if agent is None or agent.agent_id in attempted_agents:
+                    LOG.info("no untried reverse agent is available for this public connection")
+                    return
+                attempted_agents.add(agent.agent_id)
+                pending.agent_id = agent.agent_id
+                async with agent.write_lock:
+                    await _send_json(agent.writer, {"op": "open", "channel": channel})
+                if await _wait_for_tcp_channel_open(pending):
+                    # Once a TCP callback opens, never replay or migrate its byte stream.
+                    await pending.completed.wait()
+                    return
+                pending.error = pending.error or "agent_open_timeout"
+                LOG.info("reverse agent %s did not open the TCP channel: %s",
+                         agent.agent_id, pending.error)
+            except (TimeoutError, asyncio.TimeoutError) as exc:
+                LOG.info("closing public reverse connection; no agent became available: %s", exc)
+                return
+            except (ConnectionError, OSError) as exc:
+                pending.error = pending.error or "agent_unavailable"
+                LOG.info("reverse agent attempt ended before TCP channel open: %s", exc)
+            finally:
+                state.pending.pop(channel, None)
     finally:
-        state.pending.pop(channel, None)
         writer.close()
         try:
             await writer.wait_closed()

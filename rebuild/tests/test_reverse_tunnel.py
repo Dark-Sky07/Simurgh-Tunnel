@@ -93,6 +93,142 @@ def test_reverse_agent_forwards_concurrent_tcp_clients_to_its_fixed_target(
 
 
 @pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_tcp_flow_outlives_channel_open_deadline(tls_identity, carrier, monkeypatch):
+    cert, key = tls_identity
+    secret = "reverse-long-tcp-flow-secret-0123456789"
+    monkeypatch.setattr(reverse, "_CHANNEL_OPEN_TIMEOUT", 0.05)
+
+    async def scenario():
+        async def echo(reader, writer):
+            try:
+                payload = await reader.readexactly(4)
+                writer.write(payload)
+                await writer.drain()
+                await reader.read()
+            except asyncio.IncompleteReadError:
+                pass
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        target = await asyncio.start_server(echo, "127.0.0.1", 0)
+        hub_config = tunnel.ReverseHubConfig(
+            "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "web",
+            carrier=carrier,
+        )
+        control, public, state = await reverse._start_reverse_hub(hub_config)
+        agent = asyncio.create_task(reverse.serve_reverse_agent(
+            tunnel.ReverseAgentConfig(
+                "127.0.0.1", control.sockets[0].getsockname()[1], "localhost",
+                cert, secret, "web", "127.0.0.1",
+                target.sockets[0].getsockname()[1], carrier=carrier,
+            )))
+        client_writer = None
+        try:
+            await asyncio.wait_for(state.agent_ready.wait(), timeout=3)
+            public_port = public.sockets[0].getsockname()[1]
+            reader, client_writer = await asyncio.open_connection("127.0.0.1", public_port)
+            for _ in range(100):
+                if state.pending and next(iter(state.pending.values())).opened.is_set():
+                    break
+                await asyncio.sleep(0.005)
+            assert state.pending
+            assert next(iter(state.pending.values())).opened.is_set()
+            await asyncio.sleep(0.1)
+            client_writer.write(b"ping")
+            await client_writer.drain()
+            assert await asyncio.wait_for(reader.readexactly(4), timeout=2) == b"ping"
+        finally:
+            if client_writer is not None:
+                client_writer.close()
+                await client_writer.wait_closed()
+            agent.cancel()
+            await asyncio.gather(agent, return_exceptions=True)
+            control.close()
+            public.close()
+            target.close()
+            await asyncio.gather(control.wait_closed(), public.wait_closed(),
+                                 target.wait_closed())
+            handlers = tuple(state.handler_tasks)
+            for task in handlers:
+                task.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_tcp_reassigns_preopen_failure_to_another_agent(tls_identity, carrier):
+    cert, key = tls_identity
+    secret = "reverse-tcp-failover-secret-0123456789"
+
+    async def scenario():
+        async def echo(reader, writer):
+            data = await reader.read()
+            writer.write(b"agent-b:" + data)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        target = await asyncio.start_server(echo, "127.0.0.1", 0)
+        closed = await asyncio.start_server(lambda _r, w: w.close(), "127.0.0.1", 0)
+        failed_port = closed.sockets[0].getsockname()[1]
+        closed.close()
+        await closed.wait_closed()
+        hub_config = tunnel.ReverseHubConfig(
+            "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "web",
+            carrier=carrier,
+        )
+        control, public, state = await reverse._start_reverse_hub(hub_config)
+        hub_port = control.sockets[0].getsockname()[1]
+        agents = [asyncio.create_task(reverse.serve_reverse_agent(
+            tunnel.ReverseAgentConfig(
+                "127.0.0.1", hub_port, "localhost", cert, secret, "web",
+                "127.0.0.1", failed_port, carrier=carrier,
+            )))]
+        try:
+            for _ in range(100):
+                if len(state.agents) == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(state.agents) == 1
+            agents.append(asyncio.create_task(reverse.serve_reverse_agent(
+                tunnel.ReverseAgentConfig(
+                    "127.0.0.1", hub_port, "localhost", cert, secret, "web",
+                    "127.0.0.1", target.sockets[0].getsockname()[1], carrier=carrier,
+                ))))
+            for _ in range(100):
+                if len(state.agents) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(state.agents) == 2
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", public.sockets[0].getsockname()[1])
+            writer.write(b"preserved-buffer")
+            await writer.drain()
+            writer.write_eof()
+            result = await asyncio.wait_for(reader.read(), timeout=5)
+            assert result == b"agent-b:preserved-buffer"
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            for agent in agents:
+                agent.cancel()
+            await asyncio.gather(*agents, return_exceptions=True)
+            control.close()
+            public.close()
+            target.close()
+            await asyncio.gather(control.wait_closed(), public.wait_closed(),
+                                 target.wait_closed())
+            handlers = tuple(state.handler_tasks)
+            for task in handlers:
+                task.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_reverse_hub_round_robins_tcp_clients_across_agents(tls_identity, carrier):
     cert, key = tls_identity
     secret = "reverse-multi-agent-secret-0123456789"
