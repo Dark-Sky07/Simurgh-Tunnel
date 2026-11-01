@@ -8,6 +8,7 @@ import json
 import logging
 import secrets
 import ssl
+import time
 from dataclasses import dataclass, field
 
 from .tunnel import (
@@ -22,6 +23,9 @@ from .tunnel import (
     TLS_HANDSHAKE_TIMEOUT,
     UDP_IDLE_TIMEOUT,
     UDP_QUEUE_LIMIT,
+    UDP_RECONNECT_ATTEMPTS,
+    UDP_RECONNECT_BASE_DELAY,
+    UDP_RECONNECT_MAX_DELAY,
     ReverseAgentConfig,
     ReverseHubConfig,
     _client_ssl,
@@ -161,6 +165,7 @@ class _PendingUdpChannel:
     queue: asyncio.Queue[bytes] = field(default_factory=lambda: asyncio.Queue(UDP_QUEUE_LIMIT))
     opened: asyncio.Event = field(default_factory=asyncio.Event)
     completed: asyncio.Event = field(default_factory=asyncio.Event)
+    error: str | None = None
 
 
 @dataclass
@@ -261,6 +266,7 @@ async def _hub_control(state: _HubState, reader: asyncio.StreamReader,
                         pending.completed.set()
                     pending_udp = state.pending_udp.get(channel)
                     if pending_udp is not None and pending_udp.agent_id == agent_id:
+                        pending_udp.error = "target_unavailable"
                         pending_udp.opened.set()
                         pending_udp.completed.set()
             else:
@@ -280,6 +286,7 @@ async def _hub_control(state: _HubState, reader: asyncio.StreamReader,
                     pending.completed.set()
             for pending in tuple(state.pending_udp.values()):
                 if pending.agent_id == agent.agent_id:
+                    pending.error = "agent_disconnected"
                     pending.opened.set()
                     pending.completed.set()
         writer.close()
@@ -376,6 +383,8 @@ async def _hub_udp_data(state: _HubState, reader: asyncio.StreamReader,
         await _stop_when_either_finishes(public_to_agent(), agent_to_public())
     except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError, ssl.SSLError,
             EOFError) as exc:
+        if pending is not None and pending.error is None:
+            pending.error = "data_channel_failed"
         LOG.debug("reverse UDP data channel ended: %s", exc)
     finally:
         if pending is not None:
@@ -478,6 +487,8 @@ class _HubUdpSession:
         self.owner = owner
         self.client = client
         self.queue: asyncio.Queue[bytes] = asyncio.Queue(UDP_QUEUE_LIMIT)
+        self.last_activity = time.monotonic()
+        self.activity = asyncio.Event()
         self.task = asyncio.create_task(self.run())
 
     def enqueue(self, payload: bytes) -> None:
@@ -485,15 +496,35 @@ class _HubUdpSession:
             LOG.debug("dropping reverse UDP datagram from %r: queue full", self.client)
             return
         self.queue.put_nowait(payload)
+        self.last_activity = time.monotonic()
+        self.activity.set()
 
-    async def run(self) -> None:
+    async def _wait_for_client_data(self) -> bool:
+        while self.queue.empty():
+            remaining = UDP_IDLE_TIMEOUT - (time.monotonic() - self.last_activity)
+            if remaining <= 0:
+                return False
+            self.activity.clear()
+            if not self.queue.empty():
+                continue
+            try:
+                await asyncio.wait_for(self.activity.wait(), timeout=remaining)
+            except (TimeoutError, asyncio.TimeoutError):
+                return False
+        return True
+
+    async def _run_channel(self) -> str | None:
         channel = secrets.token_urlsafe(36)
         pending = _PendingUdpChannel(
             self.owner.transport, self.client, self.owner, queue=self.queue)
         state = self.owner.state
         state.pending_udp[channel] = pending
         try:
-            await asyncio.wait_for(state.agent_ready.wait(), CONNECT_TIMEOUT)
+            remaining = UDP_IDLE_TIMEOUT - (time.monotonic() - self.last_activity)
+            if remaining <= 0:
+                return None
+            await asyncio.wait_for(
+                state.agent_ready.wait(), min(CONNECT_TIMEOUT, remaining))
             agent = _select_agent(state)
             if agent is None:
                 raise ConnectionError("no reverse agent is connected")
@@ -502,12 +533,41 @@ class _HubUdpSession:
                 await _send_json(agent.writer, {
                     "op": "open", "channel": channel, "transport": "udp",
                 })
-            await asyncio.wait_for(pending.opened.wait(), _CHANNEL_OPEN_TIMEOUT)
+            remaining = UDP_IDLE_TIMEOUT - (time.monotonic() - self.last_activity)
+            if remaining <= 0:
+                return None
+            await asyncio.wait_for(
+                pending.opened.wait(), min(_CHANNEL_OPEN_TIMEOUT, remaining))
             await pending.completed.wait()
         except (TimeoutError, asyncio.TimeoutError, ConnectionError, OSError) as exc:
+            pending.error = pending.error or "channel_failed"
             LOG.debug("reverse UDP channel to %r ended: %s", self.client, exc)
         finally:
             state.pending_udp.pop(channel, None)
+        return pending.error
+
+    async def run(self) -> None:
+        failures = 0
+        try:
+            while await self._wait_for_client_data():
+                error = await self._run_channel()
+                if error is None:
+                    failures = 0
+                    continue
+                failures += 1
+                if failures >= UDP_RECONNECT_ATTEMPTS:
+                    LOG.warning("reverse UDP association for %r failed after %d attempts: %s",
+                                self.client, failures, error)
+                    return
+                delay = min(UDP_RECONNECT_BASE_DELAY * (2 ** (failures - 1)),
+                            UDP_RECONNECT_MAX_DELAY)
+                remaining = UDP_IDLE_TIMEOUT - (time.monotonic() - self.last_activity)
+                if remaining <= 0:
+                    return
+                LOG.debug("reverse UDP association for %r reconnecting after %.2f s: %s",
+                          self.client, delay, error)
+                await asyncio.sleep(min(delay, remaining))
+        finally:
             self.owner.remove_session(self.client, self)
 
 
