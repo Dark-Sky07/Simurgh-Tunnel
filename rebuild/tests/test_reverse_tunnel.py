@@ -290,6 +290,8 @@ def test_reverse_hub_round_robins_udp_associations_across_agents(tls_identity, c
             for target_port in target_ports
         ]
         clients = []
+        client_protocols = []
+        client_addresses = []
         try:
             for _ in range(300):
                 if len(state.agents) == 2:
@@ -302,12 +304,32 @@ def test_reverse_hub_round_robins_udp_associations_across_agents(tls_identity, c
                 transport, client = await loop.create_datagram_endpoint(
                     Client, local_addr=("127.0.0.1", 0))
                 clients.append(transport)
+                client_protocols.append(client)
+                client_addresses.append(transport.get_extra_info("sockname"))
                 transport.sendto(payload, ("127.0.0.1", public_port))
                 responses.append(await asyncio.wait_for(client.responses.get(), timeout=5))
             assert {item.split(b":", 1)[0] for item in responses} == {
                 b"agent-a", b"agent-b",
             }
             assert {item.split(b":", 1)[1] for item in responses} == {b"one", b"two"}
+
+            first_label = responses[0].split(b":", 1)[0]
+            failed_agent_index = 0 if first_label == b"agent-a" else 1
+            surviving_label = b"agent-b" if failed_agent_index == 0 else b"agent-a"
+            first_address = client_addresses[0]
+            first_session = state.public_udp.sessions[first_address]
+            agents[failed_agent_index].cancel()
+            await asyncio.gather(agents[failed_agent_index], return_exceptions=True)
+            for _ in range(100):
+                if len(state.agents) == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(state.agents) == 1
+            clients[0].sendto(b"after-disconnect", ("127.0.0.1", public_port))
+            recovered = await asyncio.wait_for(
+                client_protocols[0].responses.get(), timeout=5)
+            assert recovered == surviving_label + b":after-disconnect"
+            assert state.public_udp.sessions[first_address] is first_session
         finally:
             for client_transport in clients:
                 client_transport.close()
@@ -412,6 +434,8 @@ def test_reverse_public_listener_closes_when_no_agent_is_registered(tls_identity
 def test_reverse_udp_listener_rate_limits_and_expires_without_agent(tls_identity, monkeypatch):
     cert, key = tls_identity
     monkeypatch.setattr(reverse, "CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(reverse, "UDP_RECONNECT_ATTEMPTS", 3)
+    monkeypatch.setattr(reverse, "UDP_RECONNECT_BASE_DELAY", 0)
     config = tunnel.ReverseHubConfig(
         "127.0.0.1", 0, "127.0.0.1", 0, cert, key,
         "reverse-hub-shared-secret-0123456789", "dns", transport="udp",
