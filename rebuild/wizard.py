@@ -159,7 +159,7 @@ def build_config(
             "public_host": config["public_host"],
             "public_port": config["public_port"],
         }]
-        output("Routes share the hub's carrier, transport and limits; each added route gets a distinct secret.")
+        output("Routes share the hub's carrier and session limits; each route may choose TCP or UDP and gets a distinct secret.")
         while len(routes) < MAX_REVERSE_ROUTES:
             add_route = input_fn("Add another public route? [y/N]: ").strip().lower()
             if add_route not in ("y", "yes"):
@@ -169,6 +169,7 @@ def build_config(
                 if name and len(name) <= 64 and name not in {item["route"] for item in routes}:
                     break
                 output("Route names must be unique and contain 1 to 64 characters.")
+            route_transport = _reverse_transport(input_fn, output)
             public_host = _value("Public service bind address", config["public_host"], input_fn)
             while True:
                 public_port = _port("Public service port", config["public_port"] + 1, input_fn)
@@ -184,6 +185,7 @@ def build_config(
                 "public_host": public_host,
                 "public_port": public_port,
                 "secret": route_secret,
+                "transport": route_transport,
             })
         if len(routes) > 1:
             config["routes"] = routes

@@ -98,6 +98,7 @@ def _form(csrf: str, config_dir: Path) -> str:
 <div class="field"><label for="public_port">Hub public service port</label><input id="public_port" name="public_port" type="number" min="1" max="65535" value="8080"></div>
 <div class="field"><label for="additional_route">Optional second hub route name</label><input id="additional_route" name="additional_route" maxlength="64" placeholder="Leave blank for one route"></div>
 <div class="field"><label for="additional_public_port">Second route public port</label><input id="additional_public_port" name="additional_public_port" type="number" min="1" max="65535" placeholder="Required when adding a route"></div>
+<div class="field"><label for="additional_transport">Second route transport</label><select id="additional_transport" name="additional_transport"><option value="">Same as primary route</option><option value="tcp">TCP stream</option><option value="udp">UDP datagrams</option></select></div>
 <div class="field wide"><label for="additional_route_secret">Optional distinct secret for the second route · blank reuses the first</label><input id="additional_route_secret" name="additional_route_secret" type="password" minlength="32" autocomplete="new-password"></div>
 <div class="field"><label for="hub_host">Reverse hub address</label><input id="hub_host" name="hub_host" value="hub.example.net"></div>
 <div class="field"><label for="hub_port">Reverse hub carrier port</label><input id="hub_port" name="hub_port" type="number" min="1" max="65535" value="9443"></div>
@@ -105,7 +106,7 @@ def _form(csrf: str, config_dir: Path) -> str:
 <div class="field wide"><label for="reverse_ca_file">Trusted CA certificate path</label><input id="reverse_ca_file" name="reverse_ca_file" value="{tls_dir}/ca.crt"></div>
 <div class="field"><label for="reverse_target_host">Fixed private service address</label><input id="reverse_target_host" name="reverse_target_host" value="127.0.0.1"></div>
 <div class="field"><label for="reverse_target_port">Fixed private service port</label><input id="reverse_target_port" name="reverse_target_port" type="number" min="1" max="65535" value="8080"></div>
-</div><p class="hint">Hub routes share the carrier, transport, and session/rate limits. Set a distinct second-route secret or leave it blank to reuse the hub secret; the second route uses the same public bind address and a distinct port. Hub and agent must match on TLS/WSS/H2 and TCP/UDP. The agent initiates outbound connections; the hub forwards only to that agent's fixed local target.</p></section>
+</div><p class="hint">Hub routes share the carrier and session/rate limits; each route may independently use TCP or UDP. Set a distinct second-route secret or leave it blank to reuse the hub secret; the second route uses the same public bind address and a distinct port. Hub and agent must match on TLS/WSS/H2 and TCP/UDP. The agent initiates outbound connections; the hub forwards only to that agent's fixed local target.</p></section>
 <section class="notice">The panel can start or stop its own node processes. It does not install services, change firewall rules, or replace existing files without making a private backup.</section>
 <div class="action"><button class="button" type="submit">Save node configuration</button><label class="replace"><input type="checkbox" name="replace" value="yes">I understand that an existing rebuild config will be backed up before replacement.</label></div>
 </form>"""
@@ -361,6 +362,11 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
                 {"route": additional_route, "public_host": config["public_host"],
                  "public_port": additional_port},
             ]
+            additional_transport = _one(form, "additional_transport")
+            if additional_transport:
+                if additional_transport not in ("tcp", "udp"):
+                    raise ValueError("second route transport must be TCP or UDP")
+                configured_routes[1]["transport"] = additional_transport
             route_secret = _one(form, "additional_route_secret")
             if route_secret:
                 if len(route_secret.encode("utf-8")) < 32:

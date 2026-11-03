@@ -147,6 +147,7 @@ def test_panel_configures_optional_second_reverse_hub_route():
         "public_host": ["127.0.0.1"], "public_port": ["8080"],
         "additional_route": ["admin"], "additional_public_port": ["8081"],
         "additional_route_secret": ["a" * 40],
+        "additional_transport": ["udp"],
         "cert_file": ["/tmp/hub.crt"], "key_file": ["/tmp/hub.key"],
         "transport": ["tcp"], "carrier": ["tls"],
     })
@@ -154,7 +155,7 @@ def test_panel_configures_optional_second_reverse_hub_route():
     assert config["routes"] == [
         {"route": "web", "public_host": "127.0.0.1", "public_port": 8080},
         {"route": "admin", "public_host": "127.0.0.1", "public_port": 8081,
-         "secret": "a" * 40},
+         "secret": "a" * 40, "transport": "udp"},
     ]
 
     for route, port in (("web", "8081"), ("admin", "8080")):
@@ -177,6 +178,16 @@ def test_panel_configures_optional_second_reverse_hub_route():
     }
     with pytest.raises(ValueError, match="second route secret"):
         panel_module._build_form_config(invalid_secret)
+    invalid_transport = {
+        "role": ["reverse-hub"], "route": ["web"], "secret": ["s" * 40],
+        "control_host": ["0.0.0.0"], "control_port": ["9443"],
+        "public_host": ["127.0.0.1"], "public_port": ["8080"],
+        "additional_route": ["admin"], "additional_public_port": ["8081"],
+        "additional_transport": ["icmp"],
+        "cert_file": ["/tmp/hub.crt"], "key_file": ["/tmp/hub.key"],
+    }
+    with pytest.raises(ValueError, match="second route transport"):
+        panel_module._build_form_config(invalid_transport)
 
 
 @pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])

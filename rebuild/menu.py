@@ -61,16 +61,19 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
             output(f"exit: configured, {config.carrier.upper()} listener "
                    f"{config.host}:{config.port}; {len(config.routes)} fixed route(s)")
         elif role == "reverse-hub" and isinstance(config, ReverseHubConfig):
+            uses_udp = (config.transport == "udp"
+                        or any(route.transport == "udp" for route in config.routes))
             udp_rate = (f"; rate cap={config.udp_rate_limit_pps} datagrams/s/source IP"
-                        if config.transport == "udp" else "")
+                        if uses_udp else "")
             route_count = len(config.routes) or 1
             output(f"reverse hub: control {config.control_host}:{config.control_port}; "
-                   f"{route_count} public {config.transport.upper()} route(s); "
+                   f"{route_count} public route(s); "
                    f"client cap={config.client_session_limit}/source IP{udp_rate}")
             route_specs = config.routes or ()
             if route_specs:
                 for route in route_specs:
-                    output(f"  public {config.transport.upper()} {route.public_host}:"
+                    transport = (route.transport or config.transport).upper()
+                    output(f"  public {transport} {route.public_host}:"
                            f"{route.public_port} route={route.route}")
             else:
                 output(f"  public {config.transport.upper()} {config.public_host}:"

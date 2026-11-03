@@ -145,6 +145,16 @@ def test_reverse_hub_serves_multiple_routes_on_one_control_listener(tls_identity
             )
             with pytest.raises(ConnectionError, match="hub rejected"):
                 await tunnel.check_reverse_agent_hub(wrong_admin_secret)
+            malformed_reader, malformed_writer = await reverse._open_agent_hub_connection(
+                unknown_route)
+            try:
+                await tunnel._send_json(malformed_writer, {
+                    "version": 1, "op": "probe", "route": [], "secret": secret,
+                })
+                assert (await tunnel._read_json(malformed_reader)).get("ok") is False
+            finally:
+                malformed_writer.close()
+                await malformed_writer.wait_closed()
 
             async def exchange(route: str, payload: bytes) -> bytes:
                 listener = publics[route]
@@ -481,6 +491,105 @@ def test_reverse_hub_serves_multiple_udp_routes_on_one_control_listener(tls_iden
                 listener.close()
             for target in targets.values():
                 target.close()
+            for state in states.values():
+                if state.public_udp is not None:
+                    await state.public_udp.close()
+                handlers = tuple(state.handler_tasks)
+                for task in handlers:
+                    task.cancel()
+                if handlers:
+                    await asyncio.gather(*handlers, return_exceptions=True)
+            control.close()
+            await control.wait_closed()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
+def test_reverse_hub_can_mix_tcp_and_udp_routes(tls_identity, carrier):
+    cert, key = tls_identity
+    secret = "reverse-mixed-route-shared-secret-0123"
+    udp_secret = "reverse-mixed-route-udp-secret-012345"
+
+    async def scenario():
+        class UdpEcho(asyncio.DatagramProtocol):
+            def connection_made(self, transport):
+                self.transport = transport
+
+            def datagram_received(self, data, addr):
+                self.transport.sendto(b"udp:" + data, addr)
+
+        class UdpClient(asyncio.DatagramProtocol):
+            def __init__(self):
+                self.responses = asyncio.Queue()
+
+            def datagram_received(self, data, addr):
+                self.responses.put_nowait(data)
+
+        async def tcp_echo(reader, writer):
+            payload = await reader.read()
+            writer.write(b"tcp:" + payload)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        tcp_target = await asyncio.start_server(tcp_echo, "127.0.0.1", 0)
+        udp_target, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            UdpEcho, local_addr=("127.0.0.1", 0))
+        tcp_route = tunnel.ReverseHubRoute("stream", "127.0.0.1", 0, transport="tcp")
+        udp_route = tunnel.ReverseHubRoute(
+            "datagram", "127.0.0.1", 0, udp_secret, transport="udp")
+        config = tunnel.ReverseHubConfig(
+            "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "stream",
+            carrier=carrier, transport="tcp", routes=(tcp_route, udp_route),
+        )
+        control, publics, states = await reverse._start_reverse_hub(config)
+        control_port = control.sockets[0].getsockname()[1]
+        agents = [
+            asyncio.create_task(reverse.serve_reverse_agent(tunnel.ReverseAgentConfig(
+                "127.0.0.1", control_port, "localhost", cert, secret, "stream",
+                "127.0.0.1", tcp_target.sockets[0].getsockname()[1],
+                carrier=carrier, transport="tcp",
+            ))),
+            asyncio.create_task(reverse.serve_reverse_agent(tunnel.ReverseAgentConfig(
+                "127.0.0.1", control_port, "localhost", cert, udp_secret, "datagram",
+                "127.0.0.1", udp_target.get_extra_info("sockname")[1],
+                carrier=carrier, transport="udp",
+            ))),
+        ]
+        client_udp = None
+        try:
+            await asyncio.gather(*(asyncio.wait_for(state.agent_ready.wait(), 3)
+                                   for state in states.values()))
+            tcp_reader, tcp_writer = await asyncio.open_connection(
+                "127.0.0.1", publics["stream"].sockets[0].getsockname()[1])
+            tcp_writer.write(b"payload")
+            await tcp_writer.drain()
+            tcp_writer.write_eof()
+            tcp_response = await asyncio.wait_for(tcp_reader.read(), 4)
+            tcp_writer.close()
+            await tcp_writer.wait_closed()
+
+            client_udp, udp_client = await asyncio.get_running_loop().create_datagram_endpoint(
+                UdpClient, local_addr=("127.0.0.1", 0))
+            udp_port = publics["datagram"].get_extra_info("sockname")[1]
+            client_udp.sendto(b"payload", ("127.0.0.1", udp_port))
+            udp_response = await asyncio.wait_for(udp_client.responses.get(), 4)
+            assert tcp_response == b"tcp:payload"
+            assert udp_response == b"udp:payload"
+            assert states["stream"].config.transport == "tcp"
+            assert states["datagram"].config.transport == "udp"
+        finally:
+            if client_udp is not None:
+                client_udp.close()
+            for agent in agents:
+                agent.cancel()
+            await asyncio.gather(*agents, return_exceptions=True)
+            for listener in publics.values():
+                listener.close()
+            tcp_target.close()
+            udp_target.close()
+            await tcp_target.wait_closed()
             for state in states.values():
                 if state.public_udp is not None:
                     await state.public_udp.close()

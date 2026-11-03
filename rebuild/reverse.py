@@ -443,7 +443,8 @@ async def _hub_connection(state: _HubState | dict[str, _HubState],
             pass
         return
     if isinstance(state, dict):
-        selected = state.get(first.get("route"))
+        route = first.get("route")
+        selected = state.get(route) if isinstance(route, str) else None
         if selected is None:
             try:
                 await _send_json(writer, {"ok": False, "error": "denied"})
@@ -911,7 +912,7 @@ async def _start_reverse_hub(config: ReverseHubConfig):
         route.route: _HubState(replace(
             config, route=route.route, public_host=route.public_host,
             public_port=route.public_port, secret=route.secret or config.secret,
-            routes=(route,),
+            transport=route.transport or config.transport, routes=(route,),
         ))
         for route in route_configs
     }

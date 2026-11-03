@@ -10,7 +10,7 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.26. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.27. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
@@ -35,7 +35,7 @@ Forward mode connects an **entry** node to an **exit** node. Reverse mode instea
 - A bounded synthetic download speed test is available for TCP entries from the CLI (`--speed-test-mib 4`), terminal menu, and local panel. It measures tunnel capacity, not end-to-end application throughput; UDP is intentionally unsupported.
 - Entry traffic is counted by direction and shown in the panel/menu. An optional `monthly_quota_mib` setting applies a UTC-month payload limit; TCP flows stop at the boundary and UDP datagrams are never partially forwarded. State is private (`0600`) and periodically persisted.
 
-This remains a development release, not feature parity or production readiness. Reverse forwarding supports TCP or UDP over TLS, WSS, or H2, with up to 32 configured public routes per hub and up to 32 agents per route; routes on a hub share one transport and carrier; each route may use its own secret or inherit the hub's default secret. It is not a general private mesh and still needs real-host deployment validation. WSS and H2 are interoperability carriers, not promises of concealment or availability. Do not deploy this as a production replacement yet.
+This remains a development release, not feature parity or production readiness. Reverse forwarding supports TCP or UDP over TLS, WSS, or H2, with up to 32 configured public routes per hub and up to 32 agents per route; routes on a hub may independently use TCP or UDP while sharing one carrier; each route may use its own secret or inherit the hub's default secret. It is not a general private mesh and still needs real-host deployment validation. WSS and H2 are interoperability carriers, not promises of concealment or availability. Do not deploy this as a production replacement yet.
 
 ## Install
 

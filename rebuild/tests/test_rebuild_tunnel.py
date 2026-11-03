@@ -657,7 +657,7 @@ def test_reverse_hub_config_supports_bounded_unique_route_list(tmp_path):
         "routes": [
             {"route": "web", "public_host": "127.0.0.1", "public_port": 8080},
             {"route": "admin", "public_host": "127.0.0.1", "public_port": 8081,
-             "secret": "a" * 32},
+             "secret": "a" * 32, "transport": "udp"},
         ],
     }
     path.write_text(json.dumps(config))
@@ -668,6 +668,8 @@ def test_reverse_hub_config_supports_bounded_unique_route_list(tmp_path):
         ("web", 8080), ("admin", 8081),
     ]
     assert [route.secret for route in parsed.routes] == ["s" * 32, "a" * 32]
+    assert [route.transport for route in parsed.routes] == ["tcp", "udp"]
+    assert parsed.transport == "tcp"
 
     config["routes"] = [
         {"route": "web", "public_host": "127.0.0.1", "public_port": 8080,
@@ -676,8 +678,16 @@ def test_reverse_hub_config_supports_bounded_unique_route_list(tmp_path):
     path.write_text(json.dumps(config))
     with pytest.raises(tunnel.ConfigError, match="route secret must contain"):
         tunnel.load_config(path)
+    config["routes"] = [{
+        "route": "web", "public_host": "127.0.0.1", "public_port": 8080,
+        "transport": "icmp",
+    }]
+    path.write_text(json.dumps(config))
+    with pytest.raises(tunnel.ConfigError, match="route transport"):
+        tunnel.load_config(path)
 
     for routes, error in (
+        (None, "1 to 32 routes"),
         ([{"route": "web", "public_host": "127.0.0.1", "public_port": 8080},
           {"route": "web", "public_host": "127.0.0.1", "public_port": 8081}],
          "route names must be unique"),
