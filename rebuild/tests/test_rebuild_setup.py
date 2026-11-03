@@ -114,10 +114,11 @@ def test_reverse_hub_wizard_can_configure_multiple_routes(tmp_path):
     config = setup.build_config("reverse-hub", scripted([
         "1", "1", "web", "128", "s" * 40,
         "", "", "", "", "", "",
-        "yes", "admin", "", "8081", "",
+        "yes", "admin", "", "8081", "a" * 40, "",
     ]), lambda _message: None, config_dir=tmp_path)
     assert [route["route"] for route in config["routes"]] == ["web", "admin"]
     assert [route["public_port"] for route in config["routes"]] == [8080, 8081]
+    assert config["routes"][1]["secret"] == "a" * 40
 
 
 def test_exit_wizard_creates_fixed_destination_route(tmp_path):

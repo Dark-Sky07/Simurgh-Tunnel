@@ -108,8 +108,9 @@ def _reverse_carrier(input_fn: Input, output: Output) -> str:
                     {"1": "tls", "2": "wss", "3": "h2"}, input_fn, output)
 
 
-def _secret(input_fn: Input, output: Output) -> str:
-    value = input_fn("Shared secret (leave blank to generate a new one): ").strip()
+def _secret(input_fn: Input, output: Output,
+            prompt: str = "Shared secret (leave blank to generate a new one): ") -> str:
+    value = input_fn(prompt).strip()
     if not value:
         value = secrets.token_urlsafe(36)
         output("Generated a secret. Copy it securely to the other server; it will not be shown again.")
@@ -158,7 +159,7 @@ def build_config(
             "public_host": config["public_host"],
             "public_port": config["public_port"],
         }]
-        output("Additional routes share the hub's secret, carrier, transport and limits.")
+        output("Routes share the hub's carrier, transport and limits; each added route gets a distinct secret.")
         while len(routes) < MAX_REVERSE_ROUTES:
             add_route = input_fn("Add another public route? [y/N]: ").strip().lower()
             if add_route not in ("y", "yes"):
@@ -175,10 +176,14 @@ def build_config(
                         and public_port not in {item["public_port"] for item in routes}):
                     break
                 output("Each route needs a distinct port, different from the control port.")
+            route_secret = _secret(
+                input_fn, output,
+                f"Secret for route {name} (leave blank to generate a distinct one): ")
             routes.append({
                 "route": name,
                 "public_host": public_host,
                 "public_port": public_port,
+                "secret": route_secret,
             })
         if len(routes) > 1:
             config["routes"] = routes
