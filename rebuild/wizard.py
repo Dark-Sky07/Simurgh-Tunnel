@@ -18,6 +18,7 @@ from .tunnel import (
     DEFAULT_CLIENT_SESSION_LIMIT,
     DEFAULT_UDP_RATE_LIMIT_PPS,
     MAX_CLIENT_SESSION_LIMIT,
+    MAX_REVERSE_ROUTES,
     MAX_UDP_RATE_LIMIT_PPS,
     NODE_CONFIG_TYPES,
     NODE_ROLES,
@@ -152,6 +153,35 @@ def build_config(
         }
         if transport == "udp":
             config["udp_rate_limit_pps"] = udp_rate_limit_pps
+        routes = [{
+            "route": route,
+            "public_host": config["public_host"],
+            "public_port": config["public_port"],
+        }]
+        output("Additional routes share the hub's secret, carrier, transport and limits.")
+        while len(routes) < MAX_REVERSE_ROUTES:
+            add_route = input_fn("Add another public route? [y/N]: ").strip().lower()
+            if add_route not in ("y", "yes"):
+                break
+            while True:
+                name = input_fn("Additional route name: ").strip()
+                if name and len(name) <= 64 and name not in {item["route"] for item in routes}:
+                    break
+                output("Route names must be unique and contain 1 to 64 characters.")
+            public_host = _value("Public service bind address", config["public_host"], input_fn)
+            while True:
+                public_port = _port("Public service port", config["public_port"] + 1, input_fn)
+                if (public_port != config["control_port"]
+                        and public_port not in {item["public_port"] for item in routes}):
+                    break
+                output("Each route needs a distinct port, different from the control port.")
+            routes.append({
+                "route": name,
+                "public_host": public_host,
+                "public_port": public_port,
+            })
+        if len(routes) > 1:
+            config["routes"] = routes
         return config
     if role == "reverse-agent":
         transport = _reverse_transport(input_fn, output)

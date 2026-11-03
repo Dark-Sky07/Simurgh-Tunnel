@@ -84,7 +84,7 @@ def test_reverse_agent_wizard_sets_a_fixed_private_target(tmp_path):
 
 def test_reverse_udp_wizards_select_matching_datagram_mode(tmp_path):
     hub = setup.build_config("reverse-hub", scripted([
-        "2", "3", "dns", "64", "2500", "s" * 40, "", "", "", "", "", "",
+        "2", "3", "dns", "64", "2500", "s" * 40, "", "", "", "", "", "", "",
     ]), lambda _message: None, config_dir=tmp_path)
     agent = setup.build_config("reverse-agent", scripted([
         "2", "3", "dns", "s" * 40, "hub.example.net", "9443", "hub.example.net", "",
@@ -98,7 +98,7 @@ def test_reverse_udp_wizards_select_matching_datagram_mode(tmp_path):
 
 def test_reverse_hub_wizard_defaults_to_loopback_public_service(tmp_path):
     config = setup.build_config("reverse-hub", scripted([
-        "1", "1", "web", "128", "s" * 40, "", "", "", "", "", "",
+        "1", "1", "web", "128", "s" * 40, "", "", "", "", "", "", "",
     ]), lambda _message: None, config_dir=tmp_path)
     assert config["role"] == "reverse-hub"
     assert config["transport"] == "tcp"
@@ -108,6 +108,16 @@ def test_reverse_hub_wizard_defaults_to_loopback_public_service(tmp_path):
     assert config["control_port"] == 9443
     assert config["public_port"] == 8080
     assert config["client_session_limit"] == 128
+
+
+def test_reverse_hub_wizard_can_configure_multiple_routes(tmp_path):
+    config = setup.build_config("reverse-hub", scripted([
+        "1", "1", "web", "128", "s" * 40,
+        "", "", "", "", "", "",
+        "yes", "admin", "", "8081", "",
+    ]), lambda _message: None, config_dir=tmp_path)
+    assert [route["route"] for route in config["routes"]] == ["web", "admin"]
+    assert [route["public_port"] for route in config["routes"]] == [8080, 8081]
 
 
 def test_exit_wizard_creates_fixed_destination_route(tmp_path):

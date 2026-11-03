@@ -96,13 +96,15 @@ def _form(csrf: str, config_dir: Path) -> str:
 <div class="field"><label for="control_port">Hub carrier control port</label><input id="control_port" name="control_port" type="number" min="1" max="65535" value="9443"></div>
 <div class="field"><label for="public_host">Hub public service bind address</label><input id="public_host" name="public_host" value="127.0.0.1"></div>
 <div class="field"><label for="public_port">Hub public service port</label><input id="public_port" name="public_port" type="number" min="1" max="65535" value="8080"></div>
+<div class="field"><label for="additional_route">Optional second hub route name</label><input id="additional_route" name="additional_route" maxlength="64" placeholder="Leave blank for one route"></div>
+<div class="field"><label for="additional_public_port">Second route public port</label><input id="additional_public_port" name="additional_public_port" type="number" min="1" max="65535" placeholder="Required when adding a route"></div>
 <div class="field"><label for="hub_host">Reverse hub address</label><input id="hub_host" name="hub_host" value="hub.example.net"></div>
 <div class="field"><label for="hub_port">Reverse hub carrier port</label><input id="hub_port" name="hub_port" type="number" min="1" max="65535" value="9443"></div>
 <div class="field"><label for="reverse_server_name">Expected hub TLS DNS name</label><input id="reverse_server_name" name="reverse_server_name" value="hub.example.net"></div>
 <div class="field wide"><label for="reverse_ca_file">Trusted CA certificate path</label><input id="reverse_ca_file" name="reverse_ca_file" value="{tls_dir}/ca.crt"></div>
 <div class="field"><label for="reverse_target_host">Fixed private service address</label><input id="reverse_target_host" name="reverse_target_host" value="127.0.0.1"></div>
 <div class="field"><label for="reverse_target_port">Fixed private service port</label><input id="reverse_target_port" name="reverse_target_port" type="number" min="1" max="65535" value="8080"></div>
-</div><p class="hint">Reverse hub and agent must use the same TLS, WSS, or H2 carrier and matching TCP/UDP mode. The agent initiates outbound connections; the hub exposes a separate public listener and forwards only to the agent's fixed local target.</p></section>
+</div><p class="hint">All hub routes share one secret, carrier, transport, and session/rate limits; the optional second route uses the same public bind address and a distinct port. Hub and agent must match on TLS/WSS/H2 and TCP/UDP. The agent initiates outbound connections; the hub forwards only to that agent's fixed local target.</p></section>
 <section class="notice">The panel can start or stop its own node processes. It does not install services, change firewall rules, or replace existing files without making a private backup.</section>
 <div class="action"><button class="button" type="submit">Save node configuration</button><label class="replace"><input type="checkbox" name="replace" value="yes">I understand that an existing rebuild config will be backed up before replacement.</label></div>
 </form>"""
@@ -340,6 +342,24 @@ def _build_form_config(form: dict[str, list[str]]) -> tuple[str, dict]:
         }
         if not all(config[key] for key in ("control_host", "public_host", "cert_file", "key_file")):
             raise ValueError("reverse hub bind addresses, certificate and key are required")
+        additional_route = _one(form, "additional_route")
+        additional_port_text = _one(form, "additional_public_port")
+        if additional_route or additional_port_text:
+            if not additional_route or len(additional_route) > 64:
+                raise ValueError("the second route name must contain 1 to 64 characters")
+            if additional_route == route:
+                raise ValueError("the second route name must differ from the first route")
+            if not additional_port_text:
+                raise ValueError("the second route needs a public service port")
+            additional_port = _number(form, "additional_public_port")
+            if additional_port in (config["public_port"], config["control_port"]):
+                raise ValueError("the second route port must differ from both existing ports")
+            config["routes"] = [
+                {"route": route, "public_host": config["public_host"],
+                 "public_port": config["public_port"]},
+                {"route": additional_route, "public_host": config["public_host"],
+                 "public_port": additional_port},
+            ]
         if config["transport"] == "udp":
             config["udp_rate_limit_pps"] = _udp_rate_limit_pps(form)
         return role, config

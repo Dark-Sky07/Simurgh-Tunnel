@@ -9,7 +9,7 @@ import logging
 import secrets
 import ssl
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .tunnel import (
     _FIN,
@@ -28,6 +28,7 @@ from .tunnel import (
     UDP_RECONNECT_MAX_DELAY,
     ReverseAgentConfig,
     ReverseHubConfig,
+    ReverseHubRoute,
     _client_ssl,
     _client_websocket,
     _copy_from_tunnel,
@@ -101,9 +102,13 @@ async def _open_agent_hub_connection(config: ReverseAgentConfig):
     return stream, stream
 
 
-async def _hub_connection_stream(state: _HubState, reader: asyncio.StreamReader,
+async def _hub_connection_stream(state: _HubState | dict[str, _HubState],
+                                 reader: asyncio.StreamReader,
                                  writer: asyncio.StreamWriter) -> None:
-    config = state.config
+    if isinstance(state, dict):
+        config = next(iter(state.values())).config
+    else:
+        config = state.config
     if config.carrier == "tls":
         await _hub_connection(state, reader, writer)
         return
@@ -424,7 +429,8 @@ async def _hub_probe(state: _HubState, writer: asyncio.StreamWriter,
             pass
 
 
-async def _hub_connection(state: _HubState, reader: asyncio.StreamReader,
+async def _hub_connection(state: _HubState | dict[str, _HubState],
+                          reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter) -> None:
     try:
         first = await _read_json(reader)
@@ -436,6 +442,20 @@ async def _hub_connection(state: _HubState, reader: asyncio.StreamReader,
         except OSError:
             pass
         return
+    if isinstance(state, dict):
+        selected = state.get(first.get("route"))
+        if selected is None:
+            try:
+                await _send_json(writer, {"ok": False, "error": "denied"})
+            except OSError:
+                pass
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            return
+        state = selected
     if first.get("op") == "probe":
         await _hub_probe(state, writer, first)
     elif first.get("op") == "register":
@@ -865,85 +885,147 @@ async def serve_reverse_agent(config: ReverseAgentConfig) -> None:
             delay = min(delay * 2, 30.0)
 
 
-def _tracked_handler(state: _HubState, handler):
+def _tracked_handler(state: _HubState | dict[str, _HubState], handler):
+    if isinstance(state, dict):
+        tracked_state = next(iter(state.values()))
+    else:
+        tracked_state = state
+
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
         if task is not None:
-            state.handler_tasks.add(task)
+            tracked_state.handler_tasks.add(task)
         try:
             await handler(reader, writer)
         finally:
             if task is not None:
-                state.handler_tasks.discard(task)
+                tracked_state.handler_tasks.discard(task)
     return serve
 
 
 async def _start_reverse_hub(config: ReverseHubConfig):
-    state = _HubState(config)
+    route_configs = config.routes or ()
+    if not route_configs:
+        route_configs = (ReverseHubRoute(config.route, config.public_host, config.public_port),)
+    states = {
+        route.route: _HubState(replace(
+            config, route=route.route, public_host=route.public_host,
+            public_port=route.public_port, routes=(route,),
+        ))
+        for route in route_configs
+    }
+    dispatch = next(iter(states.values())) if len(states) == 1 else states
     control_active = [0]
-    public_active = [0]
     control = await asyncio.start_server(
-        _limited_handler(_tracked_handler(state,
-                                          lambda reader, writer: _hub_connection_stream(state, reader, writer)),
-                         control_active, MAX_TCP_SESSIONS),
+        _limited_handler(_tracked_handler(
+            dispatch, lambda reader, writer: _hub_connection_stream(dispatch, reader, writer)),
+            control_active, MAX_TCP_SESSIONS),
         config.control_host, config.control_port,
         ssl=_server_ssl(config),
         ssl_handshake_timeout=TLS_HANDSHAKE_TIMEOUT,
         limit=MAX_HANDSHAKE,
     )
+    public_listeners = {}
     try:
-        if config.transport == "udp":
-            public, protocol = await asyncio.get_running_loop().create_datagram_endpoint(
-                lambda: _ReverseUdpListener(state, config.client_session_limit),
-                local_addr=(config.public_host, config.public_port),
-            )
-            state.public_udp = protocol
-        else:
-            public = await asyncio.start_server(
-                _limited_handler(_tracked_handler(
-                    state, lambda reader, writer: _public_connection(state, reader, writer)),
-                    public_active, MAX_TCP_SESSIONS,
-                    per_peer_limit=config.client_session_limit),
-                config.public_host, config.public_port, limit=MAX_HANDSHAKE,
-            )
+        for route_name, state in states.items():
+            route_config = state.config
+            public_active = [0]
+            if route_config.transport == "udp":
+                public, protocol = await asyncio.get_running_loop().create_datagram_endpoint(
+                    lambda state=state, limit=route_config.client_session_limit:
+                        _ReverseUdpListener(state, limit),
+                    local_addr=(route_config.public_host, route_config.public_port),
+                )
+                state.public_udp = protocol
+            else:
+                public = await asyncio.start_server(
+                    _limited_handler(_tracked_handler(
+                        state, lambda reader, writer, state=state: _public_connection(
+                            state, reader, writer)),
+                        public_active, MAX_TCP_SESSIONS,
+                        per_peer_limit=route_config.client_session_limit),
+                    route_config.public_host, route_config.public_port,
+                    limit=MAX_HANDSHAKE,
+                )
+            public_listeners[route_name] = public
     except BaseException:
+        for public in public_listeners.values():
+            if isinstance(public, asyncio.Server):
+                public.close()
+                await public.wait_closed()
+            else:
+                public.close()
         control.close()
         await control.wait_closed()
+        for state in states.values():
+            if state.public_udp is not None:
+                await state.public_udp.close()
+        handlers = {task for state in states.values() for task in state.handler_tasks}
+        for task in handlers:
+            task.cancel()
+        if handlers:
+            await asyncio.gather(*handlers, return_exceptions=True)
         raise
-    return control, public, state
+    public_result = (next(iter(public_listeners.values()))
+                     if len(public_listeners) == 1 else public_listeners)
+    state_result = next(iter(states.values())) if len(states) == 1 else states
+    return control, public_result, state_result
+
+
+def _hub_state_map(state_result) -> dict[str, _HubState]:
+    if isinstance(state_result, dict):
+        return state_result
+    return {state_result.config.route: state_result}
+
+
+def _hub_public_map(public_result, states: dict[str, _HubState]) -> dict[str, object]:
+    if isinstance(public_result, dict):
+        return public_result
+    return {next(iter(states)): public_result}
 
 
 async def serve_reverse_hub(config: ReverseHubConfig) -> None:
-    """Accept bounded agents for one authenticated route and expose their fixed targets."""
-    control = public = None
-    state = None
+    """Accept bounded agents for configured routes and expose their fixed targets."""
+    control = public = state = None
     try:
         control, public, state = await _start_reverse_hub(config)
+        states = _hub_state_map(state)
+        publics = _hub_public_map(public, states)
         control_addresses = ", ".join(str(sock.getsockname()) for sock in control.sockets or ())
-        if config.transport == "udp":
-            public_addresses = str(public.get_extra_info("sockname"))
-            LOG.info("reverse hub control listening on %s; public UDP listener on %s route=%s",
-                     control_addresses, public_addresses, config.route)
-            await control.serve_forever()
-        else:
-            public_addresses = ", ".join(str(sock.getsockname()) for sock in public.sockets or ())
-            LOG.info("reverse hub control listening on %s; public TCP listener on %s route=%s",
-                     control_addresses, public_addresses, config.route)
-            await asyncio.gather(control.serve_forever(), public.serve_forever())
+        listeners = []
+        for route_name, listener in publics.items():
+            route_config = states[route_name].config
+            if route_config.transport == "udp":
+                address = str(listener.get_extra_info("sockname"))
+            else:
+                address = ", ".join(str(sock.getsockname())
+                                     for sock in listener.sockets or ())
+            listeners.append(f"{route_name}={address}/{route_config.transport.upper()}")
+        LOG.info("reverse hub carrier control listening on %s; public routes: %s",
+                 control_addresses, "; ".join(listeners))
+        await asyncio.gather(control.serve_forever(), *(
+            listener.serve_forever() for listener in publics.values()
+            if isinstance(listener, asyncio.Server)
+        ))
     finally:
         if control is not None:
             control.close()
             await control.wait_closed()
-        if isinstance(public, asyncio.Server):
-            public.close()
-            await public.wait_closed()
-        elif public is not None:
-            public.close()
+        if public is not None:
+            publics = _hub_public_map(public, _hub_state_map(state))
+            for listener in publics.values():
+                if isinstance(listener, asyncio.Server):
+                    listener.close()
+                    await listener.wait_closed()
+                else:
+                    listener.close()
         if state is not None:
-            if state.public_udp is not None:
-                await state.public_udp.close()
-            handlers = tuple(state.handler_tasks)
-            for task in handlers:
-                task.cancel()
-            if handlers:
-                await asyncio.gather(*handlers, return_exceptions=True)
+            states = _hub_state_map(state)
+            for route_state in states.values():
+                if route_state.public_udp is not None:
+                    await route_state.public_udp.close()
+                handlers = tuple(route_state.handler_tasks)
+                for task in handlers:
+                    task.cancel()
+                if handlers:
+                    await asyncio.gather(*handlers, return_exceptions=True)

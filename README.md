@@ -10,7 +10,7 @@
 
 ---
 
-> **Development status:** This is the new independent implementation, version 0.2.24. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
+> **Development status:** This is the new independent implementation, version 0.2.25. It is not compatible with the previous Simurgh implementation or any other tunnel protocol, and it is not yet production-ready. The old code has been removed from this branch; this project does not modify or remove existing `/etc/simurgh` data on any host.
 
 ## What it does
 
@@ -18,7 +18,7 @@ Forward mode connects an **entry** node to an **exit** node. Reverse mode instea
 
 - TCP forwarding with bidirectional flow and half-close handling; a half-closed flow with no further data progress is closed after two minutes. Forwarded TCP sockets also use best-effort OS keepalive probes to help clean up unreachable peers.
 - UDP forwarding with datagram boundaries, bounded sessions and idle expiry.
-- Reverse TCP and UDP forwarding: private-side agents dial a verified hub and forward public hub traffic only to their configured fixed local targets. The control/data carrier can be TLS, WSS, or H2; one route and up to 32 agents per hub, with round-robin assignment and bounded sessions.
+- Reverse TCP and UDP forwarding: private-side agents dial a verified hub and forward public hub traffic only to their configured fixed local targets. The control/data carrier can be TLS, WSS, or H2; up to 32 public routes per hub and 32 agents per route, with round-robin assignment and bounded sessions.
 - Optional client-session cap per source IP on TCP/UDP entry listeners and the reverse hub's public listener (1–512, default 128), in addition to global session bounds.
 - UDP entry and reverse-hub datagrams are rate-limited per source IP and direction (default 5,000 packets/s, configurable from 1 to 100,000, with a two-second burst allowance); excess packets are dropped before entering the tunnel queue.
 - TLS certificate and server-name verification at the entry for forward carriers and at the reverse agent for hub connections.
@@ -35,7 +35,7 @@ Forward mode connects an **entry** node to an **exit** node. Reverse mode instea
 - A bounded synthetic download speed test is available for TCP entries from the CLI (`--speed-test-mib 4`), terminal menu, and local panel. It measures tunnel capacity, not end-to-end application throughput; UDP is intentionally unsupported.
 - Entry traffic is counted by direction and shown in the panel/menu. An optional `monthly_quota_mib` setting applies a UTC-month payload limit; TCP flows stop at the boundary and UDP datagrams are never partially forwarded. State is private (`0600`) and periodically persisted.
 
-This remains a development release, not feature parity or production readiness. Reverse forwarding supports TCP and UDP over TLS, WSS, or H2 with one configured hub route and up to 32 agents; it is not a general private mesh and still needs real-host deployment validation. WSS and H2 are interoperability carriers, not promises of concealment or availability. Do not deploy this as a production replacement yet.
+This remains a development release, not feature parity or production readiness. Reverse forwarding supports TCP or UDP over TLS, WSS, or H2, with up to 32 configured public routes per hub and up to 32 agents per route; a hub uses one transport, carrier, and shared secret across its routes. It is not a general private mesh and still needs real-host deployment validation. WSS and H2 are interoperability carriers, not promises of concealment or availability. Do not deploy this as a production replacement yet.
 
 ## Install
 

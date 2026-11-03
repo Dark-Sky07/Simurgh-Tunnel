@@ -38,6 +38,10 @@ def test_menu_status_and_runner_support_reverse_roles(tmp_path, monkeypatch):
         "public_host": "127.0.0.1", "public_port": 8080,
         "cert_file": "/tmp/hub.crt", "key_file": "/tmp/hub.key",
         "secret": "h" * 40, "route": "web", "client_session_limit": 17,
+        "routes": [
+            {"route": "web", "public_host": "127.0.0.1", "public_port": 8080},
+            {"route": "admin", "public_host": "127.0.0.1", "public_port": 8081},
+        ],
     }
     agent = {
         "role": "reverse-agent", "hub_host": "hub.example.net", "hub_port": 9443,
@@ -50,8 +54,10 @@ def test_menu_status_and_runner_support_reverse_roles(tmp_path, monkeypatch):
     lines = []
     roles = menu.show_status(tmp_path, lines.append)
     assert roles == ("reverse-hub", "reverse-agent")
-    assert any("public TCP 127.0.0.1:8080" in line
+    assert any("2 public TCP route(s)" in line
                and "client cap=17/source IP" in line for line in lines)
+    assert any("public TCP 127.0.0.1:8080 route=web" in line for line in lines)
+    assert any("public TCP 127.0.0.1:8081 route=admin" in line for line in lines)
 
     started = []
 
