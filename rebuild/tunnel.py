@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.25"
+VERSION = "0.2.26"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -92,6 +92,7 @@ class ReverseHubRoute:
     route: str
     public_host: str
     public_port: int
+    secret: str | None = None
 
 
 @dataclass(frozen=True)
@@ -227,6 +228,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
                 route=route,
                 public_host=_text(raw, "public_host"),
                 public_port=_port(raw, "public_port"),
+                secret=secret,
             ),)
         else:
             if (not isinstance(raw_routes, list) or not raw_routes
@@ -248,9 +250,13 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
                     raise ConfigError("reverse hub route names must be unique")
                 if public_port in public_ports:
                     raise ConfigError("reverse hub public ports must be unique")
+                route_secret = _text(item, "secret") if "secret" in item else secret
+                if len(route_secret.encode("utf-8")) < 32:
+                    raise ConfigError("each reverse hub route secret must contain at least 32 UTF-8 bytes")
                 route_names.add(route)
                 public_ports.add(public_port)
-                parsed_routes.append(ReverseHubRoute(route, public_host, public_port))
+                parsed_routes.append(ReverseHubRoute(
+                    route, public_host, public_port, route_secret))
             routes = tuple(parsed_routes)
         if any(route.public_port == control_port for route in routes):
             raise ConfigError("reverse hub control_port and public ports must differ")

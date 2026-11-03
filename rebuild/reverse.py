@@ -910,7 +910,8 @@ async def _start_reverse_hub(config: ReverseHubConfig):
     states = {
         route.route: _HubState(replace(
             config, route=route.route, public_host=route.public_host,
-            public_port=route.public_port, routes=(route,),
+            public_port=route.public_port, secret=route.secret or config.secret,
+            routes=(route,),
         ))
         for route in route_configs
     }

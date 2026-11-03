@@ -96,6 +96,7 @@ def test_reverse_agent_forwards_concurrent_tcp_clients_to_its_fixed_target(
 def test_reverse_hub_serves_multiple_routes_on_one_control_listener(tls_identity, carrier):
     cert, key = tls_identity
     secret = "reverse-multi-route-shared-secret-012345"
+    route_secrets = {"web": secret, "admin": "reverse-admin-route-secret-0123456789"}
 
     async def scenario():
         async def make_target(prefix: bytes):
@@ -111,8 +112,9 @@ def test_reverse_hub_serves_multiple_routes_on_one_control_listener(tls_identity
             "web": await make_target(b"web:"),
             "admin": await make_target(b"admin:"),
         }
-        routes = tuple(tunnel.ReverseHubRoute(route, "127.0.0.1", 0)
-                       for route in targets)
+        routes = tuple(tunnel.ReverseHubRoute(
+            route, "127.0.0.1", 0, route_secrets[route] if route != "web" else None,
+        ) for route in targets)
         config = tunnel.ReverseHubConfig(
             "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "web",
             carrier=carrier, routes=routes,
@@ -123,7 +125,7 @@ def test_reverse_hub_serves_multiple_routes_on_one_control_listener(tls_identity
         try:
             for route, target in targets.items():
                 agent_config = tunnel.ReverseAgentConfig(
-                    "127.0.0.1", control_port, "localhost", cert, secret, route,
+                    "127.0.0.1", control_port, "localhost", cert, route_secrets[route], route,
                     "127.0.0.1", target.sockets[0].getsockname()[1], carrier=carrier,
                 )
                 agents.append(asyncio.create_task(reverse.serve_reverse_agent(agent_config)))
@@ -136,6 +138,13 @@ def test_reverse_hub_serves_multiple_routes_on_one_control_listener(tls_identity
             )
             with pytest.raises(ConnectionError, match="hub rejected"):
                 await tunnel.check_reverse_agent_hub(unknown_route)
+            wrong_admin_secret = tunnel.ReverseAgentConfig(
+                "127.0.0.1", control_port, "localhost", cert, secret, "admin",
+                "127.0.0.1", targets["admin"].sockets[0].getsockname()[1],
+                carrier=carrier,
+            )
+            with pytest.raises(ConnectionError, match="hub rejected"):
+                await tunnel.check_reverse_agent_hub(wrong_admin_secret)
 
             async def exchange(route: str, payload: bytes) -> bytes:
                 listener = publics[route]
@@ -404,6 +413,7 @@ def test_reverse_hub_round_robins_tcp_clients_across_agents(tls_identity, carrie
 def test_reverse_hub_serves_multiple_udp_routes_on_one_control_listener(tls_identity, carrier):
     cert, key = tls_identity
     secret = "reverse-multi-route-udp-secret-012345"
+    route_secrets = {"dns": secret, "metrics": "reverse-metrics-secret-0123456789"}
 
     async def scenario():
         class Echo(asyncio.DatagramProtocol):
@@ -429,8 +439,9 @@ def test_reverse_hub_serves_multiple_udp_routes_on_one_control_listener(tls_iden
             transport, _ = await loop.create_datagram_endpoint(
                 lambda prefix=prefix: Echo(prefix), local_addr=("127.0.0.1", 0))
             targets[route] = transport
-        routes = tuple(tunnel.ReverseHubRoute(route, "127.0.0.1", 0)
-                       for route in targets)
+        routes = tuple(tunnel.ReverseHubRoute(
+            route, "127.0.0.1", 0, route_secrets[route] if route != "dns" else None,
+        ) for route in targets)
         config = tunnel.ReverseHubConfig(
             "127.0.0.1", 0, "127.0.0.1", 0, cert, key, secret, "dns",
             carrier=carrier, transport="udp", routes=routes,
@@ -443,7 +454,7 @@ def test_reverse_hub_serves_multiple_udp_routes_on_one_control_listener(tls_iden
             for route, target in targets.items():
                 target_port = target.get_extra_info("sockname")[1]
                 agent_config = tunnel.ReverseAgentConfig(
-                    "127.0.0.1", control_port, "localhost", cert, secret, route,
+                    "127.0.0.1", control_port, "localhost", cert, route_secrets[route], route,
                     "127.0.0.1", target_port, carrier=carrier, transport="udp",
                 )
                 agents.append(asyncio.create_task(reverse.serve_reverse_agent(agent_config)))
