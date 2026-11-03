@@ -648,6 +648,43 @@ def test_reverse_config_loads_supported_carriers(tmp_path, role, base, carrier):
     assert tunnel.load_config(path).carrier == carrier
 
 
+def test_reverse_hub_config_supports_bounded_unique_route_list(tmp_path):
+    path = tmp_path / "hub.json"
+    config = {
+        "role": "reverse-hub", "control_host": "127.0.0.1", "control_port": 9443,
+        "cert_file": "/tmp/hub.crt", "key_file": "/tmp/hub.key",
+        "secret": "s" * 32, "transport": "tcp",
+        "routes": [
+            {"route": "web", "public_host": "127.0.0.1", "public_port": 8080},
+            {"route": "admin", "public_host": "127.0.0.1", "public_port": 8081},
+        ],
+    }
+    path.write_text(json.dumps(config))
+    parsed = tunnel.load_config(path)
+    assert parsed.route == "web"
+    assert parsed.public_port == 8080
+    assert [(route.route, route.public_port) for route in parsed.routes] == [
+        ("web", 8080), ("admin", 8081),
+    ]
+
+    for routes, error in (
+        ([{"route": "web", "public_host": "127.0.0.1", "public_port": 8080},
+          {"route": "web", "public_host": "127.0.0.1", "public_port": 8081}],
+         "route names must be unique"),
+        ([{"route": "web", "public_host": "127.0.0.1", "public_port": 8080},
+          {"route": "admin", "public_host": "127.0.0.1", "public_port": 8080}],
+         "public ports must be unique"),
+        ([{"route": "web", "public_host": "127.0.0.1", "public_port": 9443}],
+         "control_port and public ports must differ"),
+        ([{"route": f"r{i}", "public_host": "127.0.0.1", "public_port": 1000 + i}
+          for i in range(tunnel.MAX_REVERSE_ROUTES + 1)], "1 to 32 routes"),
+    ):
+        config["routes"] = routes
+        path.write_text(json.dumps(config))
+        with pytest.raises(tunnel.ConfigError, match=error):
+            tunnel.load_config(path)
+
+
 def test_config_validates_optional_monthly_quota(tmp_path):
     path = tmp_path / "entry.json"
     config = {

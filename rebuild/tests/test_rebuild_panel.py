@@ -140,6 +140,33 @@ def test_panel_rejects_wrong_loopback_port_and_cross_origin_posts(tmp_path):
         panel.close()
 
 
+def test_panel_configures_optional_second_reverse_hub_route():
+    role, config = panel_module._build_form_config({
+        "role": ["reverse-hub"], "route": ["web"], "secret": ["s" * 40],
+        "control_host": ["0.0.0.0"], "control_port": ["9443"],
+        "public_host": ["127.0.0.1"], "public_port": ["8080"],
+        "additional_route": ["admin"], "additional_public_port": ["8081"],
+        "cert_file": ["/tmp/hub.crt"], "key_file": ["/tmp/hub.key"],
+        "transport": ["tcp"], "carrier": ["tls"],
+    })
+    assert role == "reverse-hub"
+    assert config["routes"] == [
+        {"route": "web", "public_host": "127.0.0.1", "public_port": 8080},
+        {"route": "admin", "public_host": "127.0.0.1", "public_port": 8081},
+    ]
+
+    for route, port in (("web", "8081"), ("admin", "8080")):
+        invalid = {
+            "role": ["reverse-hub"], "route": ["web"], "secret": ["s" * 40],
+            "control_host": ["0.0.0.0"], "control_port": ["9443"],
+            "public_host": ["127.0.0.1"], "public_port": ["8080"],
+            "additional_route": [route], "additional_public_port": [port],
+            "cert_file": ["/tmp/hub.crt"], "key_file": ["/tmp/hub.key"],
+        }
+        with pytest.raises(ValueError):
+            panel_module._build_form_config(invalid)
+
+
 @pytest.mark.parametrize("carrier", ["tls", "wss", "h2"])
 def test_setup_panel_saves_reverse_hub_and_agent_configs(tmp_path, monkeypatch, carrier):
     panel, url = started_panel(tmp_path)

@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.24"
+VERSION = "0.2.25"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -42,6 +42,7 @@ DEFAULT_CLIENT_SESSION_LIMIT = 128
 MAX_CLIENT_SESSION_LIMIT = 512
 DEFAULT_UDP_RATE_LIMIT_PPS = 5000
 MAX_UDP_RATE_LIMIT_PPS = 100000
+MAX_REVERSE_ROUTES = 32
 MAX_SPEED_TEST_BYTES = 16 * 1024 * 1024
 DEFAULT_SPEED_TEST_MIB = 4
 _FRAME_HEADER = struct.Struct("!BI")
@@ -87,6 +88,13 @@ class EntryConfig:
 
 
 @dataclass(frozen=True)
+class ReverseHubRoute:
+    route: str
+    public_host: str
+    public_port: int
+
+
+@dataclass(frozen=True)
 class ReverseHubConfig:
     control_host: str
     control_port: int
@@ -100,6 +108,7 @@ class ReverseHubConfig:
     client_session_limit: int = DEFAULT_CLIENT_SESSION_LIMIT
     transport: str = "tcp"
     udp_rate_limit_pps: int = DEFAULT_UDP_RATE_LIMIT_PPS
+    routes: tuple[ReverseHubRoute, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -208,26 +217,58 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
         raise ConfigError("secret must contain at least 32 UTF-8 bytes")
 
     if role == "reverse-hub":
-        route = _text(raw, "route")
-        if len(route) > 64:
-            raise ConfigError("route must contain at most 64 characters")
         control_port = _port(raw, "control_port")
-        public_port = _port(raw, "public_port")
-        if control_port == public_port:
-            raise ConfigError("reverse hub control_port and public_port must differ")
+        raw_routes = raw.get("routes")
+        if raw_routes is None:
+            route = _text(raw, "route")
+            if len(route) > 64:
+                raise ConfigError("route must contain at most 64 characters")
+            routes = (ReverseHubRoute(
+                route=route,
+                public_host=_text(raw, "public_host"),
+                public_port=_port(raw, "public_port"),
+            ),)
+        else:
+            if (not isinstance(raw_routes, list) or not raw_routes
+                    or len(raw_routes) > MAX_REVERSE_ROUTES):
+                raise ConfigError(
+                    f"reverse hub routes must be a list of 1 to {MAX_REVERSE_ROUTES} routes")
+            parsed_routes = []
+            route_names = set()
+            public_ports = set()
+            for item in raw_routes:
+                if not isinstance(item, dict):
+                    raise ConfigError("each reverse hub route must be an object")
+                route = _text(item, "route")
+                if len(route) > 64:
+                    raise ConfigError("route must contain at most 64 characters")
+                public_host = _text(item, "public_host")
+                public_port = _port(item, "public_port")
+                if route in route_names:
+                    raise ConfigError("reverse hub route names must be unique")
+                if public_port in public_ports:
+                    raise ConfigError("reverse hub public ports must be unique")
+                route_names.add(route)
+                public_ports.add(public_port)
+                parsed_routes.append(ReverseHubRoute(route, public_host, public_port))
+            routes = tuple(parsed_routes)
+        if any(route.public_port == control_port for route in routes):
+            raise ConfigError("reverse hub control_port and public ports must differ")
+        primary = routes[0]
         return ReverseHubConfig(
             control_host=_text(raw, "control_host"),
             control_port=control_port,
-            public_host=_text(raw, "public_host"),
-            public_port=public_port,
+            public_host=primary.public_host,
+            public_port=primary.public_port,
             cert_file=Path(_text(raw, "cert_file")),
             key_file=Path(_text(raw, "key_file")),
             secret=secret,
-            route=route,
+            route=primary.route,
             carrier=_reverse_carrier(raw),
             client_session_limit=_client_session_limit(raw),
             transport=_reverse_transport(raw),
             udp_rate_limit_pps=_udp_rate_limit_pps(raw),
+            routes=routes,
         )
 
     if role == "reverse-agent":

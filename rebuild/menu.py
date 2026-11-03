@@ -63,10 +63,18 @@ def show_status(config_dir: Path, output: Output = print) -> tuple[str, ...]:
         elif role == "reverse-hub" and isinstance(config, ReverseHubConfig):
             udp_rate = (f"; rate cap={config.udp_rate_limit_pps} datagrams/s/source IP"
                         if config.transport == "udp" else "")
+            route_count = len(config.routes) or 1
             output(f"reverse hub: control {config.control_host}:{config.control_port}; "
-                   f"public {config.transport.upper()} {config.public_host}:{config.public_port} "
-                   f"route={config.route}; client cap={config.client_session_limit}/source IP"
-                   f"{udp_rate}")
+                   f"{route_count} public {config.transport.upper()} route(s); "
+                   f"client cap={config.client_session_limit}/source IP{udp_rate}")
+            route_specs = config.routes or ()
+            if route_specs:
+                for route in route_specs:
+                    output(f"  public {config.transport.upper()} {route.public_host}:"
+                           f"{route.public_port} route={route.route}")
+            else:
+                output(f"  public {config.transport.upper()} {config.public_host}:"
+                       f"{config.public_port} route={config.route}")
         elif role == "reverse-agent" and isinstance(config, ReverseAgentConfig):
             output(f"reverse agent: outbound TLS to {config.hub_host}:{config.hub_port}; "
                    f"fixed {config.transport.upper()} target {config.target_host}:"
