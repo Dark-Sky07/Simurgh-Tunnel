@@ -25,7 +25,7 @@ from typing import Any
 from .usage import QuotaReached, UsageMeter
 
 LOG = logging.getLogger("simurgh.rebuild")
-VERSION = "0.2.26"
+VERSION = "0.2.27"
 MAX_HANDSHAKE = 8192
 MAX_FRAME = 64 * 1024
 HANDSHAKE_TIMEOUT = 5.0
@@ -93,6 +93,7 @@ class ReverseHubRoute:
     public_host: str
     public_port: int
     secret: str | None = None
+    transport: str | None = None
 
 
 @dataclass(frozen=True)
@@ -219,8 +220,9 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
 
     if role == "reverse-hub":
         control_port = _port(raw, "control_port")
+        hub_transport = _reverse_transport(raw)
         raw_routes = raw.get("routes")
-        if raw_routes is None:
+        if "routes" not in raw:
             route = _text(raw, "route")
             if len(route) > 64:
                 raise ConfigError("route must contain at most 64 characters")
@@ -229,6 +231,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
                 public_host=_text(raw, "public_host"),
                 public_port=_port(raw, "public_port"),
                 secret=secret,
+                transport=hub_transport,
             ),)
         else:
             if (not isinstance(raw_routes, list) or not raw_routes
@@ -253,10 +256,13 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
                 route_secret = _text(item, "secret") if "secret" in item else secret
                 if len(route_secret.encode("utf-8")) < 32:
                     raise ConfigError("each reverse hub route secret must contain at least 32 UTF-8 bytes")
+                route_transport = item.get("transport", hub_transport)
+                if route_transport not in ("tcp", "udp"):
+                    raise ConfigError("reverse hub route transport must be 'tcp' or 'udp'")
                 route_names.add(route)
                 public_ports.add(public_port)
                 parsed_routes.append(ReverseHubRoute(
-                    route, public_host, public_port, route_secret))
+                    route, public_host, public_port, route_secret, route_transport))
             routes = tuple(parsed_routes)
         if any(route.public_port == control_port for route in routes):
             raise ConfigError("reverse hub control_port and public ports must differ")
@@ -272,7 +278,7 @@ def load_config(path: Path) -> ExitConfig | EntryConfig | ReverseHubConfig | Rev
             route=primary.route,
             carrier=_reverse_carrier(raw),
             client_session_limit=_client_session_limit(raw),
-            transport=_reverse_transport(raw),
+            transport=primary.transport or hub_transport,
             udp_rate_limit_pps=_udp_rate_limit_pps(raw),
             routes=routes,
         )
